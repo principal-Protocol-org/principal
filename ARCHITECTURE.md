@@ -61,7 +61,17 @@ The protocol is **asset-agnostic**. Any Stellar yield-bearing asset represented 
 ### 2.2 Contract dependency graph
 
 ```mermaid
-graph TD
+flowchart TD
+    Router["Router"]
+    MarketPool["MarketPool"]
+    PrincipalManager["PrincipalManager"]
+    SYWrapper["SYWrapper"]
+    PTToken["PTToken"]
+    YTToken["YTToken"]
+    OracleAdapter["OracleAdapter"]
+    Permissioning["Permissioning"]
+    RiskControl["RiskControl"]
+
     Router --> MarketPool
     Router --> PrincipalManager
     Router --> SYWrapper
@@ -83,18 +93,7 @@ graph TD
     PTToken --> Permissioning
     YTToken --> Permissioning
     YTToken --> OracleAdapter
-
     SYWrapper --> RiskControl
-
-    style OracleAdapter fill:#e8f4fd
-    style Permissioning fill:#e8f4fd
-    style RiskControl fill:#e8f4fd
-    style SYWrapper fill:#fef9e7
-    style PrincipalManager fill:#fef9e7
-    style PTToken fill:#eafaf1
-    style YTToken fill:#eafaf1
-    style MarketPool fill:#fdf2f8
-    style Router fill:#fdf2f8
 ```
 
 ### 2.3 Asset-agnostic design
