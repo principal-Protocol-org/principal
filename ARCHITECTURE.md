@@ -171,20 +171,14 @@ sequenceDiagram
     participant SYW as SYWrapper
     participant PT as PTToken
 
-    U->>RT: swap_sy_for_pt(sy_in, min_pt_out)
-    RT->>MP: swap_sy_for_pt(sy_in, min_pt_out)
-    MP->>OA: get_reference_value()
-    OA-->>MP: exchange_rate
-    MP->>MP: compute proportion = v_pt / (v_pt + v_sy)
-    MP->>MP: logit = ln(proportion / (1 - proportion))
-    MP->>MP: scalar = scalar_root * sqrt(tau)
-    MP->>MP: r_implied = logit / scalar + anchor_rate
-    MP->>MP: solve delta_pt preserving r_implied; apply fee
-    MP->>SYW: transfer(from=user, to=pool, amount=sy_in)
-    MP->>PT: transfer(from=pool, to=user, amount=pt_out)
-    MP-->>RT: pt_out
-    RT->>RT: require pt_out at least min_pt_out or revert SlippageExceeded
-    RT-->>U: pt_out
+    U->>RT: request SY to PT swap
+    RT->>MP: execute swap with slippage limit
+    MP->>OA: read reference value
+    OA-->>MP: current rate
+    MP->>SYW: move SY from user to pool
+    MP->>PT: move PT from pool to user
+    MP-->>RT: return PT output
+    RT-->>U: confirm PT received
 ```
 
 #### Flash-mint YT (buy YT in one transaction)
@@ -198,16 +192,16 @@ sequenceDiagram
     participant PT as PTToken
     participant YT as YTToken
 
-    U->>RT: swap_sy_for_yt(sy_in, min_yt_out)
-    RT->>PM: mint(sy_shares=sy_in) returns pt_minted and yt_minted
-    PM->>PT: mint(to=Router, amount=pt_minted)
-    PM->>YT: mint(to=Router, amount=yt_minted)
-    RT->>MP: swap_pt_for_sy(pt_in=pt_minted) returns sy_back
-    MP->>PT: transfer(from=Router, to=pool, amount=pt_minted)
-    Note over RT: Net cost = sy_in - sy_back; net gain = yt_minted
-    RT->>RT: require yt_minted at least min_yt_out
-    RT->>YT: transfer(from=Router, to=user, amount=yt_minted)
-    RT-->>U: yt_minted
+    U->>RT: request SY to YT swap
+    RT->>PM: mint PT and YT from SY
+    PM->>PT: mint PT to Router
+    PM->>YT: mint YT to Router
+    PM-->>RT: return minted PT and YT
+    RT->>MP: sell minted PT for SY
+    MP->>PT: move PT from Router to pool
+    MP-->>RT: return SY from PT sale
+    RT->>YT: move YT from Router to user
+    RT-->>U: confirm YT received
 ```
 
 #### Maturity redemption
