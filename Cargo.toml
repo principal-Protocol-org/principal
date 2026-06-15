@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+    "contracts/oracle_adapter",
+    "contracts/permissioning",
+    "contracts/sy_wrapper",
+    "contracts/principal_manager",
+    "contracts/risk_control",
+]
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = false
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true

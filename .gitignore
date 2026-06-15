@@ -1,0 +1,25 @@
+# Rust / Cargo build artifacts
+target/
+# Note: Cargo.lock is committed for smart contracts to guarantee reproducible WASM builds.
+
+# Grant and business documents — not part of the public technical release
+docs/
+MARKET_OPPORTUNITY.md
+WORKING_NOTES.md
+
+# Source PDF and Windows metadata
+*.PDF
+*.pdf
+*Zone.Identifier
+*:Zone.Identifier
+
+# Editor / OS / local tooling
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+.claude/
+
+# Soroban WASM output
+*.wasm

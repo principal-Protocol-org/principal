@@ -1,0 +1,18 @@
+[package]
+name = "principal_manager"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = { version = "26.0.1" }
+
+[dev-dependencies]
+soroban-sdk = { version = "26.0.1", features = ["testutils"] }
+principal_oracle_adapter = { path = "../oracle_adapter", features = ["testutils"] }
+principal_permissioning = { path = "../permissioning", features = ["testutils"] }
+
+[features]
+testutils = ["soroban-sdk/testutils"]
