@@ -1,14 +1,14 @@
 # Principal Protocol — Full-Stack Architecture
 
-Version: 0.2 — Complete System Design  
+Version: 0.3 — Complete System Architecture  
 Chain: Stellar / Soroban  
-Stack: Soroban contracts · Stellar SDK · Horizon · Soroban RPC · Backend API · Frontend client
+Stack: Soroban contracts · Stellar RPC · Horizon · Stellar SDK · Wallet signing · Backend API · Frontend client
 
 ---
 
 ## 1. System Layers
 
-Principal Protocol is composed of five layers that work together from a user action in a browser down to on-chain settlement on Stellar.
+Principal Protocol is composed of five layers that work together from a user action in a browser down to on-chain settlement on Stellar. This document describes the full protocol architecture and the surrounding Stellar integration stack: accounts, assets, contract invocation, transaction simulation, wallet signing, event indexing, and deployment operations.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────┐
@@ -18,12 +18,12 @@ Principal Protocol is composed of five layers that work together from a user act
                                  │ HTTPS / WebSocket
 ┌────────────────────────────────▼─────────────────────────────────────────┐
 │  LAYER 4 — BACKEND API                                                  │
-│  Transaction building · Oracle relay · Event indexer · Market data cache │
+│  Tx builder · Oracle relay · Indexer · Market data cache · Registry      │
 └────────────────────────────────┬─────────────────────────────────────────┘
-                                 │ Soroban RPC  /  Horizon REST
+                                 │ Stellar RPC / Horizon REST / Wallet APIs
 ┌────────────────────────────────▼─────────────────────────────────────────┐
 │  LAYER 3 — STELLAR NETWORK INTERFACE                                    │
-│  Horizon API · Soroban RPC · Event streaming · Transaction submission    │
+│  Stellar RPC · Horizon API · XDR · SACs · Wallet signing · Event ingest  │
 └────────────────────────────────┬─────────────────────────────────────────┘
                                  │
 ┌────────────────────────────────▼─────────────────────────────────────────┐
@@ -46,17 +46,17 @@ The protocol is **asset-agnostic**. Any Stellar yield-bearing asset represented 
 
 ### 2.1 Contract inventory
 
-| Contract | Phase | Role |
+| Contract | Deployment scope | Role |
 |---|---|---|
-| `OracleAdapter` | 1 — POC | Reference value feed for any underlying asset, with freshness controls |
-| `Permissioning` | 1 — POC | Account and asset eligibility registry (optional, per-asset) |
-| `RiskControl` | 1 — POC | Global pause, multi-pauser roles, rolling circuit breaker |
-| `SYWrapper` | 1 — POC | Standardized yield wrapper; accepts any SAC-compatible yield asset |
-| `PrincipalManager` | 1 — POC | Mints/burns PT and YT from SY shares; settles at maturity |
-| `PTToken` | 2 — Planned | Standalone SEP-41 Principal Token per maturity |
-| `YTToken` | 2 — Planned | Standalone SEP-41 Yield Token with claimable yield |
-| `MarketPool` | 2 — Planned | Yield-curve AMM for PT ↔ SY trading |
-| `Router` | 2 — Planned | Single-transaction orchestration for all user flows |
+| `OracleAdapter` | One per underlying asset | Reference value feed for the underlying asset, with monotonic timestamps and freshness controls |
+| `Permissioning` | One per underlying asset or issuer policy | Account and per-asset eligibility registry for permissioned RWAs |
+| `RiskControl` | One per underlying asset or protocol risk domain | Global pause, pauser roles, and rolling deposit circuit breaker |
+| `SYWrapper` | One per underlying asset | Standardized yield wrapper; accepts a SAC-compatible yield-bearing asset and issues SY shares |
+| `PrincipalManager` | One per underlying asset and maturity | Splits SY shares into PT/YT notional claims and handles maturity settlement |
+| `PTToken` | One per maturity | SEP-41 Principal Token representing the fixed principal claim |
+| `YTToken` | One per maturity | SEP-41 Yield Token representing the future yield claim and claimable yield index |
+| `MarketPool` | One per maturity | Yield-curve AMM for PT ↔ SY trading |
+| `Router` | Shared across registered markets | Single-transaction orchestration for wrapping, minting, swapping, recombining, redeeming, and liquidity operations |
 
 ### 2.2 Contract dependency graph
 
@@ -143,20 +143,20 @@ sequenceDiagram
 
     U->>RT: wrap_and_mint(asset_amount, maturity_id)
     RT->>RC: check_deposit(asset_amount)
-    RC-->>RT: ok | revert(Paused | CircuitBreakerTripped)
+    RC-->>RT: ok or revert Paused/CircuitBreakerTripped
     RT->>SYW: deposit(from=user, amount=asset_amount)
     SYW->>SYW: shares = amount * RATE_SCALE / exchange_rate
     SYW-->>RT: shares_minted
     RT->>PERM: is_allowed(user)
-    PERM-->>RT: true | false
+    PERM-->>RT: true or false
     RT->>OA: is_fresh(MAX_ORACLE_STALENESS_SECS)
-    OA-->>RT: true | revert(OracleStale)
+    OA-->>RT: true or revert OracleStale
     RT->>OA: get_reference_value()
     OA-->>RT: oracle_rate
     RT->>PM: mint(from=user, sy_shares)
     PM->>PT: mint(to=user, amount=notional)
     PM->>YT: mint(to=user, amount=notional)
-    PM-->>RT: MintResult { pt_minted, yt_minted }
+    PM-->>RT: MintResult pt_minted and yt_minted
     RT-->>U: MintResult
 ```
 
@@ -177,13 +177,13 @@ sequenceDiagram
     OA-->>MP: exchange_rate
     MP->>MP: compute proportion = v_pt / (v_pt + v_sy)
     MP->>MP: logit = ln(proportion / (1 - proportion))
-    MP->>MP: scalar = scalar_root * sqrt(τ)
+    MP->>MP: scalar = scalar_root * sqrt(tau)
     MP->>MP: r_implied = logit / scalar + anchor_rate
-    MP->>MP: solve Δpt preserving r_implied; apply fee
+    MP->>MP: solve delta_pt preserving r_implied; apply fee
     MP->>SYW: transfer(from=user, to=pool, amount=sy_in)
     MP->>PT: transfer(from=pool, to=user, amount=pt_out)
     MP-->>RT: pt_out
-    RT->>RT: require pt_out >= min_pt_out | revert(SlippageExceeded)
+    RT->>RT: require pt_out at least min_pt_out or revert SlippageExceeded
     RT-->>U: pt_out
 ```
 
@@ -199,13 +199,13 @@ sequenceDiagram
     participant YT as YTToken
 
     U->>RT: swap_sy_for_yt(sy_in, min_yt_out)
-    RT->>PM: mint(sy_shares=sy_in) → pt_minted, yt_minted
+    RT->>PM: mint(sy_shares=sy_in) returns pt_minted and yt_minted
     PM->>PT: mint(to=Router, amount=pt_minted)
     PM->>YT: mint(to=Router, amount=yt_minted)
-    RT->>MP: swap_pt_for_sy(pt_in=pt_minted) → sy_back
+    RT->>MP: swap_pt_for_sy(pt_in=pt_minted) returns sy_back
     MP->>PT: transfer(from=Router, to=pool, amount=pt_minted)
     Note over RT: Net cost = sy_in - sy_back; net gain = yt_minted
-    RT->>RT: require yt_minted >= min_yt_out
+    RT->>RT: require yt_minted at least min_yt_out
     RT->>YT: transfer(from=Router, to=user, amount=yt_minted)
     RT-->>U: yt_minted
 ```
@@ -224,9 +224,9 @@ sequenceDiagram
 
     U->>RT: redeem_at_maturity(pt_amount, yt_amount)
     RT->>PM: redeem(from=user, pt_amount, yt_amount)
-    PM->>PM: assert now >= maturity
+    PM->>PM: assert now at or after maturity
     PM->>OA: is_fresh(MAX_ORACLE_STALENESS_SECS)
-    OA-->>PM: true | revert(OracleStale)
+    OA-->>PM: true or revert OracleStale
     PM->>OA: get_reference_value()
     OA-->>PM: final_rate
     PM->>PM: underlying_pt = floor(pt_amount * SCALE / final_rate)
@@ -235,7 +235,7 @@ sequenceDiagram
     PM->>PT: burn(from=user, amount=pt_amount)
     PM->>YT: burn(from=user, amount=yt_amount)
     PM->>SYW: withdraw(shares, to=user)
-    PM-->>RT: RedeemResult { underlying_from_pt, underlying_from_yt }
+    PM-->>RT: RedeemResult underlying_from_pt and underlying_from_yt
     RT-->>U: underlying asset delivered
 ```
 
@@ -252,8 +252,8 @@ sequenceDiagram
 
     U->>RT: recombine(pt_amount, yt_amount)
     RT->>PM: recombine(from=user, pt_amount, yt_amount)
-    PM->>PM: require pt_amount == yt_amount
-    PM->>PM: require now < maturity
+    PM->>PM: require pt_amount equals yt_amount
+    PM->>PM: require now before maturity
     PM->>PM: sy_returned = pt_amount * SCALE / oracle_rate
     PM->>PT: burn(from=user, amount=pt_amount)
     PM->>YT: burn(from=user, amount=yt_amount)
@@ -266,88 +266,221 @@ sequenceDiagram
 
 ## 3. Stellar Network Interface Layer
 
-### 3.1 Components
+The Stellar network interface is the protocol boundary between application services and ledger state. The application does not maintain a private ledger mirror. It uses Stellar RPC for Soroban contract execution and contract data, Horizon for classic account and asset information, and wallet APIs for user authorization.
 
-| Stellar component | Role |
-|---|---|
-| **Soroban RPC** | Simulate and submit contract invocations; read contract storage; fetch events |
-| **Horizon API** | Query account balances (underlying asset SAC trust lines), fee stats, tx history |
-| **Stellar Event Stream** | Poll contract events for the indexer |
-| **Stellar SDK (JS/TS)** | Build XDR transactions on the backend; parse results on backend and frontend |
-| **Stellar CLI** | Admin operations: deploy contracts, initialize, update parameters |
-| **Freighter / SEP-7 wallets** | Browser wallet signing — Freighter, xBull, Lobstr, or any SEP-7-compatible wallet |
+### 3.1 Integration stack map
 
-### 3.2 Transaction lifecycle
+| Stack component | Primary responsibility | Principal Protocol usage |
+|---|---|---|
+| **Stellar ledger** | Consensus, ledger close, account sequence numbers, fees, trust lines, contract state | Final source of truth for balances, contract storage, events, and transaction results |
+| **Stellar Asset Contracts (SACs)** | Soroban contract representation of Stellar assets | Underlying assets such as USDY are transferred through the SAC token interface into `SYWrapper` |
+| **Soroban contracts** | Protocol execution and storage | `Router`, `MarketPool`, `PrincipalManager`, `SYWrapper`, `PTToken`, `YTToken`, `OracleAdapter`, `Permissioning`, `RiskControl` |
+| **Stellar RPC** | Soroban simulation, transaction submission, contract state reads, event queries | Build footprints, compute resource fees, submit signed XDR, poll transaction status, index contract events |
+| **Horizon API** | Classic Stellar account, payment, trust-line, fee, and transaction data | Read user's XLM balance, underlying asset trust lines, issuer/account metadata, fee stats, and historical account activity |
+| **Stellar SDK** | XDR construction and decoding | Build `InvokeHostFunction` operations, encode/decode `ScVal`, assemble simulated transactions, parse result meta |
+| **Wallet APIs** | User signing and account discovery | Freighter and SEP-7-compatible wallets sign the XDR envelope; backend never handles user private keys |
+| **Stellar CLI** | Operator deployment and administration | Deploy WASM, initialize contracts, rotate admins, update oracle/risk parameters, inspect contract state |
+| **Backend registry** | Off-chain address and market mapping | Resolves `{asset, maturity}` to SAC address, protocol contract IDs, network passphrase, decimals, and issuer metadata |
 
-Every user-facing operation follows this exact lifecycle:
+### 3.2 Stellar data boundaries
 
+| Data or action | Use Stellar RPC | Use Horizon | Reason |
+|---|---:|---:|---|
+| Simulate a contract invocation | Yes | No | Only Stellar RPC can compute Soroban footprints, auth entries, and resource fees |
+| Submit a Soroban transaction | Yes | No | Contract invocations are submitted through Stellar RPC |
+| Poll a contract transaction result | Yes | Optional | RPC returns Soroban-specific status, return values, and diagnostic data |
+| Read contract storage | Yes | No | Contract instance and persistent data are exposed through RPC ledger entries |
+| Read contract events | Yes | No | Protocol indexer consumes Soroban contract events through RPC |
+| Read classic account balances | Optional | Yes | Horizon gives account balances, XLM reserve state, and asset trust lines in a convenient account view |
+| Check underlying trust line | Optional | Yes | Horizon exposes classic asset trust-line existence, balance, limits, authorization flags, and issuer |
+| Query fee stats | Optional | Yes | Horizon fee stats are useful for fee policy and UX estimates |
+| Explore account transaction history | Optional | Yes | Horizon is optimized for account/payment/history views |
+
+### 3.3 Account, address, and asset model
+
+| Entity | Stellar representation | Protocol usage |
+|---|---|---|
+| User account | `G...` public key account | Source account for user transactions; signer in Freighter or SEP-7 wallet |
+| Contract account | `C...` contract ID | Address for each deployed protocol contract and SAC |
+| Underlying RWA asset | Classic Stellar asset plus SAC contract address | User holds the asset through a trust line; `SYWrapper` receives it through the SAC token interface |
+| PT/YT/LP instruments | SEP-41 Soroban token contracts | User receives token balances that can be displayed by the frontend and routed through protocol contracts |
+| Market ID | Off-chain registry key such as `usdy:2026-09-30` | Backend resolves market actions to contract IDs and maturity metadata |
+| Network | Public, Testnet, Futurenet, or private network | Determines network passphrase, RPC URL, Horizon URL, and wallet signing context |
+
+SAC integration has two sides. Horizon is used to display the user's classic asset balance and trust-line state. Soroban contracts interact with the same asset through the SAC contract address and token calls such as `transfer`, `balance`, `decimals`, `symbol`, and `name`.
+
+### 3.4 Full Stellar transaction lifecycle
+
+Every user-facing operation follows this lifecycle:
+
+```mermaid
+sequenceDiagram
+    participant UI as Frontend
+    participant W as Wallet
+    participant API as Backend API
+    participant H as Horizon
+    participant RPC as Stellar RPC
+    participant L as Stellar Ledger
+
+    UI->>API: intent with account action market_id and params
+    API->>API: resolve market registry and validate params
+    API->>H: load account and fee/trust-line context
+    H-->>API: account sequence, balances, trust-line state, fee stats
+    API->>RPC: simulateTransaction(unsigned tx)
+    RPC-->>API: footprint, auth entries, min resource fee, result preview
+    API->>API: assemble transaction with footprint and resource fee
+    API-->>UI: unsigned XDR + operation summary
+    UI->>W: request signature for XDR and network passphrase
+    W-->>UI: signed XDR
+    UI->>API: signed XDR
+    API->>RPC: sendTransaction(signed XDR)
+    RPC-->>API: transaction hash or submission error
+    API->>RPC: getTransaction(hash) until terminal state
+    RPC-->>API: SUCCESS or FAILED + result meta
+    RPC->>L: committed transaction state
+    API-->>UI: status, result values, diagnostics
 ```
-User action (frontend)
-    │
-    ▼
-Backend API
-  1. Receive intent: { account, action, params }
-  2. Fetch fee stats          → GET Horizon /fee_stats
-  3. Simulate transaction     → POST Soroban RPC simulateTransaction
-     (get resource footprint, auth entries, fee estimate)
-  4. Assemble XDR envelope
-     (InvokeHostFunction + footprint + resource fee)
-  5. Return unsigned XDR to frontend
-    │
-    ▼
-Frontend (wallet)
-  6. Present operation summary to user
-  7. User approves → wallet signs XDR
-     (Freighter: signTransaction(xdr, { network }))
-  8. Return signed XDR to backend
-    │
-    ▼
-Backend API
-  9. Submit signed transaction → POST Soroban RPC sendTransaction
- 10. Poll for confirmation     → GET Soroban RPC getTransaction(hash)
- 11. Parse result XDR; extract return values
- 12. Return { status, result } to frontend
-```
 
-No private keys are ever held by the backend for user operations. The backend only builds and submits; signing always happens in the user's wallet.
+The backend never holds user private keys. It builds and submits XDR; the user's wallet signs. Admin-only automation, such as oracle updates, uses a separate signer controlled by an HSM, secrets manager, or multisig operator flow.
 
-### 3.3 Soroban RPC methods
+### 3.5 Transaction assembly details
+
+1. The backend loads the source account and current sequence number from Horizon or an SDK account-loading helper.
+2. It creates an `InvokeHostFunction` operation for the target contract call.
+3. It simulates the transaction through Stellar RPC.
+4. The simulation response provides the Soroban resource footprint, auth entries, and minimum resource fee.
+5. The backend assembles the transaction using the simulation result.
+6. The frontend asks the wallet to sign the assembled XDR with the correct network passphrase.
+7. The backend submits the signed XDR and polls until final status.
+8. The backend parses `ScVal` return values and diagnostic events into JSON for the frontend.
+
+Important implementation rules:
+
+- A transaction must be simulated before signing so the footprint and Soroban resource fee are included.
+- The final signed XDR must use the same network passphrase shown to the wallet.
+- Contract calls requiring `require_auth()` must include the auth entries produced by simulation.
+- The source account must maintain enough XLM for fees and minimum balance reserves.
+- The backend must treat simulation output as advisory. The transaction can still fail if ledger state changes before submission.
+
+### 3.6 Stellar RPC methods
 
 | Method | Used for |
 |---|---|
-| `simulateTransaction` | Validate operation, compute footprint and resource limits, get auth entries |
-| `sendTransaction` | Submit a signed transaction |
-| `getTransaction` | Poll until `SUCCESS` or `FAILED`; extract return value XDR |
-| `getLedgerEntries` | Read specific contract storage keys directly (oracle rate, pool reserves, balances) |
-| `getEvents` | Fetch contract events for a ledger range (indexer) |
-| `getLatestLedger` | Get current ledger sequence and close time |
+| `getLatestLedger` | Read the latest ledger sequence and close timestamp |
+| `getNetwork` | Confirm network passphrase and RPC network identity |
+| `simulateTransaction` | Validate operation, compute footprint, resource limits, auth entries, and resource fee |
+| `sendTransaction` | Submit a signed transaction envelope |
+| `getTransaction` | Poll transaction status and extract return value XDR, events, and diagnostics |
+| `getLedgerEntries` | Read specific contract instance or persistent storage keys |
+| `getEvents` | Fetch contract events over a ledger range for indexing and WebSocket updates |
+| `getFeeStats` | Read fee statistics when supported by the RPC provider |
 
-### 3.4 Horizon endpoints
+### 3.7 Horizon endpoints
 
 | Endpoint | Used for |
 |---|---|
-| `GET /accounts/{address}` | User's underlying asset balance (SAC trust line) and XLM |
-| `GET /transactions` | Transaction history for a given account |
-| `GET /fee_stats` | Current base fee and surge pricing |
-| `GET /ledgers/latest` | Current ledger close timestamp |
+| `GET /accounts/{address}` | User XLM balance, underlying asset trust lines, sequence, sponsorship, and reserve context |
+| `GET /accounts/{address}/transactions` | Account transaction history for portfolio activity pages |
+| `GET /assets` | Asset issuer and asset-code discovery for supported underlying assets |
+| `GET /fee_stats` | Fee estimates and surge pricing context |
+| `GET /ledgers/{sequence}` or `GET /ledgers?order=desc&limit=1` | Ledger close timestamps for historical views |
+| `GET /transactions/{hash}` | Human-friendly transaction status/history fallback |
 
-### 3.5 Contract event subscription
+### 3.8 Contract event ingestion
 
-The backend polls `getEvents` at every new ledger (~5s) and dispatches by event type:
+The backend polls `getEvents` every ledger close and dispatches by contract ID and event topic. The indexer stores raw XDR and decoded normalized rows. Raw records allow reprocessing if event schemas change; normalized rows power market APIs and charts.
+
+```mermaid
+flowchart LR
+    RPC[Stellar RPC getEvents] --> IDX[Indexer]
+    IDX --> RAW[(raw_events)]
+    IDX --> NORM[(normalized tables)]
+    NORM --> API[REST API]
+    NORM --> WS[WebSocket fanout]
+    API --> UI[Frontend]
+    WS --> UI
+```
 
 | Contract | Event symbol | Backend action |
 |---|---|---|
 | OracleAdapter | `ref_set` | Update cached rate; recompute implied APY; push WebSocket update |
-| SYWrapper | `deposit` | Update TVL; push market update |
-| SYWrapper | `withdraw` | Update TVL |
-| PrincipalManager | `mint` | Update outstanding PT/YT supply |
-| PrincipalManager | `redeem` | Update settlement log; reduce supply |
-| PrincipalManager | `recombine` | Update supply |
+| Permissioning | `acc_grant`, `acc_rev`, `ast_grant`, `ast_rev` | Refresh eligibility cache for affected account and asset |
+| SYWrapper | `deposit` | Update TVL and SY supply; push market update |
+| SYWrapper | `withdraw` | Update TVL and SY supply |
+| PrincipalManager | `mint` | Update outstanding PT/YT supply and user position index |
+| PrincipalManager | `redeem` | Update settlement log and reduce supply |
+| PrincipalManager | `recombine` | Update supply and user position index |
+| PTToken / YTToken | `transfer`, `mint`, `burn` | Update holder balances and transfer history |
 | MarketPool | `swap` | Update pool reserves; recompute implied rate; append rate history |
-| MarketPool | `add_liq` | Update pool depth |
-| MarketPool | `rem_liq` | Update pool depth |
-| RiskControl | `paused` | Broadcast protocol-paused event to all WebSocket clients |
+| MarketPool | `add_liq` | Update pool depth and LP positions |
+| MarketPool | `rem_liq` | Update pool depth and LP positions |
+| RiskControl | `paused`, `unpaused` | Broadcast protocol state and disable/enable affected actions |
 | RiskControl | `cb_tripped` | Broadcast circuit-breaker warning; disable deposit endpoints |
+
+### 3.9 Stellar failure modes and retries
+
+| Failure | Detection | Handling |
+|---|---|---|
+| Simulation failure | `simulateTransaction` returns error or diagnostic events | Return a structured error before wallet signing |
+| Sequence number race | Submission fails because source sequence has changed | Reload account and rebuild XDR; require a fresh wallet signature |
+| Expired transaction | Transaction timeout reached before inclusion | Rebuild with new sequence and timeout; require a fresh signature |
+| Insufficient fee or resource fee | Simulation or submission error | Re-simulate and adjust fee policy within user-approved limits |
+| RPC provider lag | Latest ledger does not advance or transaction status remains unknown | Retry against secondary RPC provider and preserve idempotency by transaction hash |
+| Horizon lag | Account view behind RPC ledger | Prefer RPC for contract finality; mark Horizon-derived balances as eventually consistent |
+| Missing trust line | Horizon account balance lacks underlying asset | Block wrap/deposit actions and show asset trust-line setup flow through `changeTrust` or the SAC `trust` helper when available |
+| Unauthorized permissioned asset | Horizon trust-line authorization or `Permissioning` denies account | Block protocol action and direct user to issuer onboarding |
+| Archived contract data | Simulation identifies archived persistent entries | Build and submit a restore transaction before retrying the user operation |
+
+### 3.10 Provider topology and network configuration
+
+Production deployments should treat Stellar RPC and Horizon as provider-backed dependencies with health checks and failover. The backend keeps a primary and secondary RPC endpoint, a primary and secondary Horizon endpoint, and a network configuration record for every supported environment.
+
+```mermaid
+flowchart TB
+    UI[Frontend] --> WALLET[Freighter / SEP-7 wallet]
+    UI --> API[Backend API]
+    API --> RPC1[Primary Stellar RPC]
+    API --> RPC2[Secondary Stellar RPC]
+    API --> H1[Primary Horizon]
+    API --> H2[Secondary Horizon]
+    API --> DB[(PostgreSQL)]
+    API --> CACHE[(Redis)]
+    IDX[Indexer worker] --> RPC1
+    IDX --> RPC2
+    ORA[Oracle relay] --> RPC1
+    ORA --> RPC2
+    RPC1 --> LEDGER[Stellar network]
+    RPC2 --> LEDGER
+    H1 --> LEDGER
+    H2 --> LEDGER
+```
+
+| Configuration key | Purpose |
+|---|---|
+| `STELLAR_NETWORK` | Environment name used by the backend and frontend, e.g. `public`, `testnet`, or private network name |
+| `NETWORK_PASSPHRASE` | Exact passphrase included in every transaction and wallet signing request |
+| `STELLAR_RPC_PRIMARY_URL` | Primary RPC endpoint for simulation, submission, state reads, and events |
+| `STELLAR_RPC_SECONDARY_URL` | Failover RPC endpoint used when primary is stale or unavailable |
+| `HORIZON_PRIMARY_URL` | Primary Horizon endpoint for account, trust-line, fee, and history reads |
+| `HORIZON_SECONDARY_URL` | Failover Horizon endpoint |
+| `CONTRACT_REGISTRY_PATH` | Registry of asset IDs, SAC addresses, protocol contract IDs, maturities, decimals, and issuers |
+| `ORACLE_CONFIG_PATH` | Per-asset oracle source, relay interval, signer reference, deviation threshold, and staleness threshold |
+| `INDEXER_START_LEDGER` | Ledger checkpoint used when bootstrapping or replaying the event indexer |
+
+Health checks compare each provider's latest ledger sequence and close time. The backend marks a provider unhealthy when it lags the selected network by more than the configured ledger threshold, returns inconsistent network passphrases, or repeatedly fails simulation/submission calls.
+
+### 3.11 Underlying asset deposit path
+
+The deposit path combines classic Stellar asset state with Soroban contract execution:
+
+1. Backend verifies the user account exists and has enough XLM reserve for fees.
+2. Backend reads Horizon balances to confirm the underlying asset trust line exists. If missing, the UI offers a trust-line setup transaction before deposit.
+3. Backend checks issuer authorization flags for permissioned assets when exposed by Horizon.
+4. Backend checks protocol eligibility through `Permissioning` or the indexed eligibility cache.
+5. Backend builds a `Router.wrap_and_mint` transaction that calls `SYWrapper.deposit`.
+6. `SYWrapper` transfers the underlying asset through the SAC token interface from the user to the wrapper contract.
+7. `SYWrapper` mints SY shares; `PrincipalManager` splits SY into PT and YT.
+8. Events emitted by the contracts update the backend index and frontend portfolio view.
 
 ---
 
@@ -389,7 +522,7 @@ The API is designed to be **asset-agnostic**. Market routes accept a `market_id`
 │  └────────┬──────────────────────────────────────────────────────┘ │
 └───────────┼────────────────────────────────────────────────────────┘
             │
-     Soroban RPC  /  Horizon API
+     Stellar RPC  /  Horizon API
 ```
 
 ### 4.3 REST API routes
@@ -514,12 +647,12 @@ Oracle relay loop (configurable interval, e.g. every 10 minutes):
   3. Validate: rate deviation from on-chain rate ≤ MAX_DEVIATION_BPS
   4. Build OracleAdapter.set_reference_value transaction (XDR)
   5. Sign with oracle admin key (HSM or secrets manager — never in application memory)
-  6. Submit via Soroban RPC sendTransaction
+  6. Submit via Stellar RPC sendTransaction
   7. Confirm via getTransaction polling
   8. Log result; trigger alert on failure
 ```
 
-The relay is intentionally simple: it fetches a single trusted feed and relays it. It does not aggregate. **Phase 2 note:** Multi-source aggregation (on-chain median across multiple independent relayers) requires an upgraded `OracleAdapter` with a `submit_value(caller, value, timestamp)` interface and a `aggregate()` function that computes the median and writes it as the canonical price. The Phase 1 `OracleAdapter` interface (`set_reference_value`) is single-submitter only and would need to be redeployed for multi-source support. The relay max_stale_seconds configuration should match `MAX_ORACLE_STALENESS_SECS` defined in `PrincipalManager` to prevent the on-chain freshness check from failing.
+The relay can operate in a single-source or multi-source mode depending on the asset's risk policy. A single-source asset uses one trusted issuer or institutional feed and submits directly to `OracleAdapter.set_reference_value`. A multi-source asset uses independent relayers that submit candidate values to an aggregation adapter; the adapter writes the canonical median or quorum-approved value. In both modes, the relay freshness configuration must match the on-chain staleness threshold used by `PrincipalManager` and `MarketPool`.
 
 **Configuration per asset:**
 
@@ -544,7 +677,7 @@ assets:
 
 ### 4.6 Indexer service
 
-The indexer polls `getEvents` from Soroban RPC at each new ledger and writes structured records to PostgreSQL for queryable history and analytics.
+The indexer polls `getEvents` from Stellar RPC at each new ledger and writes structured records to PostgreSQL for queryable history and analytics.
 
 ```
 Indexer loop (~every 5s):
@@ -644,9 +777,9 @@ const { xdr } = await api.post('/tx/wrap-and-mint', {
   market_id: 'usdy:3m',
 });
 
-// Sign in wallet
-const { signedXDR } = await signTransaction(xdr, {
-  network: 'PUBLIC',               // Freighter network name for Stellar mainnet. Use 'TESTNET' for testnet.
+// Sign in wallet with the same network passphrase used by the transaction builder.
+const signedXDR = await signTransaction(xdr, {
+  networkPassphrase: NETWORK_PASSPHRASE,
   accountToSign: publicKey,
 });
 
@@ -701,11 +834,12 @@ Eligibility state is polled after each block while the user is on a permissioned
 
 ```typescript
 import {
-  Contract, SorobanRpc, TransactionBuilder,
+  Contract, Horizon, SorobanRpc, TransactionBuilder,
   Networks, BASE_FEE, nativeToScVal, Address,
 } from '@stellar/stellar-sdk';
 
 const rpc     = new SorobanRpc.Server(SOROBAN_RPC_URL);
+const horizon = new Horizon.Server(HORIZON_URL);
 const contract = new Contract(ROUTER_CONTRACT_ID);
 
 // Build operation
@@ -717,7 +851,7 @@ const op = contract.call(
 );
 
 // Load account sequence number
-const account = await rpc.getAccount(userAddress);
+const account = await horizon.loadAccount(userAddress);
 
 // Assemble transaction
 const tx = new TransactionBuilder(account, {
@@ -811,7 +945,7 @@ Oracle Relay (backend scheduled job — one per asset)
   - validate rate delta vs on-chain value
   - sign transaction (HSM / secrets manager)
         │
-        ▼  (Soroban RPC sendTransaction)
+        ▼  (Stellar RPC sendTransaction)
 OracleAdapter contract (on-chain)
   - stores: Price, Timestamp
   - emits:  ref_set event
@@ -824,16 +958,18 @@ OracleAdapter contract (on-chain)
              (read at mint / swap / redeem via get_reference_value)
 ```
 
-### 7.2 Phase 1 vs Phase 2 oracle properties
+### 7.2 Oracle reliability model
 
-| Property | Phase 1 — POC | Phase 2 — Production |
-|---|---|---|
-| Source | Single trusted relay per asset | Multiple independent relayers per asset |
-| Aggregation | None (single submitter) | On-chain median across relayer submissions |
-| Staleness threshold | 3600s (1 hour) | 600s (10 minutes) |
-| Failure response | Manual admin pause | Automatic pause via RiskControl |
-| Key management | Keypair in secrets manager | HSM or threshold multisig |
-| New asset onboarding | Deploy new OracleAdapter + configure relay | Same, no code changes to existing contracts |
+| Concern | Architecture requirement |
+|---|---|
+| Source integrity | Each asset has an explicit source policy: issuer feed, institutional feed, or multi-relayer quorum |
+| Timestamp monotonicity | On-chain adapter rejects updates whose timestamp is not newer than the stored timestamp |
+| Staleness threshold | `PrincipalManager`, `MarketPool`, and backend health checks use the same configured maximum staleness |
+| Deviation checks | Relay rejects updates whose rate movement exceeds the configured basis-point threshold |
+| Key management | Oracle update authority is held by HSM, threshold signer, multisig, or a dedicated governance account |
+| Failure response | Stale or invalid feed state triggers `RiskControl.pause()` for affected markets |
+| Auditability | Every submitted reference value is emitted as an event and indexed into `oracle_history` |
+| Asset onboarding | A new asset receives its own oracle adapter, source policy, relay configuration, and monitoring alerts |
 
 ---
 
@@ -881,17 +1017,17 @@ OracleAdapter contract (on-chain)
 
 ### 9.1 Contract deployment order
 
-`PTToken` and `YTToken` have a circular address dependency with `PrincipalManager` (each needs the other's address). This is resolved with two-phase initialization as documented in TECHNICAL_SPECIFICATION.md §17.1.
+`PTToken` and `YTToken` have a circular address dependency with `PrincipalManager` because each token must know its authorized minter while the manager must know both token addresses. This is resolved with staged initialization as documented in TECHNICAL_SPECIFICATION.md §17.1.
 
 ```
-Phase A — Infrastructure (once per underlying asset)
+Stage A — Infrastructure (once per underlying asset)
   Step 1  OracleAdapter       no dependencies
   Step 2  Permissioning       no dependencies
   Step 3  RiskControl         no dependencies
   Step 4  SYWrapper           needs: underlying asset SAC address
 
-Phase B — Per-maturity contracts (repeat per expiry date)
-  Step 5  PTToken             initialize without minter (two-phase init)
+Stage B — Per-maturity contracts (repeat per expiry date)
+  Step 5  PTToken             initialize without minter
   Step 6  YTToken             initialize without minter; needs: OracleAdapter
   Step 7  PrincipalManager    needs: SYWrapper, OracleAdapter, Permissioning,
                                      RiskControl, PTToken, YTToken, maturity timestamp
@@ -899,7 +1035,7 @@ Phase B — Per-maturity contracts (repeat per expiry date)
           YTToken.set_minter(PrincipalManager)
   Step 9  MarketPool          needs: PTToken, SYWrapper, OracleAdapter, RiskControl
 
-Phase C — Router (once; re-register per new maturity)
+Stage C — Router (once; re-register per new maturity)
   Step 10 Router              initialize once; call register_market for each maturity
 ```
 
@@ -981,11 +1117,27 @@ REDIS_URL=redis://...
 | `persistent()` | Does **not** auto-extend — contracts must call `extend_ttl` explicitly; default ~30 days | Per-user: SY balances, PT/YT balances, LP balances, yield indices, eligibility flags |
 | `temporary()` | Short-lived; expires and is deleted automatically | Not used |
 
-Persistent entries must be explicitly extended on every active read or write to ensure active-user state never expires:
+Persistent entries must be explicitly extended on every active read or write path to ensure active-user state remains live:
 ```rust
 env.storage().persistent().extend_ttl(&key, ELIGIBILITY_TTL_LEDGERS, ELIGIBILITY_TTL_LEDGERS);
 ```
-`ELIGIBILITY_TTL_LEDGERS = 518_400` ≈ 30 days at 5 s/ledger. If a user's entry expires before they interact again, they receive `NotInitialized` and must re-establish their position.
+`ELIGIBILITY_TTL_LEDGERS = 518_400` is approximately 30 days at 5 s/ledger.
+
+### 10.1 State archival and restore flow
+
+Soroban persistent entries can expire into archived state if they are not extended. The backend must treat archived state as recoverable operationally, not as permanent data loss.
+
+```
+User action
+  1. Backend builds and simulates the intended transaction.
+  2. Simulation reports missing or archived ledger entries.
+  3. Backend builds a restore transaction for the archived footprint.
+  4. User or sponsor signs and submits restore transaction.
+  5. Backend re-simulates the original transaction with live entries.
+  6. User signs the final operation transaction.
+```
+
+Grant-review expectation: all user positions, LP balances, eligibility records, and yield index entries must have a documented TTL bump policy and a restore path. The frontend should surface this as a normal "reactivating position" step rather than a hard failure.
 
 ---
 
@@ -994,8 +1146,10 @@ env.storage().persistent().extend_ttl(&key, ELIGIBILITY_TTL_LEDGERS, ELIGIBILITY
 | Contract | Symbol | Payload |
 |---|---|---|
 | OracleAdapter | `ref_set` | `(value: i128, timestamp: u64)` |
-| Permissioning | `acct_grant` | `(account: Address)` |
-| Permissioning | `acct_revoke` | `(account: Address)` |
+| Permissioning | `acc_grant` | `(account: Address)` |
+| Permissioning | `acc_rev` | `(account: Address)` |
+| Permissioning | `ast_grant` | `(account: Address, asset: Address)` |
+| Permissioning | `ast_rev` | `(account: Address, asset: Address)` |
 | SYWrapper | `deposit` | `(from, amount, shares_minted, exchange_rate)` |
 | SYWrapper | `withdraw` | `(from, shares, underlying_returned)` |
 | PrincipalManager | `mint` | `(from, sy_shares, pt_minted, yt_minted, oracle_rate)` |
