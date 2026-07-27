@@ -30,6 +30,12 @@ pub const SCALE: i128 = 10_000_000; // 1e7, matches PrincipalManager's SCALE
 /// TTL extension applied to every persistent per-user entry (~30 days at 5 s/ledger).
 const BALANCE_TTL_LEDGERS: u32 = 518_400;
 
+/// Matches PrincipalManager's staleness window. Without this check, update_yield_index would
+/// happily advance the accrual index off a rate the oracle relay stopped refreshing long ago —
+/// every other oracle-consuming path in this codebase (PrincipalManager.mint/redeem) checks
+/// freshness before using a rate; this one must too, for the same reason.
+const MAX_ORACLE_STALENESS_SECS: u64 = 3_600;
+
 // ---------------------------------------------------------------------------
 // External contract interfaces
 // ---------------------------------------------------------------------------
@@ -43,6 +49,7 @@ pub trait PermissioningInterface {
 #[contractclient(name = "OracleClient")]
 pub trait OracleInterface {
     fn get_reference_value(env: Env) -> i128;
+    fn is_fresh(env: Env, max_stale_seconds: u64) -> bool;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,6 +69,7 @@ pub enum Error {
     PermissionDenied = 7,
     MinterAlreadySet = 8,
     MinterNotSet = 9,
+    OracleStale = 10,
 }
 
 // ---------------------------------------------------------------------------
@@ -301,7 +309,11 @@ impl YTTokenContract {
             .instance()
             .get(&DataKey::Oracle)
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
-        let now_rate = OracleClient::new(&env, &oracle_addr).get_reference_value();
+        let oracle = OracleClient::new(&env, &oracle_addr);
+        if !oracle.is_fresh(&MAX_ORACLE_STALENESS_SECS) {
+            panic_with_error!(&env, Error::OracleStale);
+        }
+        let now_rate = oracle.get_reference_value();
         let last_rate: i128 = env
             .storage()
             .instance()
@@ -601,6 +613,7 @@ mod test {
         // Rate goes from 1.0 to 1.03.
         f.oracle
             .set_reference_value(&f.oracle_admin, &10_300_000, &(T0 + 1));
+        f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
         f.client.update_yield_index();
 
         // delta_index = (10_300_000 - 10_000_000) * SCALE / 10_300_000
@@ -630,6 +643,7 @@ mod test {
         // Rate rises before Bob ever holds YT.
         f.oracle
             .set_reference_value(&f.oracle_admin, &10_300_000, &(T0 + 1));
+        f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
         f.client.update_yield_index();
 
         // Bob receives YT only now, after the index already moved.
@@ -657,6 +671,7 @@ mod test {
         f.client.mint(&alice, &(1_000 * SCALE));
         f.oracle
             .set_reference_value(&f.oracle_admin, &10_300_000, &(T0 + 1));
+        f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
         f.client.update_yield_index();
 
         // Alice transfers everything to Bob; her accrued yield up to this point must
@@ -682,5 +697,18 @@ mod test {
 
         f.perm.revoke_account(&f.perm_admin, &alice);
         f.client.transfer(&alice, &bob, &(100 * SCALE)); // bob is still fully eligible
+    }
+
+    #[test]
+    #[should_panic]
+    fn update_yield_index_blocked_by_stale_oracle() {
+        // Without a freshness check, this would silently advance the accrual index off a rate
+        // the oracle relay stopped refreshing long ago.
+        let f = setup();
+        // Ledger advances far past the oracle's last update without a fresh price ever landing.
+        f.env
+            .ledger()
+            .with_mut(|li| li.timestamp = T0 + 3_601);
+        f.client.update_yield_index();
     }
 }

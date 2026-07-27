@@ -52,6 +52,7 @@ pub enum Error {
     Paused = 6,
     ArithmeticOverflow = 7,
     PermissionDenied = 8,
+    AccountNotRevoked = 9,
 }
 
 #[contracttype]
@@ -239,8 +240,17 @@ impl SYWrapperContract {
     /// pooled balance would. `caller` must be this contract's admin; in production that role
     /// is expected to be an issuer-authorized compliance signer, not the routine protocol
     /// admin key — the contract enforces *who* can call this, not *why* they're calling it.
+    ///
+    /// `account` must already be revoked in Permissioning (`is_allowed(account) == false`).
+    /// Without this check, remediate() would let a compromised or malicious admin key drain
+    /// any depositor's SY balance to itself, not just genuinely flagged accounts — the caller
+    /// controls *whom* to target with no on-chain link to an actual compliance action. Requiring
+    /// prior revocation also enforces separation of duties in practice: revoking an account is
+    /// Permissioning's admin action, which is not necessarily the same key as this contract's
+    /// admin, so a single compromised key cannot both flag and drain an account unilaterally.
     pub fn remediate(env: Env, caller: Address, account: Address, shares: i128) -> i128 {
         Self::assert_admin(&env, &caller);
+        Self::assert_revoked(&env, &account);
         if shares <= 0 {
             panic_with_error!(&env, Error::ZeroAmount);
         }
@@ -357,6 +367,17 @@ impl SYWrapperContract {
             .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
         if !PermClient::new(env, &perm_addr).is_allowed(account) {
             panic_with_error!(env, Error::PermissionDenied);
+        }
+    }
+
+    fn assert_revoked(env: &Env, account: &Address) {
+        let perm_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Permissioning)
+            .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
+        if PermClient::new(env, &perm_addr).is_allowed(account) {
+            panic_with_error!(env, Error::AccountNotRevoked);
         }
     }
 }
@@ -582,6 +603,10 @@ mod test {
         f.client.deposit(&bad_actor, &1_000_000_000_i128);
         f.client.deposit(&innocent, &1_000_000_000_i128);
 
+        // Remediation only proceeds once Permissioning has actually revoked the account —
+        // this is what stops remediate() from being usable as a generic drain against any
+        // depositor.
+        f.perm.revoke_account(&f.perm_admin, &bad_actor);
         let released = f.client.remediate(&f.admin, &bad_actor, &1_000_000_000_i128);
         assert_eq!(released, 1_000_000_000);
 
@@ -593,12 +618,28 @@ mod test {
 
     #[test]
     #[should_panic]
+    fn remediate_requires_prior_revocation() {
+        // The core fix: an admin cannot remediate an account Permissioning still considers
+        // eligible, even though the admin role itself is legitimate. Revocation and
+        // remediation are deliberately separate actions, potentially separate keys.
+        let f = setup();
+        let still_eligible = Address::generate(&f.env);
+        grant(&f, &still_eligible);
+        mint(&f.env, &f.underlying, &f.admin, &still_eligible, 500_000_000);
+        f.client.deposit(&still_eligible, &500_000_000_i128);
+
+        f.client.remediate(&f.admin, &still_eligible, &500_000_000_i128);
+    }
+
+    #[test]
+    #[should_panic]
     fn remediate_cannot_exceed_flagged_account_balance() {
         let f = setup();
         let bad_actor = Address::generate(&f.env);
         grant(&f, &bad_actor);
         mint(&f.env, &f.underlying, &f.admin, &bad_actor, 500_000_000);
         f.client.deposit(&bad_actor, &500_000_000_i128);
+        f.perm.revoke_account(&f.perm_admin, &bad_actor);
 
         // Attempting to remediate more than the account holds must fail, not spill into
         // the shared pool.
@@ -614,6 +655,7 @@ mod test {
         grant(&f, &bad_actor);
         mint(&f.env, &f.underlying, &f.admin, &bad_actor, 500_000_000);
         f.client.deposit(&bad_actor, &500_000_000_i128);
+        f.perm.revoke_account(&f.perm_admin, &bad_actor);
 
         f.client.remediate(&not_admin, &bad_actor, &500_000_000_i128);
     }
