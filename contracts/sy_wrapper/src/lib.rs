@@ -97,21 +97,18 @@ impl SYWrapperContract {
             panic_with_error!(&env, Error::ZeroAmount);
         }
 
-        // Transfer underlying from depositor to this contract.
-        let underlying = Self::get_underlying(&env);
-        token::Client::new(&env, &underlying).transfer(
-            &from,
-            &env.current_contract_address(),
-            &amount,
-        );
-
-        // Compute shares to mint at current exchange rate.
+        // Compute shares to mint at the exchange rate observed before this deposit's own
+        // effects are applied.
         let shares = Self::underlying_to_shares(&env, amount);
         if shares <= 0 {
             panic_with_error!(&env, Error::ZeroAmount);
         }
 
-        // Update state.
+        // Effects before interaction (SECURITY.md's stated invariant for this contract, which
+        // this function previously violated: the external transfer ran before these updates,
+        // leaving a window where a malicious `underlying` token contract could reenter deposit
+        // with total_underlying/total_shares still at their pre-call values). Updating state
+        // first means a reentrant call sees this deposit already accounted for.
         let total_u: i128 = env.storage().instance().get(&DataKey::TotalUnderlying).unwrap_or(0);
         let total_s: i128 = env.storage().instance().get(&DataKey::TotalShares).unwrap_or(0);
         env.storage()
@@ -122,6 +119,15 @@ impl SYWrapperContract {
             .set(&DataKey::TotalShares, &(total_s + shares));
         Self::add_balance(&env, &from, shares);
 
+        // Interaction last: transfer underlying from depositor to this contract. If this
+        // fails, the whole transaction (including the state updates above) reverts atomically.
+        let underlying = Self::get_underlying(&env);
+        token::Client::new(&env, &underlying).transfer(
+            &from,
+            &env.current_contract_address(),
+            &amount,
+        );
+
         env.events()
             .publish((symbol_short!("deposit"),), (from, amount, shares));
         shares
@@ -131,6 +137,12 @@ impl SYWrapperContract {
     pub fn withdraw(env: Env, from: Address, shares: i128, to: Address) -> i128 {
         from.require_auth();
         Self::assert_not_paused(&env);
+        // Both sides are checked, not just `to`: if only the recipient were gated, a flagged
+        // account could self-withdraw the instant it suspected remediation was coming,
+        // completely defeating remediate() (Clawback Propagation) by cashing out first. An
+        // account whose eligibility is revoked is frozen on both the sending and receiving
+        // side until remediated, not just blocked from directing funds to new destinations.
+        Self::assert_permitted(&env, &from);
         Self::assert_permitted(&env, &to);
         if shares <= 0 {
             panic_with_error!(&env, Error::ZeroAmount);
@@ -428,6 +440,22 @@ mod test {
         // Not granted.
         mint(&f.env, &f.underlying, &f.admin, &user, 1_000_000_000);
         f.client.deposit(&user, &1_000_000_000_i128);
+    }
+
+    #[test]
+    #[should_panic]
+    fn revoked_holder_cannot_front_run_remediation_by_self_withdrawing() {
+        // If withdraw only checked `to`, a flagged account could cash out the instant it
+        // suspected remediation was coming, defeating remediate() entirely. Revocation must
+        // freeze the account on the sending side too, not just block new destinations.
+        let f = setup();
+        let user = Address::generate(&f.env);
+        grant(&f, &user);
+        mint(&f.env, &f.underlying, &f.admin, &user, 500_000_000);
+        let shares = f.client.deposit(&user, &500_000_000_i128);
+
+        f.perm.revoke_account(&f.perm_admin, &user);
+        f.client.withdraw(&user, &shares, &user); // to == from, both now revoked
     }
 
     #[test]

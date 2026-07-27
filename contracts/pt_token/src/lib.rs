@@ -132,6 +132,11 @@ impl PTTokenContract {
         if amount <= 0 {
             panic_with_error!(&env, Error::ZeroAmount);
         }
+        // Both sides checked: if only `to` were gated, a revoked holder could freely dump PT
+        // to any still-eligible party, defeating the point of eligibility enforcement (and
+        // front-running any future PT-side clawback remediation) by moving out before being
+        // frozen. Revocation freezes a holder's existing balance, not just new inbound transfers.
+        Self::assert_permitted(&env, &from);
         Self::assert_permitted(&env, &to);
 
         let from_balance = Self::get_balance(&env, &from);
@@ -151,6 +156,7 @@ impl PTTokenContract {
         if amount <= 0 {
             panic_with_error!(&env, Error::ZeroAmount);
         }
+        Self::assert_permitted(&env, &from);
         Self::assert_permitted(&env, &to);
 
         let allowance = Self::get_allowance(&env, &from, &spender);
@@ -495,6 +501,25 @@ mod test {
 
         f.client.mint(&alice, &500);
         f.client.transfer(&alice, &bob, &100);
+    }
+
+    #[test]
+    #[should_panic]
+    fn revoked_holder_cannot_dump_pt_before_remediation() {
+        // If transfer only checked `to`, a revoked account could freely move its PT to any
+        // still-eligible party the instant it suspected remediation was coming.
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+
+        let alice = Address::generate(&f.env);
+        let bob = Address::generate(&f.env);
+        grant(&f, &alice);
+        grant(&f, &bob);
+        f.client.mint(&alice, &500);
+
+        f.perm.revoke_account(&f.perm_admin, &alice);
+        f.client.transfer(&alice, &bob, &100); // bob is still fully eligible
     }
 
     #[test]

@@ -149,6 +149,9 @@ impl YTTokenContract {
         if amount <= 0 {
             panic_with_error!(&env, Error::ZeroAmount);
         }
+        // Both sides checked — see PTToken::transfer for why checking only `to` would let a
+        // revoked holder dump YT before being frozen.
+        Self::assert_permitted(&env, &from);
         Self::assert_permitted(&env, &to);
 
         let from_balance = Self::get_balance(&env, &from);
@@ -171,6 +174,7 @@ impl YTTokenContract {
         if amount <= 0 {
             panic_with_error!(&env, Error::ZeroAmount);
         }
+        Self::assert_permitted(&env, &from);
         Self::assert_permitted(&env, &to);
 
         let allowance = Self::get_allowance(&env, &from, &spender);
@@ -662,5 +666,21 @@ mod test {
         let alice_claim = f.client.claim_yield(&alice);
         assert!(alice_claim > 0);
         assert_eq!(f.client.claim_yield(&bob), 0); // Bob owned nothing while the index moved
+    }
+
+    #[test]
+    #[should_panic]
+    fn revoked_holder_cannot_dump_yt_before_remediation() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        let alice = Address::generate(&f.env);
+        let bob = Address::generate(&f.env);
+        grant(&f, &alice);
+        grant(&f, &bob);
+        f.client.mint(&alice, &(500 * SCALE));
+
+        f.perm.revoke_account(&f.perm_admin, &alice);
+        f.client.transfer(&alice, &bob, &(100 * SCALE)); // bob is still fully eligible
     }
 }

@@ -12,6 +12,18 @@ Out of scope for this branch: `MarketPool`, `Router`, asymmetric-permissioning a
 
 ---
 
+## 0. Pre-commit self-audit — three findings, all fixed
+
+Before this branch was pushed, a second pass reviewed the diff specifically for the failure modes a Stellar/Soroban auditor would check first: authorization bypass and checks-effects-interactions. Three real issues, all fixed and covered by new regression tests:
+
+1. **`SYWrapper.deposit` violated this repo's own documented security invariant.** `SECURITY.md`'s SYWrapper section explicitly claims "all internal state... is updated **before** the external `token::Client::transfer` call. This prevents reentrancy." The actual code did the opposite — external transfer first, state update after — leaving a window where a malicious `underlying` token contract could reenter `deposit` while `total_underlying`/`total_shares` still reflected pre-call values. Fixed: state now updates before the external call, matching `withdraw`'s existing (correct) ordering and the documented claim. Since Soroban transactions are atomic, reordering introduces no new failure mode — a failed transfer still reverts everything.
+2. **`SYWrapper.withdraw` only checked the recipient's (`to`) eligibility, not the withdrawer's (`from`).** This meant a flagged account could self-withdraw the instant it suspected `remediate()` was coming, cashing out before compliance action landed — defeating the entire point of Clawback Propagation. Fixed: `withdraw` now checks both `from` and `to`. Regression test: `revoked_holder_cannot_front_run_remediation_by_self_withdrawing`.
+3. **`PTToken`/`YTToken` transfer and `transfer_from` only checked the recipient (`to`), not the sender (`from`).** Same front-running problem one level up: a revoked holder could freely move PT/YT to any still-eligible party before being frozen, which also directly contradicted the resubmission doc's claim that "eligibility controls stay enforced as the position moves through the protocol." Fixed: both sides checked on every transfer path. Regression tests: `revoked_holder_cannot_dump_pt_before_remediation`, `revoked_holder_cannot_dump_yt_before_remediation`.
+
+All three share a pattern: checking only the *receiving* side of a transfer is the default instinct (it's what stops ineligible parties from acquiring the instrument), but it silently permits an already-eligible-then-revoked holder to move value out before any compliance action reaches them. A revoked account needs to be frozen on both sides, not just blocked from new destinations.
+
+---
+
 ## 1. PTToken / YTToken — deviation from the original spec, and why
 
 TECHNICAL_SPECIFICATION.md §6 originally specified `transfer` enforcing `Permissioning.is_allowed(to)` — the flat, account-level allow-list already used by `PrincipalManager.mint`.
