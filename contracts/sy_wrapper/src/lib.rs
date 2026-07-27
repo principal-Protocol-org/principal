@@ -13,18 +13,32 @@
 //!
 //! On withdrawal of `s` shares:
 //!   underlying_returned = s * exchange_rate / RATE_SCALE
+//!
+//! # Compliance
+//! `deposit` and `withdraw` both check `Permissioning.is_allowed()` (added after the SCF #44
+//! resubmission audit found this contract had no eligibility gate at all — only
+//! `PrincipalManager.mint()` did). `remediate()` is Clawback Propagation: it lets the admin
+//! (expected in production to be an issuer-authorized compliance role, not the routine protocol
+//! admin key) burn a single flagged account's own SY balance and release the equivalent
+//! underlying, without touching any other depositor's share of the pool. See
+//! PHASE2_DESIGN.md §2-3 for the full rationale.
 
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, token,
-    Address, Env,
+    contract, contracterror, contractclient, contractimpl, contracttype, panic_with_error,
+    symbol_short, token, Address, Env,
 };
 
 pub const RATE_SCALE: i128 = 10_000_000; // 1e7
 
 /// TTL extension applied to every persistent per-user balance entry (~30 days at 5 s/ledger).
 const BALANCE_TTL_LEDGERS: u32 = 518_400;
+
+#[contractclient(name = "PermClient")]
+pub trait PermissioningInterface {
+    fn is_allowed(env: Env, account: Address) -> bool;
+}
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -37,12 +51,14 @@ pub enum Error {
     InsufficientShares = 5,
     Paused = 6,
     ArithmeticOverflow = 7,
+    PermissionDenied = 8,
 }
 
 #[contracttype]
 pub enum DataKey {
     Admin,
     Underlying,   // Address of the underlying token contract
+    Permissioning,
     TotalUnderlying,
     TotalShares,
     Balance(Address), // SY share balance per holder
@@ -54,13 +70,17 @@ pub struct SYWrapperContract;
 
 #[contractimpl]
 impl SYWrapperContract {
-    /// Initialize with the admin address and the underlying token contract address.
-    pub fn initialize(env: Env, admin: Address, underlying: Address) {
+    /// Initialize with the admin address, the underlying token contract address, and the
+    /// Permissioning registry used to gate deposits/withdrawals.
+    pub fn initialize(env: Env, admin: Address, underlying: Address, permissioning: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Underlying, &underlying);
+        env.storage()
+            .instance()
+            .set(&DataKey::Permissioning, &permissioning);
         env.storage().instance().set(&DataKey::TotalUnderlying, &0_i128);
         env.storage().instance().set(&DataKey::TotalShares, &0_i128);
         env.storage().instance().set(&DataKey::Paused, &false);
@@ -72,6 +92,7 @@ impl SYWrapperContract {
     pub fn deposit(env: Env, from: Address, amount: i128) -> i128 {
         from.require_auth();
         Self::assert_not_paused(&env);
+        Self::assert_permitted(&env, &from);
         if amount <= 0 {
             panic_with_error!(&env, Error::ZeroAmount);
         }
@@ -110,6 +131,7 @@ impl SYWrapperContract {
     pub fn withdraw(env: Env, from: Address, shares: i128, to: Address) -> i128 {
         from.require_auth();
         Self::assert_not_paused(&env);
+        Self::assert_permitted(&env, &to);
         if shares <= 0 {
             panic_with_error!(&env, Error::ZeroAmount);
         }
@@ -196,6 +218,55 @@ impl SYWrapperContract {
         Self::require_admin(&env)
     }
 
+    // --- compliance remediation (Clawback Propagation) ---
+
+    /// Burn exactly `shares` from `account`'s own SY balance and release the equivalent
+    /// underlying to `caller`. Never touches any other depositor's balance — `shares` can be
+    /// at most `account`'s own holding, so a single flagged account's remediation can't
+    /// haircut the shared pool the way a native issuer clawback against this contract's
+    /// pooled balance would. `caller` must be this contract's admin; in production that role
+    /// is expected to be an issuer-authorized compliance signer, not the routine protocol
+    /// admin key — the contract enforces *who* can call this, not *why* they're calling it.
+    pub fn remediate(env: Env, caller: Address, account: Address, shares: i128) -> i128 {
+        Self::assert_admin(&env, &caller);
+        if shares <= 0 {
+            panic_with_error!(&env, Error::ZeroAmount);
+        }
+
+        let balance = Self::get_balance(&env, &account);
+        if balance < shares {
+            panic_with_error!(&env, Error::InsufficientShares);
+        }
+
+        let underlying_out = Self::shares_to_underlying(&env, shares);
+        if underlying_out <= 0 {
+            panic_with_error!(&env, Error::ZeroAmount);
+        }
+
+        let total_u: i128 = env.storage().instance().get(&DataKey::TotalUnderlying).unwrap_or(0);
+        let total_s: i128 = env.storage().instance().get(&DataKey::TotalShares).unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalUnderlying, &(total_u - underlying_out));
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalShares, &(total_s - shares));
+        Self::sub_balance(&env, &account, shares);
+
+        let underlying = Self::get_underlying(&env);
+        token::Client::new(&env, &underlying).transfer(
+            &env.current_contract_address(),
+            &caller,
+            &underlying_out,
+        );
+
+        env.events().publish(
+            (symbol_short!("remediate"),),
+            (caller, account, shares, underlying_out),
+        );
+        underlying_out
+    }
+
     // --- internal helpers ---
 
     fn underlying_to_shares(env: &Env, amount: i128) -> i128 {
@@ -265,14 +336,24 @@ impl SYWrapperContract {
             panic_with_error!(env, Error::Paused);
         }
     }
+
+    fn assert_permitted(env: &Env, account: &Address) {
+        let perm_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Permissioning)
+            .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
+        if !PermClient::new(env, &perm_addr).is_allowed(account) {
+            panic_with_error!(env, Error::PermissionDenied);
+        }
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use soroban_sdk::{
-        testutils::{Address as _, MockAuth, MockAuthInvoke},
-        token, Address, Env, IntoVal,
-    };
+    use soroban_sdk::{testutils::Address as _, token, Address, Env};
+
+    use principal_permissioning::{PermissioningContract, PermissioningContractClient};
 
     use super::{SYWrapperContract, SYWrapperContractClient, RATE_SCALE};
 
@@ -282,129 +363,230 @@ mod test {
         token_id.address()
     }
 
-    fn setup() -> (
-        Env,
-        SYWrapperContractClient<'static>,
-        Address, // admin
-        Address, // underlying token
-    ) {
+    struct Fixture {
+        env: Env,
+        client: SYWrapperContractClient<'static>,
+        admin: Address,
+        underlying: Address,
+        perm: PermissioningContractClient<'static>,
+        perm_admin: Address,
+    }
+
+    fn setup() -> Fixture {
         let env = Env::default();
         env.mock_all_auths();
         let admin = Address::generate(&env);
         let underlying = deploy_token(&env, &admin);
+
+        let perm_id = env.register_contract(None, PermissioningContract);
+        let perm = PermissioningContractClient::new(&env, &perm_id);
+        let perm_admin = Address::generate(&env);
+        perm.initialize(&perm_admin);
+
         let wrapper_id = env.register_contract(None, SYWrapperContract);
         let client = SYWrapperContractClient::new(&env, &wrapper_id);
-        client.initialize(&admin, &underlying);
-        (env, client, admin, underlying)
+        client.initialize(&admin, &underlying, &perm_id);
+
+        Fixture {
+            env,
+            client,
+            admin,
+            underlying,
+            perm,
+            perm_admin,
+        }
     }
 
-    fn mint(env: &Env, token: &Address, admin: &Address, to: &Address, amount: i128) {
+    fn grant(f: &Fixture, user: &Address) {
+        f.perm.grant_account(&f.perm_admin, user);
+    }
+
+    fn mint(env: &Env, token: &Address, _admin: &Address, to: &Address, amount: i128) {
         let tok = token::StellarAssetClient::new(env, token);
         tok.mint(to, &amount);
     }
 
     #[test]
     fn deposit_and_exchange_rate() {
-        let (env, client, admin, underlying) = setup();
-        let user = Address::generate(&env);
-        mint(&env, &underlying, &admin, &user, 1_000_000_000);
+        let f = setup();
+        let user = Address::generate(&f.env);
+        grant(&f, &user);
+        mint(&f.env, &f.underlying, &f.admin, &user, 1_000_000_000);
 
-        let shares = client.deposit(&user, &1_000_000_000_i128);
+        let shares = f.client.deposit(&user, &1_000_000_000_i128);
         // First depositor: shares == underlying (1:1).
         assert_eq!(shares, 1_000_000_000);
-        assert_eq!(client.exchange_rate(), RATE_SCALE);
-        assert_eq!(client.balance_of(&user), 1_000_000_000);
+        assert_eq!(f.client.exchange_rate(), RATE_SCALE);
+        assert_eq!(f.client.balance_of(&user), 1_000_000_000);
+    }
+
+    #[test]
+    #[should_panic]
+    fn deposit_without_permissioning_grant_panics() {
+        let f = setup();
+        let user = Address::generate(&f.env);
+        // Not granted.
+        mint(&f.env, &f.underlying, &f.admin, &user, 1_000_000_000);
+        f.client.deposit(&user, &1_000_000_000_i128);
     }
 
     #[test]
     fn withdraw_returns_underlying() {
-        let (env, client, admin, underlying) = setup();
-        let user = Address::generate(&env);
-        mint(&env, &underlying, &admin, &user, 500_000_000);
+        let f = setup();
+        let user = Address::generate(&f.env);
+        grant(&f, &user);
+        mint(&f.env, &f.underlying, &f.admin, &user, 500_000_000);
 
-        let shares = client.deposit(&user, &500_000_000_i128);
-        let out = client.withdraw(&user, &shares, &user);
+        let shares = f.client.deposit(&user, &500_000_000_i128);
+        let out = f.client.withdraw(&user, &shares, &user);
         assert_eq!(out, 500_000_000);
-        assert_eq!(client.total_shares(), 0);
+        assert_eq!(f.client.total_shares(), 0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn withdraw_to_unpermitted_recipient_panics() {
+        let f = setup();
+        let user = Address::generate(&f.env);
+        let stranger = Address::generate(&f.env);
+        grant(&f, &user);
+        mint(&f.env, &f.underlying, &f.admin, &user, 500_000_000);
+
+        let shares = f.client.deposit(&user, &500_000_000_i128);
+        f.client.withdraw(&user, &shares, &stranger); // stranger never granted
     }
 
     #[test]
     #[should_panic]
     fn withdraw_more_than_balance_panics() {
-        let (env, client, admin, underlying) = setup();
-        let user = Address::generate(&env);
-        mint(&env, &underlying, &admin, &user, 100_000_000);
-        client.deposit(&user, &100_000_000_i128);
-        client.withdraw(&user, &200_000_000_i128, &user);
+        let f = setup();
+        let user = Address::generate(&f.env);
+        grant(&f, &user);
+        mint(&f.env, &f.underlying, &f.admin, &user, 100_000_000);
+        f.client.deposit(&user, &100_000_000_i128);
+        f.client.withdraw(&user, &200_000_000_i128, &user);
     }
 
     #[test]
     #[should_panic]
     fn deposit_while_paused_panics() {
-        let (env, client, admin, underlying) = setup();
-        let user = Address::generate(&env);
-        mint(&env, &underlying, &admin, &user, 100_000_000);
-        client.set_paused(&admin, &true);
-        client.deposit(&user, &100_000_000_i128);
+        let f = setup();
+        let user = Address::generate(&f.env);
+        grant(&f, &user);
+        mint(&f.env, &f.underlying, &f.admin, &user, 100_000_000);
+        f.client.set_paused(&f.admin, &true);
+        f.client.deposit(&user, &100_000_000_i128);
     }
 
     #[test]
     fn unpause_re_enables_deposits() {
-        let (env, client, admin, underlying) = setup();
-        let user = Address::generate(&env);
-        mint(&env, &underlying, &admin, &user, 200_000_000);
+        let f = setup();
+        let user = Address::generate(&f.env);
+        grant(&f, &user);
+        mint(&f.env, &f.underlying, &f.admin, &user, 200_000_000);
 
-        client.set_paused(&admin, &true);
-        client.set_paused(&admin, &false); // unpause
-        // Deposit should succeed after unpause.
-        let shares = client.deposit(&user, &200_000_000_i128);
+        f.client.set_paused(&f.admin, &true);
+        f.client.set_paused(&f.admin, &false); // unpause
+        let shares = f.client.deposit(&user, &200_000_000_i128);
         assert!(shares > 0);
     }
 
     #[test]
     fn exchange_rate_stays_at_inception_rate() {
-        // In the POC, yield accrual is not simulated — the exchange rate is always
-        // determined by deposits/withdrawals which maintain the ratio.
-        let (env, client, admin, underlying) = setup();
-        let user = Address::generate(&env);
-        mint(&env, &underlying, &admin, &user, 1_000_000_000);
+        let f = setup();
+        let user = Address::generate(&f.env);
+        grant(&f, &user);
+        mint(&f.env, &f.underlying, &f.admin, &user, 1_000_000_000);
 
-        let shares = client.deposit(&user, &1_000_000_000_i128);
-        assert_eq!(client.exchange_rate(), RATE_SCALE); // 1:1 at inception
+        let shares = f.client.deposit(&user, &1_000_000_000_i128);
+        assert_eq!(f.client.exchange_rate(), RATE_SCALE); // 1:1 at inception
 
-        // Second depositor at the same 1:1 rate.
-        let user2 = Address::generate(&env);
-        mint(&env, &underlying, &admin, &user2, 500_000_000);
-        client.deposit(&user2, &500_000_000_i128);
-        assert_eq!(client.exchange_rate(), RATE_SCALE); // still 1:1
+        let user2 = Address::generate(&f.env);
+        grant(&f, &user2);
+        mint(&f.env, &f.underlying, &f.admin, &user2, 500_000_000);
+        f.client.deposit(&user2, &500_000_000_i128);
+        assert_eq!(f.client.exchange_rate(), RATE_SCALE); // still 1:1
 
-        assert_eq!(client.total_underlying(), 1_500_000_000);
-        assert_eq!(client.total_shares(), 1_500_000_000);
+        assert_eq!(f.client.total_underlying(), 1_500_000_000);
+        assert_eq!(f.client.total_shares(), 1_500_000_000);
         let _ = shares;
     }
 
     #[test]
     #[should_panic]
     fn zero_deposit_panics() {
-        let (env, client, _admin, _underlying) = setup();
-        let user = Address::generate(&env);
-        client.deposit(&user, &0_i128);
+        let f = setup();
+        let user = Address::generate(&f.env);
+        grant(&f, &user);
+        f.client.deposit(&user, &0_i128);
     }
 
     #[test]
     fn balance_of_returns_correct_shares() {
-        let (env, client, admin, underlying) = setup();
-        let user = Address::generate(&env);
-        mint(&env, &underlying, &admin, &user, 300_000_000);
-        client.deposit(&user, &300_000_000_i128);
-        assert_eq!(client.balance_of(&user), 300_000_000);
+        let f = setup();
+        let user = Address::generate(&f.env);
+        grant(&f, &user);
+        mint(&f.env, &f.underlying, &f.admin, &user, 300_000_000);
+        f.client.deposit(&user, &300_000_000_i128);
+        assert_eq!(f.client.balance_of(&user), 300_000_000);
     }
 
     #[test]
     fn admin_transfer() {
-        let (env, client, admin, _) = setup();
-        let new_admin = Address::generate(&env);
-        client.transfer_admin(&admin, &new_admin);
-        assert_eq!(client.get_admin(), new_admin);
+        let f = setup();
+        let new_admin = Address::generate(&f.env);
+        f.client.transfer_admin(&f.admin, &new_admin);
+        assert_eq!(f.client.get_admin(), new_admin);
+    }
+
+    // --- Clawback Propagation ---
+
+    #[test]
+    fn remediate_burns_only_flagged_account_share() {
+        let f = setup();
+        let bad_actor = Address::generate(&f.env);
+        let innocent = Address::generate(&f.env);
+        grant(&f, &bad_actor);
+        grant(&f, &innocent);
+
+        mint(&f.env, &f.underlying, &f.admin, &bad_actor, 1_000_000_000);
+        mint(&f.env, &f.underlying, &f.admin, &innocent, 1_000_000_000);
+        f.client.deposit(&bad_actor, &1_000_000_000_i128);
+        f.client.deposit(&innocent, &1_000_000_000_i128);
+
+        let released = f.client.remediate(&f.admin, &bad_actor, &1_000_000_000_i128);
+        assert_eq!(released, 1_000_000_000);
+
+        // Bad actor's SY balance is gone; innocent depositor's share is untouched.
+        assert_eq!(f.client.balance_of(&bad_actor), 0);
+        assert_eq!(f.client.balance_of(&innocent), 1_000_000_000);
+        assert_eq!(f.client.total_shares(), 1_000_000_000);
+    }
+
+    #[test]
+    #[should_panic]
+    fn remediate_cannot_exceed_flagged_account_balance() {
+        let f = setup();
+        let bad_actor = Address::generate(&f.env);
+        grant(&f, &bad_actor);
+        mint(&f.env, &f.underlying, &f.admin, &bad_actor, 500_000_000);
+        f.client.deposit(&bad_actor, &500_000_000_i128);
+
+        // Attempting to remediate more than the account holds must fail, not spill into
+        // the shared pool.
+        f.client.remediate(&f.admin, &bad_actor, &600_000_000_i128);
+    }
+
+    #[test]
+    #[should_panic]
+    fn remediate_requires_admin() {
+        let f = setup();
+        let bad_actor = Address::generate(&f.env);
+        let not_admin = Address::generate(&f.env);
+        grant(&f, &bad_actor);
+        mint(&f.env, &f.underlying, &f.admin, &bad_actor, 500_000_000);
+        f.client.deposit(&bad_actor, &500_000_000_i128);
+
+        f.client.remediate(&not_admin, &bad_actor, &500_000_000_i128);
     }
 }

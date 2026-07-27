@@ -231,6 +231,9 @@ impl PrincipalManagerContract {
         Self::assert_not_paused(&env);
         Self::assert_mature(&env);
         Self::assert_oracle_fresh(&env);
+        // Closes the gap found during the SCF #44 resubmission audit: redeem() previously had
+        // no eligibility check at all, only mint() did. See PHASE2_DESIGN.md §2.
+        Self::assert_permitted(&env, &from);
 
         if pt_amount == 0 && yt_amount == 0 {
             panic_with_error!(&env, Error::ZeroAmount);
@@ -690,6 +693,21 @@ mod test {
         // stranger was never granted — must be rejected.
         let stranger = Address::generate(&f.env);
         f.client.mint(&stranger, &(10_i128 * SCALE));
+    }
+
+    #[test]
+    #[should_panic]
+    fn revoked_user_cannot_redeem() {
+        // Closes the audit gap: redeem() previously had no permissioning check at all.
+        let maturity = T0 + 500;
+        let f = setup(maturity);
+        let user = Address::generate(&f.env);
+        grant_user(&f, &user);
+        let result = f.client.mint(&user, &(10_i128 * SCALE));
+
+        f.perm.revoke_account(&f.perm_admin, &user);
+        f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
+        f.client.redeem(&user, &result.pt_minted, &0_i128);
     }
 
     #[test]
