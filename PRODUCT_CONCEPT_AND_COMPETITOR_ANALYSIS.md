@@ -59,7 +59,7 @@ Four mechanisms exist only because the underlying collateral is regulated — no
 | Reviewer feedback | Response |
 |---|---|
 | No differentiation from Spectra/YieldBack.Cash | §3 — both verified and directly addressed |
-| No traction; ask too large for a market-size pitch | Ask cut from $142,000 to **$112,000**, scoped to finishing Phase 2 + one live USDY testnet market — a checkable, on-chain milestone |
+| No traction; ask too large for a market-size pitch | Ask cut from $142,000 to **$112,000**, scoped to wiring the remaining contracts together + one live USDY testnet market — a checkable, on-chain milestone (§6) |
 | Submission metadata (1 person) doesn't match described team (4–5) | Form-accuracy fix, handled directly in the SCF application — not a doc issue |
 | Academic team, no execution track record | Point to what's shipped: 8/10 contracts built and unit-tested, including the compliance-recovery contract in §4 ([PROOF_OF_CONCEPT.md](PROOF_OF_CONCEPT.md)), documented threat model ([SECURITY.md](SECURITY.md)), deployment runbook ([DEPLOYMENT.md](DEPLOYMENT.md)) |
 
