@@ -1,12 +1,12 @@
 # Principal Protocol — Proof of Concept
 
-This document describes the current state of the Principal Protocol implementation: seven Soroban smart contracts that form the infrastructure, tokenization, and standalone-token layers of the protocol and demonstrate the core yield-tokenization mechanics on Stellar.
+This document describes the current state of the Principal Protocol implementation: eight Soroban smart contracts that form the infrastructure, tokenization, standalone-token, and compliance-recovery layers of the protocol and demonstrate the core yield-tokenization mechanics on Stellar.
 
 ---
 
 ## Scope
 
-Seven of nine contracts are implemented:
+Eight of ten contracts are implemented:
 
 | Contract | Crate | Status |
 |---|---|---|
@@ -17,8 +17,11 @@ Seven of nine contracts are implemented:
 | `PrincipalManager` | `principal_manager` | Complete |
 | `PTToken` | `principal_pt_token` | Complete |
 | `YTToken` | `principal_yt_token` | Complete |
+| `RecoveryEscrow` | `principal_recovery_escrow` | Complete for `seize_sy`; `seize_pt`/`seize_yt` seize but do not yet finalize (see item 1 in [Known Limitations](#known-limitations)) |
 
 `MarketPool` and `Router` are not yet implemented. `PTToken` and `YTToken` are correct and fully tested as standalone contracts, but `PrincipalManager` does not yet call them — it still mints/burns against its own internal PT/YT balance maps, the same as before these two contracts existed. Wiring `PrincipalManager` to mint/burn through the real token contracts, and to move real `SYWrapper` shares instead of tracking deposits internally, is outstanding work — see [Known Limitations](#known-limitations) below.
+
+`SYWrapper`, `PrincipalManager`, `PTToken`, and `YTToken` all inherit compliance from the underlying Stellar Asset Contract (`underlying_SAC.authorized()`, checked live) as a mandatory floor beneath `Permissioning`'s optional additional layer, and all gate market creation on the underlying SAC's real, live `admin()`. `RecoveryEscrow` gives the issuer a way to recover a deauthorized account's position without a native SAC clawback haircutting every other holder. See [COMPLIANT_SETTLEMENT_DESIGN.md](COMPLIANT_SETTLEMENT_DESIGN.md) for the full design rationale.
 
 ---
 
@@ -40,9 +43,9 @@ At or after the maturity timestamp, `PrincipalManager.redeem()` computes and dis
 
 `OracleAdapter` stores an admin-submitted USDY/USDC reference value with monotonic timestamp enforcement and freshness checks. This is the trust anchor for minting and redemption pricing.
 
-### 5. Permissioned compliance flow
+### 5. Two-layer compliance: authorization inheritance + Permissioning
 
-`Permissioning` enforces per-account and per-asset eligibility. It is checked by `PrincipalManager` on both mint and redemption, and by `SYWrapper` on both deposit and withdrawal — on every path, both the sending and receiving side are checked, so a revoked account is frozen rather than merely blocked from acquiring new positions. This preserves the compliance constraints of the underlying USDY asset across all derived instruments.
+Every contract checks two independent layers on every affected account: `underlying_SAC.authorized(account)` (the mandatory floor, read live from the actual Stellar Asset Contract the underlying is issued as — no separate registry that could drift out of sync with the issuer's own decisions) and `Permissioning` (an optional, Principal-specific additional layer that can narrow but never loosen the SAC floor). `Permissioning` is checked by `PrincipalManager` on both mint and redemption, and by `SYWrapper` on both deposit and withdrawal — on every path, both the sending and receiving side are checked, so a revoked or deauthorized account is frozen rather than merely blocked from acquiring new positions. This preserves the compliance constraints of the underlying USDY asset across all derived instruments, and reflects the issuer's own authorization decisions immediately rather than requiring a separate action to mirror them.
 
 ### 6. Risk controls
 
@@ -58,7 +61,11 @@ At or after the maturity timestamp, `PrincipalManager.redeem()` computes and dis
 
 ### 9. Compliance recovery without collateral damage
 
-`SYWrapper.remediate()` lets an issuer-authorized admin recover a single revoked account's SY balance, releasing the equivalent underlying without touching any other depositor's share of the pooled reserve. It only acts on accounts Permissioning has already marked ineligible — revoking (Permissioning's admin) and remediating (SYWrapper's admin) are enforced as separate actions, potentially separate keys.
+`RecoveryEscrow.seize_sy`/`seize_pt`/`seize_yt` let the underlying asset's real issuer (authenticated live via `underlying_SAC.admin()`, not a stored key) recover a single deauthorized account's SY, PT, or YT balance without touching any other holder's share of the pooled reserve. Recovery only acts on accounts the issuer has already deauthorized on the SAC itself (`TargetStillAuthorized` otherwise) — deauthorizing and seizing both trace back to the same issuer admin key, but as two explicit, separate on-chain actions. `SYWrapper`/`PTToken`/`YTToken` each expose a `seize()` that trusts calls only from their own configured `RecoveryEscrow` (set once, admin-gated); all issuer-identity and deauthorization verification lives once in `RecoveryEscrow`, not duplicated per contract. `seize_sy` unwraps to raw underlying in the same call, ready for the issuer's native SAC clawback; `seize_pt`/`seize_yt` seize the real balance but do not yet finalize it — see [Known Limitations](#known-limitations).
+
+### 10. Market-creation gating
+
+`initialize` on `SYWrapper`, `PrincipalManager`, `PTToken`, and `YTToken` requires `admin == underlying_SAC.admin()` (read live) and `admin.require_auth()` — only the entity that actually controls a regulated asset's authorization and clawback can stand up a Principal market on it. This is checked once, at market creation, using the same public, no-auth-required SAC functions everything else in this section relies on.
 
 ---
 
@@ -97,6 +104,7 @@ fn get_admin(env: Env) -> Address
 
 ```rust
 fn initialize(env: Env, admin: Address, underlying: Address, permissioning: Address)
+              // admin must equal underlying.admin() (read live) and must authorize this call
 fn deposit(env: Env, from: Address, amount: i128) -> i128       // returns shares minted
 fn withdraw(env: Env, from: Address, shares: i128, to: Address) -> i128  // returns underlying
 fn exchange_rate(env: Env) -> i128                               // scaled ×10⁷
@@ -109,17 +117,21 @@ fn transfer_admin(env: Env, current_admin: Address, new_admin: Address)
 fn get_admin(env: Env) -> Address
 
 // Compliance recovery — see "Compliance recovery without collateral damage" above
-fn remediate(env: Env, caller: Address, account: Address, shares: i128) -> i128
+fn set_recovery_escrow(env: Env, admin: Address, escrow: Address)  // one-time; reverts if already set
+fn seize(env: Env, caller: Address, account: Address, shares: i128) -> i128  // caller must be the configured escrow
+fn recovery_escrow(env: Env) -> Address
 ```
 
-`deposit` checks `Permissioning.is_allowed(from)`; `withdraw` checks both `from` and `to`. `remediate` requires the caller to be admin *and* requires `account` to already be revoked (`is_allowed(account) == false`) — it cannot act on an eligible account regardless of who calls it.
+`deposit` checks `underlying.authorized(from)` and `Permissioning.is_allowed(from)`; `withdraw` checks both layers on both `from` and `to`. `seize` requires the caller to be the one address configured via `set_recovery_escrow` — it does not itself authenticate the issuer or check deauthorization; that verification lives once in `RecoveryEscrow` (see below). It moves shares to the caller (a forced transfer, not a burn), works even while the contract is paused, and can move at most the target account's own balance.
 
 ### PTToken
 
 ```rust
-fn initialize(env: Env, admin: Address, permissioning: Address, maturity: u64,
+fn initialize(env: Env, admin: Address, permissioning: Address, underlying: Address, maturity: u64,
               name: String, symbol: String, decimals: u32)
+              // admin must equal underlying.admin() (read live) and must authorize this call
 fn set_minter(env: Env, admin: Address, minter: Address)   // one-time; reverts if already set
+fn set_recovery_escrow(env: Env, admin: Address, escrow: Address)  // one-time; reverts if already set
 
 // SEP-41
 fn transfer(env: Env, from: Address, to: Address, amount: i128)
@@ -135,27 +147,37 @@ fn symbol(env: Env) -> String
 fn mint(env: Env, to: Address, amount: i128)
 fn burn(env: Env, from: Address, amount: i128)
 
+// Compliance recovery
+fn seize(env: Env, caller: Address, account: Address, amount: i128) -> i128  // caller must be the configured escrow
+
 // Views
 fn total_supply(env: Env) -> i128
 fn maturity(env: Env) -> u64
 fn minter(env: Env) -> Address
 fn get_admin(env: Env) -> Address
+fn recovery_escrow(env: Env) -> Address
+fn underlying_address(env: Env) -> Address
 ```
 
-`transfer` and `transfer_from` check both `from` and `to` against `Permissioning.is_allowed()` (account-level) and `is_allowed_for_asset(account, pt_token_address)` (per-instrument). `mint` checks the recipient the same way; `burn` has no permission check, since it only removes value and never redirects it.
+`transfer` and `transfer_from` check both `from` and `to` against `underlying.authorized()` (the mandatory floor) and `Permissioning.is_allowed()` (account-level) plus `is_allowed_for_asset(account, pt_token_address)` (per-instrument). `mint` checks the recipient the same way; `burn` has no compliance check, since it only removes value and never redirects it. `seize` trusts only the configured `RecoveryEscrow` address.
 
 ### YTToken
 
 Same shape as `PTToken`, plus yield accrual:
 
 ```rust
-fn initialize(env: Env, admin: Address, permissioning: Address, oracle: Address, maturity: u64,
+fn initialize(env: Env, admin: Address, permissioning: Address, underlying: Address, oracle: Address, maturity: u64,
               name: String, symbol: String, decimals: u32)
+              // admin must equal underlying.admin() (read live) and must authorize this call
 fn set_minter(env: Env, admin: Address, minter: Address)
+fn set_recovery_escrow(env: Env, admin: Address, escrow: Address)
 
 // SEP-41 — identical to PTToken
 
 // Minter-only — identical to PTToken
+
+// Compliance recovery — settles both sides' pending yield before moving the balance
+fn seize(env: Env, caller: Address, account: Address, amount: i128) -> i128
 
 // Yield accrual
 fn update_yield_index(env: Env)                       // permissionless; requires fresh oracle
@@ -163,15 +185,35 @@ fn claim_yield(env: Env, from: Address) -> i128
 fn accrued_yield_index(env: Env) -> i128
 fn last_claimed_index(env: Env, account: Address) -> i128
 fn pending_claim(env: Env, account: Address) -> i128
+fn recovery_escrow(env: Env) -> Address
+fn underlying_address(env: Env) -> Address
 ```
 
 `update_yield_index` reverts with `OracleStale` if the oracle hasn't been refreshed within `MAX_ORACLE_STALENESS_SECS` — matching the same freshness discipline `PrincipalManager` already applies at mint and redeem.
 
+### RecoveryEscrow
+
+```rust
+fn initialize(env: Env, underlying: Address, sy_wrapper: Address, pt_token: Address, yt_token: Address)
+              // reverts PositionUnderlyingMismatch unless all three report the same underlying_address()
+fn seize_sy(env: Env, caller: Address, account: Address, shares: i128) -> i128
+              // caller must equal underlying.admin() (read live); account must fail underlying.authorized()
+              // seizes via SYWrapper.seize, then immediately unwraps via SYWrapper.withdraw(from=self, to=self)
+fn seize_pt(env: Env, caller: Address, account: Address, amount: i128) -> i128
+              // same authorization; seizes via PTToken.seize — does not yet finalize (see Known Limitations)
+fn seize_yt(env: Env, caller: Address, account: Address, amount: i128) -> i128
+              // same authorization; seizes via YTToken.seize
+fn underlying_address(env: Env) -> Address
+```
+
+`RecoveryEscrow` has no admin key of its own — every `seize_*` call re-derives authority from the underlying SAC's own live `admin()`. It is the single place that authenticates the issuer and checks target deauthorization; `SYWrapper`/`PTToken`/`YTToken` each just trust calls from their own configured `RecoveryEscrow` address.
+
 ### PrincipalManager
 
 ```rust
-fn initialize(env: Env, admin: Address, sy_wrapper: Address,
+fn initialize(env: Env, admin: Address, underlying: Address, sy_wrapper: Address,
               oracle: Address, permissioning: Address, maturity: u64)
+              // admin must equal underlying.admin() (read live) and must authorize this call
 fn mint(env: Env, from: Address, sy_shares: i128) -> MintResult
 fn redeem(env: Env, from: Address, pt_amount: i128, yt_amount: i128) -> RedeemResult
 fn pt_balance(env: Env, account: Address) -> i128
@@ -183,11 +225,14 @@ fn is_mature(env: Env) -> bool
 fn set_paused(env: Env, caller: Address, paused: bool)
 fn transfer_admin(env: Env, current_admin: Address, new_admin: Address)
 fn get_admin(env: Env) -> Address
+fn underlying_address(env: Env) -> Address
 
 // Return types
 struct MintResult   { pt_minted: i128, yt_minted: i128 }
 struct RedeemResult { underlying_from_pt: i128, underlying_from_yt: i128 }
 ```
+
+`mint` and `redeem` both check `underlying.authorized(from)` and `Permissioning.is_allowed(from)`.
 
 ### RiskControl
 
@@ -267,7 +312,10 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 | SYWrapper | 6 | `Paused` | operation while paused |
 | SYWrapper | 7 | `ArithmeticOverflow` | fixed-point overflow |
 | SYWrapper | 8 | `PermissionDenied` | account not in allow-list |
-| SYWrapper | 9 | `AccountNotRevoked` | `remediate` called on an account Permissioning still considers eligible |
+| SYWrapper | 9 | `NotAuthorizedOnSac` | account fails `underlying.authorized()` |
+| SYWrapper | 10 | `RecoveryEscrowAlreadySet` | `set_recovery_escrow` called twice |
+| SYWrapper | 11 | `NotRecoveryEscrow` | `seize` called by an address other than the configured escrow |
+| SYWrapper | 12 | `IssuerMismatch` | `initialize` called with `admin` ≠ `underlying.admin()` |
 | PrincipalManager | 1 | `AlreadyInitialized` | initialize called twice |
 | PrincipalManager | 2 | `Unauthorized` | caller ≠ admin |
 | PrincipalManager | 3 | `NotInitialized` | read before initialize |
@@ -278,6 +326,8 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 | PrincipalManager | 8 | `InsufficientBalance` | redeem > PT or YT balance |
 | PrincipalManager | 9 | `Paused` | operation while paused |
 | PrincipalManager | 10 | `PermissionDenied` | user not in allow-list (mint and redeem) |
+| PrincipalManager | 11 | `NotAuthorizedOnSac` | account fails `underlying.authorized()` (mint and redeem) |
+| PrincipalManager | 12 | `IssuerMismatch` | `initialize` called with `admin` ≠ `underlying.admin()` |
 | PTToken | 1 | `AlreadyInitialized` | initialize called twice |
 | PTToken | 2 | `Unauthorized` | caller ≠ admin |
 | PTToken | 3 | `NotInitialized` | read before initialize |
@@ -287,8 +337,22 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 | PTToken | 7 | `PermissionDenied` | account fails account-level or per-asset eligibility |
 | PTToken | 8 | `MinterAlreadySet` | `set_minter` called twice |
 | PTToken | 9 | `MinterNotSet` | mint/burn before `set_minter` |
+| PTToken | 10 | `NotAuthorizedOnSac` | account fails `underlying.authorized()` |
+| PTToken | 11 | `IssuerMismatch` | `initialize` called with `admin` ≠ `underlying.admin()` |
+| PTToken | 12 | `RecoveryEscrowAlreadySet` | `set_recovery_escrow` called twice |
+| PTToken | 13 | `NotRecoveryEscrow` | `seize` called by an address other than the configured escrow |
 | YTToken | 1–9 | *(same as PTToken)* | identical error set |
 | YTToken | 10 | `OracleStale` | `update_yield_index` called with a stale oracle |
+| YTToken | 11 | `NotAuthorizedOnSac` | account fails `underlying.authorized()` |
+| YTToken | 12 | `IssuerMismatch` | `initialize` called with `admin` ≠ `underlying.admin()` |
+| YTToken | 13 | `RecoveryEscrowAlreadySet` | `set_recovery_escrow` called twice |
+| YTToken | 14 | `NotRecoveryEscrow` | `seize` called by an address other than the configured escrow |
+| RecoveryEscrow | 1 | `AlreadyInitialized` | initialize called twice |
+| RecoveryEscrow | 2 | `NotInitialized` | any `seize_*` called before initialize |
+| RecoveryEscrow | 3 | `Unauthorized` | caller ≠ `underlying.admin()` (read live) |
+| RecoveryEscrow | 4 | `TargetStillAuthorized` | target account is still `authorized()` on the underlying SAC |
+| RecoveryEscrow | 5 | `ZeroAmount` | seize amount/shares ≤ 0 |
+| RecoveryEscrow | 6 | `PositionUnderlyingMismatch` | a position contract's `underlying_address()` doesn't match at initialize |
 | RiskControl | 1 | `AlreadyInitialized` | initialize called twice |
 | RiskControl | 2 | `Unauthorized` | caller ≠ admin |
 | RiskControl | 3 | `NotInitialized` | read before initialize |
@@ -301,7 +365,7 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 
 ## Test Coverage
 
-72 unit tests across seven contracts, using `soroban_sdk::testutils`:
+97 unit tests across eight contracts, using `soroban_sdk::testutils`:
 
 **OracleAdapter** (10 tests)
 - Initialization and double-init guard
@@ -319,46 +383,65 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 - Unauthorized grant attempt
 - Admin transfer
 
-**SYWrapper** (16 tests)
-- Deposit and share minting; rejected when the depositor isn't on the allow-list
-- Exchange rate calculation at inception and after yield accrual simulation
-- Withdrawal and underlying return; rejected when either the withdrawer or the recipient isn't allowed
+**SYWrapper** (21 tests)
+- `initialize` rejects an admin that doesn't match the underlying SAC's real, live `admin()`
+- Deposit and share minting; rejected when the depositor isn't on the Permissioning allow-list or isn't `authorized()` on the underlying SAC
+- A deauthorized-on-SAC account cannot self-withdraw to front-run seizure
+- Withdrawal and underlying return; rejected when either the withdrawer or the recipient isn't permitted
 - Insufficient share balance rejection
 - Pause and unpause behavior
-- A revoked account cannot self-withdraw to front-run `remediate()`
-- `remediate()` burns only the flagged account's own share, leaving other depositors untouched
-- `remediate()` rejects a target that hasn't actually been revoked
-- `remediate()` cannot exceed the flagged account's balance, and requires the caller to be admin
+- Exchange rate calculation at inception
+- Zero-deposit rejection; `balance_of` correctness
 - Admin transfer
+- `set_recovery_escrow` succeeds once, reverts on a second call
+- `seize()` moves the flagged account's balance to the configured escrow without the holder's authorization
+- `seize()` requires the caller to be the configured escrow
+- `seize()` cannot exceed the target's balance
+- `seize()` works while the contract is paused
+- The escrow can unwrap seized SY via a normal `withdraw` call
 
-**PrincipalManager** (12 tests)
-- Mint PT and YT from SY shares
-- Notional calculation at multiple oracle rates
-- Redeem at maturity — PT and YT separately
-- Redeem before maturity rejection (`NotMature`)
-- Mint after maturity rejection (`AlreadyMature`)
+**PrincipalManager** (15 tests)
+- `initialize` rejects an admin that doesn't match the underlying SAC's real, live `admin()`
+- Mint PT and YT from SY shares; total supply tracking on mint and redeem
+- Redeem at maturity — PT and YT separately, including the zero-yield case
+- Redeem before maturity rejection (`NotMature`); mint after maturity rejection (`AlreadyMature`)
 - Oracle staleness rejection at redemption
-- Permission check rejection at mint, and at redeem for a revoked account
-- Pause behavior
+- Permission check rejection at mint (unpermissioned user) and at redeem (revoked user)
+- A deauthorized-on-SAC account cannot mint or redeem
 - Admin transfer
 
-**PTToken** (9 tests)
+**PTToken** (15 tests)
+- `initialize` rejects an admin that doesn't match the underlying SAC's real, live `admin()`
 - Mint blocked until `set_minter` is called; `set_minter` cannot be called twice
-- Mint and balance tracking
+- Mint and balance tracking; mint rejected for an account not `authorized()` on the underlying SAC
 - Transfer between eligible accounts; rejected when the recipient lacks the per-token asset grant
-- A revoked holder cannot transfer PT to a still-eligible party before remediation
+- A revoked or deauthorized-on-SAC holder cannot transfer PT to a still-eligible party before seizure
 - Insufficient balance rejection
 - `approve` / `transfer_from` delegated transfer
 - Burn reduces total supply
+- `seize()` moves the flagged account's balance to the configured escrow without the holder's authorization
+- `seize()` requires the caller to be the configured escrow
+- `set_recovery_escrow` cannot be called twice
 
-**YTToken** (7 tests)
-- Mint and balance tracking
+**YTToken** (12 tests)
+- `initialize` rejects an admin that doesn't match the underlying SAC's real, live `admin()`
+- Mint and balance tracking; mint rejected for an account not `authorized()` on the underlying SAC
 - No yield accrual when the oracle rate hasn't increased
 - Yield accrues correctly after a rate increase, and is fully claimable
 - A late buyer does not retroactively receive yield accrued before they held the position
 - A transfer settles both sides' pending yield before the balance moves
-- A revoked holder cannot transfer YT to a still-eligible party before remediation
+- A revoked or deauthorized-on-SAC holder cannot transfer YT to a still-eligible party before seizure
 - `update_yield_index` rejects a stale oracle
+- `seize()` settles both sides' pending yield before moving the balance
+- `seize()` requires the caller to be the configured escrow
+
+**RecoveryEscrow** (6 tests)
+- `seize_sy` seizes and immediately unwraps to underlying in the same call
+- `seize_sy` requires the caller to be the underlying SAC's real, live issuer admin
+- `seize_sy` requires the target account to already be deauthorized on the underlying SAC
+- `initialize` rejects a position contract whose `underlying_address()` doesn't match the others
+- `seize_pt` moves the flagged account's real PTToken balance to the escrow
+- `seize_yt` moves the flagged account's real YTToken balance to the escrow
 
 **RiskControl** (12 tests)
 - Pause and unpause
@@ -393,6 +476,7 @@ WASM files are produced in `target/wasm32-unknown-unknown/release/` (or `target/
 - `principal_manager.wasm`
 - `principal_pt_token.wasm`
 - `principal_yt_token.wasm`
+- `principal_recovery_escrow.wasm`
 
 ---
 
@@ -417,7 +501,8 @@ stellar contract deploy --wasm target/.../principal_risk_control.wasm \
 stellar contract invoke --id risk_control --source admin --network testnet \
   -- initialize --admin <ADMIN_ADDRESS> --cb-limit 0
 
-# 4. SYWrapper (initialize now also takes --permissioning)
+# 4. SYWrapper (initialize now also takes --permissioning; --source must be the
+#    underlying SAC's real admin key, or this reverts IssuerMismatch)
 stellar contract deploy --wasm target/.../principal_sy_wrapper.wasm \
   --source admin --network testnet --alias sy_wrapper
 stellar contract invoke --id sy_wrapper --source admin --network testnet \
@@ -426,12 +511,13 @@ stellar contract invoke --id sy_wrapper --source admin --network testnet \
      --underlying <USDY_CONTRACT_ADDRESS> \
      --permissioning <PERMISSIONING_ADDRESS>
 
-# 5. PrincipalManager
+# 5. PrincipalManager (--source must also be the underlying SAC's real admin key)
 stellar contract deploy --wasm target/.../principal_manager.wasm \
   --source admin --network testnet --alias principal_manager
 stellar contract invoke --id principal_manager --source admin --network testnet \
   -- initialize \
      --admin <ADMIN_ADDRESS> \
+     --underlying <USDY_CONTRACT_ADDRESS> \
      --sy-wrapper <SY_WRAPPER_ADDRESS> \
      --oracle <ORACLE_ADAPTER_ADDRESS> \
      --permissioning <PERMISSIONING_ADDRESS> \
@@ -442,31 +528,52 @@ stellar contract invoke --id principal_manager --source admin --network testnet 
 
 # 6. PTToken (deployed before PrincipalManager needs to reference it in production;
 #    shown here after only because this repo's PrincipalManager doesn't yet call it —
-#    see "Known Limitations")
+#    see "Known Limitations". --source must be the underlying SAC's real admin key)
 stellar contract deploy --wasm target/.../principal_pt_token.wasm \
   --source admin --network testnet --alias pt_token
 stellar contract invoke --id pt_token --source admin --network testnet \
   -- initialize \
      --admin <ADMIN_ADDRESS> \
      --permissioning <PERMISSIONING_ADDRESS> \
+     --underlying <USDY_CONTRACT_ADDRESS> \
      --maturity <UNIX_TIMESTAMP> \
      --name "Principal Token USDY" --symbol "PT-USDY" --decimals 7
 # set_minter is called once a minting contract exists to register:
 # stellar contract invoke --id pt_token -- set_minter --admin <ADMIN_ADDRESS> --minter <MINTER_ADDRESS>
 
-# 7. YTToken
+# 7. YTToken (--source must be the underlying SAC's real admin key)
 stellar contract deploy --wasm target/.../principal_yt_token.wasm \
   --source admin --network testnet --alias yt_token
 stellar contract invoke --id yt_token --source admin --network testnet \
   -- initialize \
      --admin <ADMIN_ADDRESS> \
      --permissioning <PERMISSIONING_ADDRESS> \
+     --underlying <USDY_CONTRACT_ADDRESS> \
      --oracle <ORACLE_ADAPTER_ADDRESS> \
      --maturity <UNIX_TIMESTAMP> \
      --name "Yield Token USDY" --symbol "YT-USDY" --decimals 7
+
+# 8. RecoveryEscrow (no admin of its own; validates all three position contracts
+#    share the same underlying)
+stellar contract deploy --wasm target/.../principal_recovery_escrow.wasm \
+  --source admin --network testnet --alias recovery_escrow
+stellar contract invoke --id recovery_escrow --source admin --network testnet \
+  -- initialize \
+     --underlying <USDY_CONTRACT_ADDRESS> \
+     --sy-wrapper <SY_WRAPPER_ADDRESS> \
+     --pt-token <PT_TOKEN_ADDRESS> \
+     --yt-token <YT_TOKEN_ADDRESS>
+
+# Wire the escrow into each token contract (one-time, admin-gated):
+stellar contract invoke --id sy_wrapper --source admin --network testnet \
+  -- set_recovery_escrow --admin <ADMIN_ADDRESS> --escrow <RECOVERY_ESCROW_ADDRESS>
+stellar contract invoke --id pt_token --source admin --network testnet \
+  -- set_recovery_escrow --admin <ADMIN_ADDRESS> --escrow <RECOVERY_ESCROW_ADDRESS>
+stellar contract invoke --id yt_token --source admin --network testnet \
+  -- set_recovery_escrow --admin <ADMIN_ADDRESS> --escrow <RECOVERY_ESCROW_ADDRESS>
 ```
 
-`PTToken` and `YTToken` are not part of the live testnet deployment recorded below — that deployment predates both contracts. The commands above are untested reference templates, not a record of an actual deployment.
+`PTToken`, `YTToken`, and `RecoveryEscrow` are not part of the live testnet deployment recorded below — that deployment predates all three, and predates the authorization-inheritance and market-creation-gating redesign entirely. The commands above are untested reference templates, not a record of an actual deployment.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for the complete guide including network configuration and post-deployment verification.
 
@@ -476,7 +583,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for the complete guide including network conf
 
 All five originally-implemented contracts have been deployed and initialised on **Stellar Testnet** (June 2026). The deployment demonstrates the infrastructure and tokenization layer of the protocol executing real on-chain transactions.
 
-**This deployment predates `PTToken`, `YTToken`, and the compliance-gap fixes described elsewhere in this document.** Specifically: the deployed `SYWrapper` was initialized without a `permissioning` parameter (that argument didn't exist yet), so its deposit/withdraw calls on testnet are not eligibility-gated the way the current source code requires; and the deployed `PrincipalManager`'s `redeem()` predates the permissioning check added since. The deployed WASM reflects the source as it existed at deployment time — it does not update itself when the repository changes. Treat the addresses and transactions below as a historical record of that earlier version, not as a live demonstration of the current contract set. A redeployment reflecting the current source, including `PTToken` and `YTToken`, has not yet been done.
+**This deployment predates `PTToken`, `YTToken`, `RecoveryEscrow`, and every compliance fix described elsewhere in this document — including the original Permissioning integration, and the later authorization-inheritance / market-creation-gating / seize redesign.** Specifically: the deployed `SYWrapper` was initialized without a `permissioning` parameter (that argument didn't exist yet) and with no `underlying`-admin gate on `initialize` and no concept of `underlying_SAC.authorized()` at all, so its deposit/withdraw calls on testnet are not gated the way the current source code requires; and the deployed `PrincipalManager`'s `redeem()` predates both the permissioning check and the SAC-authorization check added since. The deployed WASM reflects the source as it existed at deployment time — it does not update itself when the repository changes. Treat the addresses and transactions below as a historical record of that earlier version, not as a live demonstration of the current contract set. A redeployment reflecting the current source, including `PTToken`, `YTToken`, and `RecoveryEscrow`, has not yet been done.
 
 ### Deployed Contract Addresses
 
@@ -699,7 +806,7 @@ Records a **10 USDY** deposit event (`100_000_000`) against the circuit breaker 
 
 ### What the Testnet Deployment Proves
 
-This table describes what the historical deployment above proved about the contract versions live at the time — it predates the compliance-gap fixes and PT/YT tokens (see the caveat at the top of this section), so treat it as evidence for the underlying mechanics, not for the current source as a whole.
+This table describes what the historical deployment above proved about the contract versions live at the time — it predates the compliance-gap fixes, PT/YT tokens, and the authorization-inheritance/RecoveryEscrow redesign (see the caveat at the top of this section), so treat it as evidence for the underlying mechanics, not for the current source as a whole.
 
 | Claim | Evidence |
 |---|---|
@@ -718,7 +825,7 @@ This table describes what the historical deployment above proved about the contr
 
 The following are the current, honest scope boundaries — each is either genuinely outstanding work or a nuance worth being precise about:
 
-1. **`PrincipalManager` does not yet call the real `PTToken`/`YTToken` contracts.** `PTToken` and `YTToken` now exist as standalone, fully tested SEP-41 contracts (see [What the POC Demonstrates](#what-the-poc-demonstrates) above) — but `PrincipalManager.mint()`/`redeem()` still operate on its own internal PT/YT balance maps, exactly as before these two contracts existed. Until that wiring is done, PT and YT minted through `PrincipalManager` cannot actually be held in external wallets or traded — the standalone contracts are correct in isolation but not yet reachable through the mint/redeem flow.
+1. **`PrincipalManager` does not yet call the real `PTToken`/`YTToken` contracts.** `PTToken` and `YTToken` now exist as standalone, fully tested SEP-41 contracts (see [What the POC Demonstrates](#what-the-poc-demonstrates) above) — but `PrincipalManager.mint()`/`redeem()` still operate on its own internal PT/YT balance maps, exactly as before these two contracts existed. Until that wiring is done, PT and YT minted through `PrincipalManager` cannot actually be held in external wallets or traded — the standalone contracts are correct in isolation but not yet reachable through the mint/redeem flow. This is also why `RecoveryEscrow.seize_pt`/`seize_yt` seize a real balance but cannot yet finalize it (redeem at maturity, unwrap toward underlying) the way `seize_sy` does immediately — there is no function, for any caller, that burns a real `PTToken`/`YTToken` balance for value except through `PrincipalManager`'s internal, disconnected balance maps.
 
 2. **No AMM.** `MarketPool` is not implemented. There is no on-chain market for PT or YT trading.
 

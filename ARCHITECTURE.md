@@ -49,16 +49,17 @@ The protocol is **asset-agnostic**. Any Stellar yield-bearing asset represented 
 | Contract | Deployment scope | Role |
 |---|---|---|
 | `OracleAdapter` | One per underlying asset | Reference value feed for the underlying asset, with monotonic timestamps and freshness controls |
-| `Permissioning` | One per underlying asset or issuer policy | Account and per-asset eligibility registry for permissioned RWAs |
+| `Permissioning` | One per underlying asset or issuer policy | Account and per-asset eligibility registry — an *optional*, Principal-specific layer on top of the underlying SAC's own authorization (see §2.3) |
 | `RiskControl` | One per underlying asset or protocol risk domain | Global pause, pauser roles, and rolling deposit circuit breaker |
-| `SYWrapper` | One per underlying asset | Standardized yield wrapper; accepts a SAC-compatible yield-bearing asset and issues SY shares. Deposit and withdraw are eligibility-gated on both sides; `remediate()` recovers a single revoked account's balance without affecting other depositors. |
-| `PrincipalManager` | One per underlying asset and maturity | Splits SY shares into PT/YT notional claims and handles maturity settlement. Mint and redeem are both eligibility-gated. |
-| `PTToken` | One per maturity | SEP-41 Principal Token representing the fixed principal claim. Transfers check eligibility on both sender and recipient, at both the account level and a per-token asset level. |
-| `YTToken` | One per maturity | SEP-41 Yield Token representing the future yield claim, with continuous yield accrual and claiming. Gated the same way as PTToken; `update_yield_index` requires a fresh oracle. |
+| `SYWrapper` | One per underlying asset | Standardized yield wrapper; accepts a SAC-compatible yield-bearing asset and issues SY shares. Deposit and withdraw check both the underlying SAC's live `authorized()` and `Permissioning`, on both sides. `seize()` lets the configured `RecoveryEscrow` forcibly move a deauthorized account's balance without their signature. |
+| `PrincipalManager` | One per underlying asset and maturity | Splits SY shares into PT/YT notional claims and handles maturity settlement. Mint and redeem are gated the same two-layer way. |
+| `RecoveryEscrow` | One per underlying asset | Authenticates the underlying SAC's real `admin()` (read live, no separate key of its own) and orchestrates `seize` across `SYWrapper`/`PTToken`/`YTToken` when the issuer needs to recover a deauthorized account's position — see §2.3. |
+| `PTToken` | One per maturity | SEP-41 Principal Token representing the fixed principal claim. Transfers check both sender and recipient against the SAC authorization floor and a per-token Permissioning layer. `seize()` for compliance recovery. |
+| `YTToken` | One per maturity | SEP-41 Yield Token representing the future yield claim, with continuous yield accrual and claiming. Gated the same way as PTToken; `update_yield_index` requires a fresh oracle. `seize()` for compliance recovery. |
 | `MarketPool` | One per maturity | Yield-curve AMM for PT ↔ SY trading — not yet implemented |
 | `Router` | Shared across registered markets | Single-transaction orchestration for wrapping, minting, swapping, recombining, redeeming, and liquidity operations — not yet implemented |
 
-`PTToken` and `YTToken` carry independent eligibility policies by design: each checks `Permissioning.is_allowed_for_asset(account, own_contract_address)` in addition to the shared account-level `is_allowed()` gate, so an admin can grant an account access to PT without granting YT, or vice versa, using allow-list infrastructure shared with every other contract rather than a new mechanism per token.
+`PTToken` and `YTToken` carry independent eligibility policies by design: each checks `Permissioning.is_allowed_for_asset(account, own_contract_address)` in addition to the shared account-level `is_allowed()` gate, so an admin can grant an account access to PT without granting YT, or vice versa, using allow-list infrastructure shared with every other contract rather than a new mechanism per token. This is layered *on top of* the mandatory SAC-authorization floor every contract also checks — Permissioning can narrow eligibility, never loosen it.
 
 ### 2.2 Contract dependency graph
 
@@ -70,9 +71,11 @@ flowchart TD
     SYWrapper["SYWrapper"]
     PTToken["PTToken"]
     YTToken["YTToken"]
+    RecoveryEscrow["RecoveryEscrow"]
     OracleAdapter["OracleAdapter"]
     Permissioning["Permissioning"]
     RiskControl["RiskControl"]
+    Underlying["Underlying SAC\n(external, issuer-controlled)"]
 
     Router --> MarketPool
     Router --> PrincipalManager
@@ -91,13 +94,24 @@ flowchart TD
     PrincipalManager --> RiskControl
     PrincipalManager --> PTToken
     PrincipalManager --> YTToken
+    PrincipalManager -. authorized/admin .-> Underlying
 
     PTToken --> Permissioning
     YTToken --> Permissioning
     YTToken --> OracleAdapter
+    PTToken -. authorized .-> Underlying
+    YTToken -. authorized .-> Underlying
     SYWrapper --> RiskControl
     SYWrapper --> Permissioning
+    SYWrapper -. authorized/admin .-> Underlying
+
+    RecoveryEscrow --> SYWrapper
+    RecoveryEscrow --> PTToken
+    RecoveryEscrow --> YTToken
+    RecoveryEscrow -. authorized/admin .-> Underlying
 ```
+
+The dotted edges are cross-contract reads against the underlying Stellar Asset Contract's own `authorized()`/`admin()` functions — not a Principal-deployed contract, but the actual issuer-controlled SAC every market wraps. `RecoveryEscrow` is the only contract with an edge *into* `SYWrapper`/`PTToken`/`YTToken` that isn't `PrincipalManager`, `MarketPool`, or `Router` — it calls `seize` directly, authenticated independently against the same live `Underlying` read.
 
 ### 2.3 Asset-agnostic design
 
@@ -106,10 +120,11 @@ Each set of per-maturity contracts (`PrincipalManager`, `PTToken`, `YTToken`, `M
 ```
         Shared infrastructure (one set per underlying asset)
         ┌──────────────────────────────────────────────┐
-        │  OracleAdapter (asset reference value)        │
-        │  Permissioning (eligibility — optional)       │
-        │  RiskControl   (pause + circuit breaker)      │
-        │  SYWrapper     (yield wrapper for this asset) │
+        │  OracleAdapter  (asset reference value)       │
+        │  Permissioning  (eligibility — optional)      │
+        │  RiskControl    (pause + circuit breaker)     │
+        │  SYWrapper      (yield wrapper for this asset)│
+        │  RecoveryEscrow (compliance recovery)         │
         └──────────────────────────────────────────────┘
                               │
           ┌───────────────────┼───────────────────┐
@@ -127,7 +142,7 @@ Each set of per-maturity contracts (`PrincipalManager`, `PTToken`, `YTToken`, `M
 
 A new asset is onboarded by deploying a fresh infrastructure set and per-maturity contracts, then registering them in the Router. No changes to existing deployed contracts are required.
 
-**Compliance recovery:** `SYWrapper.remediate()` lets an issuer-authorized admin recover a single revoked account's SY balance, releasing the equivalent underlying without touching any other depositor's share of the pooled reserve. It only acts on accounts Permissioning has already marked ineligible (`is_allowed(account) == false`) — revoking (Permissioning's admin) and remediating (SYWrapper's admin) are enforced as separate actions, which can be held by separate keys, so a single compromised key cannot both flag and drain an account unilaterally.
+**Compliance recovery:** `RecoveryEscrow` is the one place that authenticates the underlying SAC's real `admin()` (read live, no separate key of its own) and verifies a target is actually deauthorized (`!underlying_SAC.authorized(account)`) before acting. `SYWrapper.seize`, `PTToken.seize`, and `YTToken.seize` each trust calls only from their own configured `RecoveryEscrow` address (wired once via `set_recovery_escrow`, mirroring the `set_minter` pattern) — none of them re-derive that authority themselves. `RecoveryEscrow.seize_sy` seizes and immediately unwraps into raw underlying, ready for the issuer's native SAC `clawback`. `seize_pt`/`seize_yt` seize correctly but cannot yet be redeemed at maturity — that depends on `PrincipalManager` being wired to call the token contracts, which it isn't yet (see §2.4 below and PROOF_OF_CONCEPT.md's Known Limitations).
 
 ### 2.4 Core on-chain sequences
 
@@ -139,6 +154,7 @@ sequenceDiagram
     participant RT as Router
     participant RC as RiskControl
     participant SYW as SYWrapper
+    participant UND as Underlying SAC
     participant PERM as Permissioning
     participant OA as OracleAdapter
     participant PM as PrincipalManager
@@ -149,11 +165,15 @@ sequenceDiagram
     RT->>RC: check_deposit(asset_amount)
     RC-->>RT: ok or revert Paused/CircuitBreakerTripped
     RT->>SYW: deposit(from=user, amount=asset_amount)
+    SYW->>UND: authorized(user)
+    UND-->>SYW: true or revert NotAuthorizedOnSac
     SYW->>PERM: is_allowed(user)
     PERM-->>SYW: true or revert PermissionDenied
     SYW->>SYW: shares = amount * RATE_SCALE / exchange_rate
     SYW-->>RT: shares_minted
     RT->>PM: mint(from=user, sy_shares)
+    PM->>UND: authorized(user)
+    UND-->>PM: true or revert NotAuthorizedOnSac
     PM->>PERM: is_allowed(user)
     PERM-->>PM: true or revert PermissionDenied
     PM->>OA: is_fresh(MAX_ORACLE_STALENESS_SECS)
@@ -166,7 +186,7 @@ sequenceDiagram
     RT-->>U: MintResult
 ```
 
-`SYWrapper` and `PrincipalManager` each check `Permissioning` independently — neither relies on `Router` (or any other caller) to have checked on its behalf, so calling either contract directly, bypassing `Router` entirely, is exactly as eligibility-gated as going through it.
+`SYWrapper` and `PrincipalManager` each check both compliance layers independently — neither relies on `Router` (or any other caller) to have checked on its behalf, so calling either contract directly, bypassing `Router` entirely, is exactly as gated as going through it. The SAC's `authorized()` is the mandatory floor, checked first; `Permissioning` is Principal's own optional additional layer.
 
 #### AMM swap: SY → PT
 
@@ -219,6 +239,7 @@ sequenceDiagram
     participant U as User
     participant RT as Router
     participant PM as PrincipalManager
+    participant UND as Underlying SAC
     participant PERM as Permissioning
     participant OA as OracleAdapter
     participant PT as PTToken
@@ -228,6 +249,8 @@ sequenceDiagram
     U->>RT: redeem_at_maturity(pt_amount, yt_amount)
     RT->>PM: redeem(from=user, pt_amount, yt_amount)
     PM->>PM: assert now at or after maturity
+    PM->>UND: authorized(user)
+    UND-->>PM: true or revert NotAuthorizedOnSac
     PM->>PERM: is_allowed(user)
     PERM-->>PM: true or revert PermissionDenied
     PM->>OA: is_fresh(MAX_ORACLE_STALENESS_SECS)
@@ -414,7 +437,9 @@ flowchart LR
 | Permissioning | `acc_grant`, `acc_rev`, `ast_grant`, `ast_rev` | Refresh eligibility cache for affected account and asset |
 | SYWrapper | `deposit` | Update TVL and SY supply; push market update |
 | SYWrapper | `withdraw` | Update TVL and SY supply |
-| SYWrapper | `remediate` | Log compliance-recovery action for audit trail; refresh affected account's balance |
+| SYWrapper / PTToken / YTToken | `seize` | Log compliance-recovery action for audit trail; refresh affected account's and escrow's balance |
+| SYWrapper / PTToken / YTToken | `esc_set` | Record the configured `RecoveryEscrow` address |
+| RecoveryEscrow | `seize_sy`, `seize_pt`, `seize_yt` | Log the orchestrated recovery action, including the unwrapped amount for `seize_sy` |
 | PrincipalManager | `mint` | Update outstanding PT/YT supply and user position index |
 | PrincipalManager | `redeem` | Update settlement log and reduce supply |
 | PrincipalManager | `recombine` | Update supply and user position index |
@@ -991,7 +1016,10 @@ OracleAdapter contract (on-chain)
 | `require_auth()` on all mutations | Every state-changing call requires Soroban-native authorization |
 | Monotonic oracle timestamps | New values rejected if `timestamp ≤ stored_timestamp` |
 | Oracle freshness at mint/redeem | `is_fresh()` called before any operation that prices against the oracle |
-| Eligibility checks | `Permissioning.is_allowed()` (account-level) at every deposit, withdraw, mint, and redeem, on both the sending and receiving side — not only the recipient — so a revoked account is frozen rather than merely blocked from new positions. `PTToken`/`YTToken` transfers additionally check `is_allowed_for_asset()` per token, enabling independent PT/YT eligibility policies. |
+| SAC authorization inheritance | `underlying_SAC.authorized(account)` — the mandatory floor, read live from the issuer's actual Stellar Asset Contract — checked at every deposit, withdraw, mint, redeem, and PT/YT transfer, on both the sending and receiving side. No separate registry to fall out of sync with the issuer's own decisions. |
+| Eligibility checks (optional layer) | `Permissioning.is_allowed()` (account-level), layered on top of SAC authorization, so a revoked account is frozen rather than merely blocked from new positions. `PTToken`/`YTToken` transfers additionally check `is_allowed_for_asset()` per token, enabling independent PT/YT eligibility policies. Can only narrow the SAC floor, never loosen it. |
+| Market-creation gating | `initialize` on `SYWrapper`, `PrincipalManager`, `PTToken`, `YTToken` requires `admin == underlying_SAC.admin()` (read live) and `admin.require_auth()` — a market cannot be created without the actual issuer's participation. |
+| Compliance-recovery authentication | `RecoveryEscrow.seize_*` requires `caller == underlying_SAC.admin()` (live) and requires the target to already be deauthorized on the SAC — the escrow has no admin key of its own, so there's nothing separate to compromise. |
 | Global pause | `RiskControl.pause()` halts all minting, trading, and redemption |
 | Rolling circuit breaker | Caps deposit volume per 24-hour window; resets automatically |
 | Slippage protection | `min_out` on every Router swap; reverts with `SlippageExceeded` |
@@ -1026,7 +1054,9 @@ OracleAdapter contract (on-chain)
 
 ### 9.1 Contract deployment order
 
-`PTToken` and `YTToken` have a circular address dependency with `PrincipalManager` because each token must know its authorized minter while the manager must know both token addresses. This is resolved with staged initialization as documented in TECHNICAL_SPECIFICATION.md §17.1.
+`PTToken` and `YTToken` have a circular address dependency with `PrincipalManager` because each token must know its authorized minter while the manager must know both token addresses. `RecoveryEscrow` has the same kind of circularity with `SYWrapper`/`PTToken`/`YTToken`. Both are resolved with staged initialization as documented in TECHNICAL_SPECIFICATION.md §17.1.
+
+**Every `initialize` in Stage A and Stage B below must be signed by the underlying SAC's actual admin key** — `admin.require_auth()` plus `admin == underlying_SAC.admin()` (read live) is checked on `SYWrapper`, `PTToken`, `YTToken`, and `PrincipalManager`. A deployment script run by anyone other than the issuer's own admin key fails at this step.
 
 ```
 Stage A — Infrastructure (once per underlying asset)
@@ -1034,15 +1064,27 @@ Stage A — Infrastructure (once per underlying asset)
   Step 2  Permissioning       no dependencies
   Step 3  RiskControl         no dependencies
   Step 4  SYWrapper           needs: underlying asset SAC address, Permissioning
+                                     admin must equal underlying SAC's admin()
 
 Stage B — Per-maturity contracts (repeat per expiry date)
-  Step 5  PTToken             initialize without minter
-  Step 6  YTToken             initialize without minter; needs: OracleAdapter
+  Step 5  PTToken             initialize without minter or escrow; needs: underlying SAC
+                                     admin must equal underlying SAC's admin()
+  Step 6  YTToken             initialize without minter or escrow; needs: OracleAdapter, underlying SAC
+                                     admin must equal underlying SAC's admin()
   Step 7  PrincipalManager    needs: SYWrapper, OracleAdapter, Permissioning,
-                                     RiskControl, PTToken, YTToken, maturity timestamp
+                                     RiskControl, underlying SAC, maturity timestamp
+                                     admin must equal underlying SAC's admin()
   Step 8  PTToken.set_minter(PrincipalManager)
           YTToken.set_minter(PrincipalManager)
   Step 9  MarketPool          needs: PTToken, SYWrapper, OracleAdapter, RiskControl
+
+Stage A.5 — RecoveryEscrow (once per underlying asset, after Stage B's token contracts exist)
+  Step 4.5  RecoveryEscrow    needs: underlying SAC, SYWrapper, PTToken, YTToken
+            SYWrapper.set_recovery_escrow(admin, escrow)
+            PTToken.set_recovery_escrow(admin, escrow)
+            YTToken.set_recovery_escrow(admin, escrow)
+            Permissioning.grant_account(escrow); grant_asset(escrow, pt_token); grant_asset(escrow, yt_token)
+            underlying_SAC.set_authorized(escrow, true)   -- issuer pre-authorizes the escrow to hold the asset
 
 Stage C — Router (once; re-register per new maturity)
   Step 10 Router              initialize once; call register_market for each maturity
@@ -1161,7 +1203,11 @@ Grant-review expectation: all user positions, LP balances, eligibility records, 
 | Permissioning | `ast_rev` | `(caller: Address, account: Address, asset: Address)` |
 | SYWrapper | `deposit` | `(from, amount, shares_minted, exchange_rate)` |
 | SYWrapper | `withdraw` | `(from, shares, underlying_returned)` |
-| SYWrapper | `remediate` | `(caller, account, shares, underlying_released)` |
+| SYWrapper / PTToken / YTToken | `seize` | `(caller: Address, account: Address, amount: i128)` — `caller` is always the configured `RecoveryEscrow` |
+| SYWrapper / PTToken / YTToken | `esc_set` | `(escrow: Address)` |
+| RecoveryEscrow | `seize_sy` | `(caller, account, shares, unwrapped_underlying)` |
+| RecoveryEscrow | `seize_pt` | `(caller, account, amount)` |
+| RecoveryEscrow | `seize_yt` | `(caller, account, amount)` |
 | PrincipalManager | `mint` | `(from, sy_shares, pt_minted, yt_minted, oracle_rate)` |
 | PrincipalManager | `redeem` | `(from, pt, yt, underlying_pt, underlying_yt, final_rate)` |
 | PrincipalManager | `recombine` | `(from, pt_amount, sy_returned)` |

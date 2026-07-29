@@ -15,14 +15,16 @@ Principal Protocol is a Soroban-native yield tokenization and trading infrastruc
 
 The first supported market targets **Ondo USDY on Stellar** — a tokenized US Treasury-backed note whose value increases continuously as interest accrues. The architecture is asset-agnostic and designed to extend to any Stellar yield-bearing asset.
 
-Seven of nine contracts are implemented and unit-tested:
+Eight of ten contracts are implemented and unit-tested:
 
 | Status | Contents |
 |---|---|
-| **Implemented** | OracleAdapter, Permissioning, RiskControl, SYWrapper, PrincipalManager, PTToken, YTToken |
+| **Implemented** | OracleAdapter, Permissioning, RiskControl, SYWrapper, PrincipalManager, PTToken, YTToken, RecoveryEscrow |
 | **Not yet implemented** | MarketPool, Router |
 
-`PTToken` and `YTToken` are correct and tested as standalone contracts, but `PrincipalManager` does not yet call them — it still mints/burns against its own internal balance maps. Wiring that integration, along with `MarketPool` and `Router`, is the remaining work. This document covers the complete protocol design, including the parts not yet built.
+`PTToken` and `YTToken` are correct and tested as standalone contracts, but `PrincipalManager` does not yet call them — it still mints/burns against its own internal balance maps. Wiring that integration, along with `MarketPool` and `Router`, is the remaining work — it also unblocks `RecoveryEscrow.finalize_pt`/`finalize_yt` (§6.3), which depends on the same wiring. This document covers the complete protocol design, including the parts not yet built.
+
+Compliance is enforced through two layers everywhere a holder or recipient is checked: `underlying_SAC.authorized(account)` (the mandatory floor, read live from the actual Stellar Asset Contract the underlying is issued as) and `Permissioning` (an optional, Principal-specific additional layer — see §6.4 for why both exist). Creating a market at all requires the underlying SAC's real `admin()` to authorize it.
 
 ---
 
@@ -68,10 +70,11 @@ Seven of nine contracts are implemented and unit-tested:
 | Contract | Crate | Status | Role |
 |---|---|---|---|
 | `OracleAdapter` | `principal_oracle_adapter` | Implemented | USDY/USDC reference value with freshness and admin controls |
-| `Permissioning` | `principal_permissioning` | Implemented | Account and per-asset eligibility registry |
+| `Permissioning` | `principal_permissioning` | Implemented | Account and per-asset eligibility registry — optional layer on top of SAC authorization |
 | `RiskControl` | `principal_risk_control` | Implemented | Global pause, multi-pauser roles, rolling circuit breaker |
-| `SYWrapper` | `principal_sy_wrapper` | Implemented | Standardized yield wrapper; holds underlying, issues SY shares; eligibility-gated deposit/withdraw; `remediate()` for compliance recovery |
-| `PrincipalManager` | `principal_manager` | Implemented | Tokenization engine: mints/burns PT and YT internally, settles at maturity; eligibility-gated mint/redeem |
+| `SYWrapper` | `principal_sy_wrapper` | Implemented | Standardized yield wrapper; holds underlying, issues SY shares; deposit/withdraw gated on SAC authorization + Permissioning; `seize()` for compliance recovery |
+| `PrincipalManager` | `principal_manager` | Implemented | Tokenization engine: mints/burns PT and YT internally, settles at maturity; mint/redeem gated the same two-layer way |
+| `RecoveryEscrow` | `principal_recovery_escrow` | Implemented | Authenticates the underlying SAC's real `admin()` (live, no key of its own) and orchestrates `seize` across SYWrapper/PTToken/YTToken |
 | `PTToken` | `principal_pt_token` | Implemented | Standalone SEP-41 PT token contract, not yet called by PrincipalManager |
 | `YTToken` | `principal_yt_token` | Implemented | Standalone SEP-41 YT token contract with claimable yield, not yet called by PrincipalManager |
 | `MarketPool` | `principal_market_pool` | Not yet implemented | Yield-curve AMM for PT ↔ SY trading |
@@ -187,9 +190,9 @@ Pre-conditions (checked in order; any failure reverts the transaction):
 4. `OracleAdapter.is_fresh(MAX_ORACLE_STALENESS_SECS) == true` — reverts `OracleStale`
 5. `sy_shares > 0` — reverts `ZeroAmount`
 
-### 5.3 Recombination (pre-maturity exit)
+### 5.3 Recombination (pre-maturity exit) — designed, not yet implemented
 
-A user holding both PT and YT in equal notional amounts can recombine into SY shares before maturity:
+`PrincipalManager` has no `recombine` function today; this section documents the intended accounting, which the Router (§8, also not yet implemented) is meant to call. A user holding both PT and YT in equal notional amounts would recombine into SY shares before maturity:
 
 ```
 // require pt_amount == yt_amount (equal notional, reverts RecombineMismatch otherwise)
@@ -270,12 +273,14 @@ PTToken implements the SEP-41 token interface in full, including `approve` / `al
 
 ```rust
 // Lifecycle
-fn initialize(env, admin, permissioning: Address, maturity: u64,
+fn initialize(env, admin, permissioning: Address, underlying: Address, maturity: u64,
               name: String, symbol: String, decimals: u32)
-fn set_minter(env, admin, minter: Address)    // one-time; reverts MinterAlreadySet if called twice
+              // admin must equal underlying_SAC.admin() (read live) and must authorize this call
+fn set_minter(env, admin, minter: Address)              // one-time; reverts MinterAlreadySet if called twice
+fn set_recovery_escrow(env, admin, escrow: Address)      // one-time; reverts RecoveryEscrowAlreadySet if called twice
 
 // SEP-41 token interface
-fn transfer(env, from, to, amount)            // enforces eligibility on BOTH from and to
+fn transfer(env, from, to, amount)            // enforces both compliance layers on BOTH from and to
 fn transfer_from(env, spender, from, to, amount)
 fn approve(env, from, spender, amount, expiration_ledger)
 fn allowance(env, from, spender) -> i128
@@ -285,29 +290,36 @@ fn name(env) -> String
 fn symbol(env) -> String
 
 // Protocol-only (callable only by the registered minter)
-fn mint(env, to, amount)                      // enforces eligibility on `to`
-fn burn(env, from, amount)                    // no eligibility check — only removes value
+fn mint(env, to, amount)                      // enforces both compliance layers on `to`
+fn burn(env, from, amount)                    // no compliance check — only removes value
+
+// Compliance recovery (callable only by the configured RecoveryEscrow)
+fn seize(env, caller, account, amount) -> i128  // forced transfer to `caller`, no holder authorization
 
 // Informational
 fn total_supply(env) -> i128
 fn maturity(env) -> u64
 fn minter(env) -> Address
 fn get_admin(env) -> Address
+fn recovery_escrow(env) -> Address
+fn underlying_address(env) -> Address
 ```
 
-**Eligibility, precisely:** `transfer` and `transfer_from` check both `from` and `to` — not only the recipient. Checking only `to` would let a revoked holder freely move PT to any still-eligible party before being frozen, undermining the point of eligibility enforcement. Each check is itself two-layered: the coarse, account-level `Permissioning.is_allowed(account)` gate, **and** `Permissioning.is_allowed_for_asset(account, this_contract_address)` — a per-token gate keyed to `PTToken`'s own contract address. This is a deliberate deviation from an earlier draft of this spec, which called for checking only `is_allowed(to)`. Using the per-asset check as well makes **asymmetric PT/YT eligibility** possible: an admin can grant an account access to PT without granting YT (or vice versa) for the same market, using allow-list infrastructure that already exists rather than adding a new mechanism. `mint` checks only `to`, the same way. `burn` has no eligibility check at all — it only removes value and never redirects it to a new party, so there's nothing to gate.
+**Compliance, precisely:** `transfer` and `transfer_from` check both `from` and `to` — not only the recipient. Checking only `to` would let a revoked holder freely move PT to any still-eligible party before being frozen, undermining the point of compliance enforcement. Each side is checked against two layers: `underlying_SAC.authorized(account)` — the mandatory floor, read live from the actual Stellar Asset Contract, and `Permissioning.is_allowed(account)` **and** `Permissioning.is_allowed_for_asset(account, this_contract_address)` — Principal's own optional, per-token narrowing. Using the per-asset Permissioning check makes **asymmetric PT/YT eligibility** possible: an admin can grant an account access to PT without granting YT (or vice versa) for the same market, using allow-list infrastructure that already exists rather than adding a new mechanism. The SAC check cannot be narrowed away by Permissioning, only added to. `mint` checks only `to`, the same way, on both layers. `burn` has no compliance check at all — it only removes value and never redirects it to a new party, so there's nothing to gate. `seize` is restricted to the one configured `RecoveryEscrow` address and moves a balance without the holder's authorization — see §6.3.
 
 ### 6.2 YTToken
 
-YTToken also implements SEP-41 in full, plus yield claiming and index management, gated identically to PTToken.
+YTToken also implements SEP-41 in full, plus yield claiming, index management, and `seize`, gated identically to PTToken.
 
 ```rust
 // Lifecycle
-fn initialize(env, admin, permissioning: Address, oracle: Address, maturity: u64,
+fn initialize(env, admin, permissioning: Address, underlying: Address, oracle: Address, maturity: u64,
               name: String, symbol: String, decimals: u32)
-fn set_minter(env, admin, minter: Address)    // one-time; reverts MinterAlreadySet if called twice
+              // admin must equal underlying_SAC.admin() (read live) and must authorize this call
+fn set_minter(env, admin, minter: Address)
+fn set_recovery_escrow(env, admin, escrow: Address)
 
-// SEP-41 token interface (same as PTToken, same both-sides eligibility check)
+// SEP-41 token interface (same as PTToken, same both-sides, both-layer compliance check)
 fn transfer(env, from, to, amount)
 fn transfer_from(env, spender, from, to, amount)
 fn approve(env, from, spender, amount, expiration_ledger)
@@ -321,6 +333,9 @@ fn symbol(env) -> String
 fn mint(env, to, amount)
 fn burn(env, from, amount)
 
+// Compliance recovery
+fn seize(env, caller, account, amount) -> i128  // settles both sides' pending yield first (see §5.5)
+
 // Yield management
 fn update_yield_index(env)                            // permissionless; reverts OracleStale if not fresh
 fn claim_yield(env, from) -> i128                     // returns USDY amount claimed; from.require_auth()
@@ -333,9 +348,43 @@ fn total_supply(env) -> i128
 fn maturity(env) -> u64
 fn minter(env) -> Address
 fn get_admin(env) -> Address
+fn recovery_escrow(env) -> Address
+fn underlying_address(env) -> Address
 ```
 
-The two-step initialization (`initialize` then `set_minter`) breaks the circular deployment dependency between `PTToken`/`YTToken` and `PrincipalManager`: both token contracts are deployed first (with no minter), then `PrincipalManager` is deployed with their addresses, and finally `set_minter` is called on each token to register `PrincipalManager`. Until `set_minter` is called, `mint` and `burn` revert with `MinterNotSet` (not the generic `Unauthorized` an earlier draft of this spec called for — a distinct error code is more useful to callers than conflating "no minter registered yet" with "wrong caller").
+The two-step initialization (`initialize` then `set_minter`) breaks the circular deployment dependency between `PTToken`/`YTToken` and `PrincipalManager`: both token contracts are deployed first (with no minter), then `PrincipalManager` is deployed with their addresses, and finally `set_minter` is called on each token to register `PrincipalManager`. Until `set_minter` is called, `mint` and `burn` revert with `MinterNotSet` (not the generic `Unauthorized` an earlier draft of this spec called for — a distinct error code is more useful to callers than conflating "no minter registered yet" with "wrong caller"). `set_recovery_escrow` follows the identical one-time pattern, breaking the equivalent circularity with `RecoveryEscrow` (§6.3).
+
+### 6.3 RecoveryEscrow
+
+`RecoveryEscrow` is the one place that authenticates the underlying SAC's real admin and verifies a target is actually deauthorized before any compliance recovery happens. `SYWrapper.seize`, `PTToken.seize`, and `YTToken.seize` each just trust calls from their own configured `RecoveryEscrow` address — none of them re-derive that authority themselves.
+
+```rust
+fn initialize(env, underlying: Address, sy_wrapper: Address, pt_token: Address, yt_token: Address)
+              // verifies all three position contracts report the same underlying_address()
+
+fn seize_sy(env, caller, account, shares) -> i128
+              // caller must equal underlying_SAC.admin() (live); account must be deauthorized
+              // on the SAC. Seizes via SYWrapper.seize, then immediately unwraps via
+              // SYWrapper.withdraw(from=self, to=self) -- ready for the issuer's native clawback.
+
+fn seize_pt(env, caller, account, amount) -> i128
+              // same authorization; seizes via PTToken.seize. Does not unwind further -- see below.
+
+fn seize_yt(env, caller, account, amount) -> i128
+              // same authorization; seizes via YTToken.seize.
+
+fn underlying_address(env) -> Address
+```
+
+`RecoveryEscrow` has **no admin key of its own**. Every `seize_*` call re-reads `underlying_SAC.admin()` live — if the issuer rotates their admin key, the new key is authoritative immediately, with nothing to update in this contract. The actual security boundary is enforced on the other side: `set_recovery_escrow` on each of `SYWrapper`/`PTToken`/`YTToken` is itself one-time and admin-gated, so pointing a market's contracts at a rogue escrow requires that market's own real admin to have done so.
+
+`seize_sy` is a complete, working recovery path today: seize and unwrap happen in the same call, since SY has no maturity. `seize_pt` and `seize_yt` correctly seize a flagged account's real balance — this is implemented and tested — but there is currently no `finalize_pt`/`finalize_yt` that redeems the seized position at maturity and unwraps it toward the underlying the way `seize_sy` does immediately. Building that requires `PrincipalManager` to actually call `PTToken.burn()`/`YTToken.burn()` in exchange for underlying value, which it doesn't do for *any* caller yet (§6, POC scope note). There is no function anywhere, for anyone, that burns a real `PTToken`/`YTToken` balance for value except through `PrincipalManager`'s internal, disconnected balance maps. Writing `finalize_pt`/`finalize_yt` against an assumed future interface would be guesswork; it belongs in the same Router-integration work that wires `PrincipalManager` to the real token contracts.
+
+`RecoveryEscrow` is distinct from `LiquidationAdapter` (§4 of COMPLIANT_SETTLEMENT_DESIGN.md, not yet implemented): `RecoveryEscrow` is issuer-initiated compliance recovery against a deauthorized holder; `LiquidationAdapter` is a third-party lending market liquidating an under-collateralized borrower. Different caller, different trigger, different destination for the seized value.
+
+### 6.4 Why two compliance layers, not one
+
+Every check above runs `underlying_SAC.authorized(account)` first, then `Permissioning.is_allowed(...)`. Both are real, public, no-auth-required Soroban functions — `authorized(id: Address) -> bool` and `admin(env) -> Address` are part of the built-in `StellarAssetInterface` every Stellar Asset Contract implements, confirmed against Stellar's own documentation. Relying on the SAC directly, rather than a separate Principal-managed registry, means there is exactly one source of truth: if an issuer deauthorizes a wallet on the underlying asset itself, every Principal contract reflects that immediately, with no separate action required and no risk of the two falling out of sync. `Permissioning` is kept as a second, optional layer because the SAC's `authorized()` can only express "can this address hold the underlying asset at all" — it has no concept of Principal's own derivative instruments, so it cannot express PT-vs-YT asymmetric policy (§6.1). Permissioning narrows within the SAC floor; it can never loosen it, since both checks must independently pass.
 
 ---
 
@@ -753,8 +802,9 @@ Soroban provides three storage tiers. The protocol uses:
 | Key | Type | Tier |
 |---|---|---|
 | `Admin` | `Address` | instance |
-| `Underlying` | `Address` | instance |
+| `Underlying` | `Address` | instance — the underlying SAC, used for live `authorized()`/`admin()` reads |
 | `Permissioning` | `Address` | instance |
+| `RecoveryEscrow` | `Address` | instance (absent until `set_recovery_escrow`) |
 | `TotalUnderlying` | `i128` | instance |
 | `TotalShares` | `i128` | instance |
 | `Paused` | `bool` | instance |
@@ -785,6 +835,8 @@ Soroban provides three storage tiers. The protocol uses:
 | `Admin` | `Address` | instance |
 | `Minter` | `Address` | instance (absent until `set_minter`) |
 | `Permissioning` | `Address` | instance |
+| `Underlying` | `Address` | instance — the underlying SAC, used for live `authorized()`/`admin()` reads |
+| `RecoveryEscrow` | `Address` | instance (absent until `set_recovery_escrow`) |
 | `Maturity` | `u64` | instance |
 | `Name` | `String` | instance |
 | `Symbol` | `String` | instance |
@@ -800,6 +852,8 @@ Soroban provides three storage tiers. The protocol uses:
 | `Admin` | `Address` | instance |
 | `Minter` | `Address` | instance (absent until `set_minter`) |
 | `Permissioning` | `Address` | instance |
+| `Underlying` | `Address` | instance — the underlying SAC, used for live `authorized()`/`admin()` reads |
+| `RecoveryEscrow` | `Address` | instance (absent until `set_recovery_escrow`) |
 | `Oracle` | `Address` | instance |
 | `Maturity` | `u64` | instance |
 | `Name` | `String` | instance |
@@ -883,7 +937,10 @@ All contracts define `#[contracterror]` enums with stable numeric codes.
 | 6 | `Paused` | operation while paused |
 | 7 | `ArithmeticOverflow` | overflow in fixed-point computation |
 | 8 | `PermissionDenied` | account not in allow-list (deposit, or either side of withdraw) |
-| 9 | `AccountNotRevoked` | `remediate` called on an account Permissioning still considers eligible |
+| 9 | `NotAuthorizedOnSac` | account fails `underlying_SAC.authorized()` (deposit, or either side of withdraw) |
+| 10 | `RecoveryEscrowAlreadySet` | `set_recovery_escrow` called twice |
+| 11 | `NotRecoveryEscrow` | `seize` called by an address other than the configured `RecoveryEscrow` |
+| 12 | `IssuerMismatch` | `initialize` called with `admin` ≠ `underlying_SAC.admin()` |
 
 ### PTToken
 
@@ -895,17 +952,25 @@ All contracts define `#[contracterror]` enums with stable numeric codes.
 | 4 | `ZeroAmount` | amount ≤ 0 |
 | 5 | `InsufficientBalance` | transfer or burn > balance |
 | 6 | `InsufficientAllowance` | `transfer_from` > allowance, or allowance expired |
-| 7 | `PermissionDenied` | account fails account-level or per-asset eligibility |
+| 7 | `PermissionDenied` | account fails account-level or per-asset Permissioning eligibility |
 | 8 | `MinterAlreadySet` | `set_minter` called twice |
 | 9 | `MinterNotSet` | `mint`/`burn` called before `set_minter` |
+| 10 | `NotAuthorizedOnSac` | account fails `underlying_SAC.authorized()` |
+| 11 | `IssuerMismatch` | `initialize` called with `admin` ≠ `underlying_SAC.admin()` |
+| 12 | `RecoveryEscrowAlreadySet` | `set_recovery_escrow` called twice |
+| 13 | `NotRecoveryEscrow` | `seize` called by an address other than the configured `RecoveryEscrow` |
 
 ### YTToken
 
-Same error set as PTToken, plus:
+Same error set as PTToken (codes 1–9 identical), plus:
 
 | Code | Name | Trigger |
 |---|---|---|
 | 10 | `OracleStale` | `update_yield_index` called when the oracle isn't fresh |
+| 11 | `NotAuthorizedOnSac` | account fails `underlying_SAC.authorized()` |
+| 12 | `IssuerMismatch` | `initialize` called with `admin` ≠ `underlying_SAC.admin()` |
+| 13 | `RecoveryEscrowAlreadySet` | `set_recovery_escrow` called twice |
+| 14 | `NotRecoveryEscrow` | `seize` called by an address other than the configured `RecoveryEscrow` |
 
 ### PrincipalManager
 
@@ -921,7 +986,21 @@ Same error set as PTToken, plus:
 | 8 | `InsufficientBalance` | redeem > PT or YT balance |
 | 9 | `Paused` | operation while paused |
 | 10 | `PermissionDenied` | user not in allow-list |
-| 11 | `RecombineMismatch` | PT and YT amounts differ at recombination |
+| 11 | `NotAuthorizedOnSac` | account fails `underlying_SAC.authorized()` (mint or redeem) |
+| 12 | `IssuerMismatch` | `initialize` called with `admin` ≠ `underlying_SAC.admin()` |
+
+There is no `RecombineMismatch` code — `recombine` is not implemented (§5.3).
+
+### RecoveryEscrow
+
+| Code | Name | Trigger |
+|---|---|---|
+| 1 | `AlreadyInitialized` | `initialize` called twice |
+| 2 | `NotInitialized` | any `seize_*` called before `initialize` |
+| 3 | `Unauthorized` | caller ≠ `underlying_SAC.admin()` (read live) |
+| 4 | `TargetStillAuthorized` | `seize_*` called on an account still `authorized()` on the underlying SAC |
+| 5 | `ZeroAmount` | seize amount/shares ≤ 0 |
+| 6 | `PositionUnderlyingMismatch` | `initialize` called with a SYWrapper/PTToken/YTToken whose `underlying_address()` doesn't match |
 
 ### MarketPool (not yet implemented)
 
@@ -1029,16 +1108,19 @@ All arithmetic uses `checked_mul` / `checked_div` with explicit overflow handlin
 | Stale oracle price | `is_fresh()` checked at every mint and redemption; relay enforces `max_stale_seconds` aligned to `MAX_ORACLE_STALENESS_SECS` |
 | Oracle value manipulation | Admin-only `set_reference_value`; monotonic timestamps; multi-source quorum not yet implemented |
 | Unauthorized mint | `require_auth()` on all entrypoints; `set_minter` locks mint/burn to a single registered minter only |
-| Permissioning bypass | `is_allowed()` (account-level) checked at deposit, withdraw, mint, and redeem, on both the sending and receiving side; `PTToken`/`YTToken` transfers additionally check `is_allowed_for_asset()` per token |
+| Permissioning bypass | `is_allowed()` (account-level) checked at deposit, withdraw, mint, and redeem, on both the sending and receiving side, on top of the mandatory `underlying_SAC.authorized()` floor (§6.4); `PTToken`/`YTToken` transfers additionally check `is_allowed_for_asset()` per token |
+| Deauthorized SAC holder retains a position | `underlying_SAC.authorized(account)` checked on both sides of every deposit/withdraw/mint/redeem/transfer, inherited live from the issuer with no separate registry to fall out of sync (§6.4) |
+| Market stood up over an issuer's objection | `initialize` on `SYWrapper`/`PrincipalManager`/`PTToken`/`YTToken` reverts `IssuerMismatch` unless `admin == underlying_SAC.admin()` (read live) and `admin.require_auth()` |
 | Flash deposit spike | Rolling 24h `check_deposit` circuit breaker in `RiskControl` — logic implemented and tested, not yet cross-contract wired into `SYWrapper`/`PrincipalManager` (see PROOF_OF_CONCEPT.md's Known Limitations) |
-| Admin key compromise | Single-step `transfer_admin`, callable only by the current admin; multisig recommended for production. `SYWrapper.remediate()` additionally requires the target account to already be revoked in `Permissioning`, so a compromised `SYWrapper` admin key alone cannot drain an arbitrary account — `Permissioning`'s admin would also have to have revoked it first |
+| Admin key compromise | Single-step `transfer_admin`, callable only by the current admin; multisig recommended for production. `seize()` on `SYWrapper`/`PTToken`/`YTToken` is restricted to the one configured `RecoveryEscrow` address, so a compromised token-contract admin key alone cannot seize a balance |
 | MEV / sandwich attack | `min_out` slippage guard on all Router swaps; reverts `SlippageExceeded` |
 | Pool manipulation | Built-in time-weighted implied-rate accumulator in `MarketPool` |
 | Cross-maturity confusion | Each maturity is a separate `PrincipalManager` + `PTToken` + `YTToken` + `MarketPool` deployment; Router registry maps `maturity_id` to contract set |
 | Integer overflow | `overflow-checks = true` in Rust release profile; all multiplications use `checked_mul` |
 | AMM division-by-zero at expiry | `τ_secs == 0` → `Expired` revert; swaps blocked at and after maturity |
-| Two-phase init abuse | `set_minter` callable only once (reverts `MinterAlreadySet` if a minter is already registered) |
-| Compliance-recovery abuse | `SYWrapper.remediate()` reverts `AccountNotRevoked` unless the target is already ineligible in `Permissioning` — the admin role cannot act against an account merely because it holds a balance |
+| Two-phase init abuse | `set_minter` and `set_recovery_escrow` are each callable only once (`MinterAlreadySet` / `RecoveryEscrowAlreadySet` on a second call) |
+| Compliance-recovery abuse | `RecoveryEscrow.seize_*` reverts `Unauthorized` unless the caller is the underlying SAC's real, live `admin()`, and `TargetStillAuthorized` unless the target account is already deauthorized on that SAC — the issuer cannot act against an account merely because it holds a balance, and no other party can invoke recovery at all (§6.3) |
+| Rogue RecoveryEscrow substitution | `set_recovery_escrow` is one-time and admin-gated on each of `SYWrapper`/`PTToken`/`YTToken`, so redirecting seizure authority requires that market's own real admin |
 | Stale yield-index advancement | `YTToken.update_yield_index()` reverts `OracleStale` unless the oracle is fresh, matching the same freshness discipline `PrincipalManager` applies at mint/redeem |
 
 ---
@@ -1049,6 +1131,10 @@ All arithmetic uses `checked_mul` / `checked_div` with explicit overflow handlin
 
 `PTToken` and `YTToken` each need the `PrincipalManager` address (as their minter), while `PrincipalManager` needs `PTToken` and `YTToken` addresses at initialization. This circular dependency is resolved with a **two-phase initialization** pattern: token contracts are deployed first (with no minter registered), then `PrincipalManager` is deployed, then `set_minter` is called on each token. Until `set_minter` is called, `mint` and `burn` on the token contracts revert with `MinterNotSet`. In the current implementation `PrincipalManager` does not yet call `PTToken`/`YTToken` at all, so this sequence is not yet exercised end-to-end — see PROOF_OF_CONCEPT.md's Known Limitations.
 
+`RecoveryEscrow` has the same circular-dependency shape, resolved the same way: `set_recovery_escrow` on `SYWrapper`/`PTToken`/`YTToken` is a one-time, admin-gated setter, callable only after `RecoveryEscrow` itself has been deployed and initialized with their addresses.
+
+Every `initialize` call below that takes an `admin` parameter **requires the underlying SAC's real, live `admin()` to sign the transaction** — `--source` must be the issuer's own key, not a generic protocol deployer key (§6, market-creation gating). A deployer without that key cannot stand up a market on someone else's regulated asset.
+
 ```
 Phase A — Deploy and initialize all infrastructure (once per asset):
   1. OracleAdapter    stellar contract deploy + invoke initialize --admin <ADMIN>
@@ -1056,22 +1142,26 @@ Phase A — Deploy and initialize all infrastructure (once per asset):
   3. RiskControl      stellar contract deploy + invoke initialize --admin <ADMIN> --cb-limit <N>
   4. SYWrapper        stellar contract deploy + invoke initialize --admin <ADMIN>
                         --underlying <ASSET_CONTRACT_ADDRESS> --permissioning <PERMISSIONING_ADDRESS>
+                        (--source must be the underlying SAC's admin key; reverts IssuerMismatch otherwise)
 
 Phase B — Deploy per-maturity contracts (repeat for each maturity date):
   5. PTToken          stellar contract deploy + invoke initialize
                         --admin <ADMIN> --permissioning <PERMISSIONING_ADDRESS>
+                        --underlying <ASSET_CONTRACT_ADDRESS>
                         --maturity <UNIX_TIMESTAMP>
                         --name "PT-USDY-3M" --symbol "PT-USDY-3M" --decimals 7
-                        (no minter yet — two-phase init)
+                        (no minter, no recovery escrow yet — two-phase init)
 
   6. YTToken          stellar contract deploy + invoke initialize
                         --admin <ADMIN> --permissioning <PERMISSIONING_ADDRESS>
+                        --underlying <ASSET_CONTRACT_ADDRESS>
                         --oracle <ORACLE_ADDRESS> --maturity <UNIX_TIMESTAMP>
                         --name "YT-USDY-3M" --symbol "YT-USDY-3M" --decimals 7
-                        (no minter yet)
+                        (no minter, no recovery escrow yet)
 
   7. PrincipalManager stellar contract deploy + invoke initialize
-                        --admin <ADMIN> --sy-wrapper <SY_WRAPPER>
+                        --admin <ADMIN> --underlying <ASSET_CONTRACT_ADDRESS>
+                        --sy-wrapper <SY_WRAPPER>
                         --oracle <ORACLE_ADAPTER> --permissioning <PERMISSIONING>
                         --risk-control <RISK_CONTROL>
                         --pt-token <PT_TOKEN> --yt-token <YT_TOKEN>
@@ -1082,15 +1172,31 @@ Phase B — Deploy per-maturity contracts (repeat for each maturity date):
      PTToken.set_minter(admin=<ADMIN>, minter=<PRINCIPAL_MANAGER>)
      YTToken.set_minter(admin=<ADMIN>, minter=<PRINCIPAL_MANAGER>)
 
-  9. MarketPool       stellar contract deploy + invoke initialize
+Phase A.5 — Deploy RecoveryEscrow (once per asset, after SYWrapper; before or after Phase B):
+  9. RecoveryEscrow   stellar contract deploy + invoke initialize
+                        --underlying <ASSET_CONTRACT_ADDRESS>
+                        --sy-wrapper <SY_WRAPPER> --pt-token <PT_TOKEN> --yt-token <YT_TOKEN>
+                        (reverts PositionUnderlyingMismatch if any of the three don't share the
+                        same underlying_address())
+
+ 10. Wire escrow, once per token contract:
+     SYWrapper.set_recovery_escrow(admin=<ADMIN>, escrow=<RECOVERY_ESCROW>)
+     PTToken.set_recovery_escrow(admin=<ADMIN>, escrow=<RECOVERY_ESCROW>)
+     YTToken.set_recovery_escrow(admin=<ADMIN>, escrow=<RECOVERY_ESCROW>)
+
+     Grant the escrow standing to hold the underlying and SY on recovery:
+     underlying_SAC.set_authorized(id=<RECOVERY_ESCROW>, authorize=true)
+     Permissioning.grant(<RECOVERY_ESCROW>)  (and grant it per-asset for PT/YT if used)
+
+Phase C (not yet implemented) — MarketPool and Router:
+ 11. MarketPool       stellar contract deploy + invoke initialize
                         --admin <ADMIN> --pt-token <PT_TOKEN> --sy-wrapper <SY_WRAPPER>
                         --oracle <ORACLE_ADAPTER> --risk-control <RISK_CONTROL>
                         --scalar-root <VALUE> --anchor-rate <VALUE>
                         --fee-rate <VALUE> --expiry <UNIX_TIMESTAMP>
                         --treasury <TREASURY_ADDRESS>
 
-Phase C — Deploy Router (once; re-register for each new maturity):
- 10. Router           stellar contract deploy + invoke initialize --admin <ADMIN>
+ 12. Router           stellar contract deploy + invoke initialize --admin <ADMIN>
      Router.register_market(maturity_id=<PM_ADDRESS>, market_pool=<MP_ADDRESS>, ...)
 ```
 
@@ -1135,17 +1241,18 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for the full step-by-step guide for all contr
 
 - [x] OracleAdapter — reference value, freshness, admin transfer
 - [x] Permissioning — account and asset eligibility, batch grant, TTL
-- [x] SYWrapper — deposit, withdraw, rolling exchange rate, pause, both-sides eligibility gating, `remediate()` compliance recovery
-- [x] PrincipalManager — mint PT/YT (internal balances), redeem at maturity, oracle/permissioning integration at both mint and redeem
+- [x] SYWrapper — deposit, withdraw, rolling exchange rate, pause, market-creation gating on the underlying SAC's real admin, both-sides authorization inheritance + Permissioning gating, `seize()` compliance recovery
+- [x] PrincipalManager — mint PT/YT (internal balances), redeem at maturity, market-creation gating, both-sides authorization inheritance + Permissioning + oracle integration at mint and redeem
 - [x] RiskControl — pause, pauser roles, rolling 24h circuit breaker
-- [x] Standalone `PTToken` — SEP-41 with both-sides, dual-layer (account + per-asset) eligibility gating
-- [x] Standalone `YTToken` — SEP-41 with continuous yield accrual, pre-transfer settlement, and claiming
+- [x] Standalone `PTToken` — SEP-41 with market-creation gating, both-sides authorization inheritance + dual-layer (account + per-asset) Permissioning gating, `seize()`
+- [x] Standalone `YTToken` — SEP-41 with continuous yield accrual, pre-transfer settlement, claiming, and the same gating and `seize()` as `PTToken`
+- [x] `RecoveryEscrow` — no-admin-key issuer authentication and target-deauthorization checks for compliance recovery; `seize_sy` (full seize-and-unwrap), `seize_pt`/`seize_yt` (seize only — see §6.3 for the finalize gap)
 - [x] Deterministic settlement formula with fixed-point arithmetic
-- [x] 72 unit tests across all seven implemented contracts
+- [x] 97 unit tests across all eight implemented contracts
 
 ### Not yet implemented
 
-- [ ] Wiring `PrincipalManager` to actually call `SYWrapper` and mint/burn through the real `PTToken`/`YTToken` contracts, instead of tracking balances internally
+- [ ] Wiring `PrincipalManager` to actually call `SYWrapper` and mint/burn through the real `PTToken`/`YTToken` contracts, instead of tracking balances internally — this also unblocks `RecoveryEscrow.finalize_pt`/`finalize_yt` (§6.3), which cannot be built against a token-burn-for-value interface that doesn't exist yet
 - [ ] `MarketPool` — yield-curve AMM (constant power sum invariant, time-aware scalar)
 - [ ] `Router` — single-transaction wrap/mint/swap/redeem/recombine flows
 - [ ] Flash-mint YT and flash-redeem YT routing patterns

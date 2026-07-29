@@ -1,14 +1,18 @@
 # Compliant Settlement Design — PT/YT Tokens and Permissioning Extensions
 
-Scope for this branch (`feature/phase2-compliant-pt-yt-settlement` — the branch name predates this file's rename), matching the deliverables committed to in `PRODUCT_CONCEPT_AND_COMPETITOR_ANALYSIS.md` §4/§6:
+Scope for this branch (`feature/phase2-compliant-pt-yt-settlement` — the branch name predates this file's rename):
 
 1. `PTToken` — standalone SEP-41 Principal Token. **Implemented.**
 2. `YTToken` — standalone SEP-41 Yield Token with claimable yield. **Implemented.**
-3. Close the compliance gap found during review: `Permissioning` checks extended to `SYWrapper.deposit`/`withdraw` and `PrincipalManager.redeem`. **Implemented.**
-4. Clawback Propagation on `SYWrapper`. **Implemented.**
-5. `LiquidationAdapter` — interface and design only in this pass (depends on an external Blend integration decision the team hasn't made yet; implementing against an assumed interface would be guesswork). **Not implemented.**
+3. `Permissioning` checks extended to `SYWrapper.deposit`/`withdraw` and `PrincipalManager.redeem`. **Implemented.**
+4. **Authorization inheritance** — `SYWrapper`, `PrincipalManager`, `PTToken`, `YTToken` all check `underlying_SAC.authorized(account)` live, in addition to `Permissioning`. **Implemented.**
+5. **Market-creation gating** — `initialize` on `SYWrapper`, `PrincipalManager`, `PTToken`, `YTToken` requires `admin` to equal the underlying SAC's actual `admin()`. **Implemented.**
+6. **`RecoveryEscrow`** — replaces the original `SYWrapper.remediate()` with `seize_sy`/`seize_pt`/`seize_yt`, authenticated against the SAC's live `admin()` instead of a separate protocol admin key. **Implemented for SY (full seize + unwrap); PT/YT seizure implemented, post-maturity unwind not yet possible — see §3.**
+7. `LiquidationAdapter` — a distinct mechanism from `RecoveryEscrow` (see §4); still design-only. **Not implemented.**
 
-Out of scope for this branch: `MarketPool`, `Router`, asymmetric-permissioning admin tooling beyond the primitive itself. Each gets its own branch once this lands, per TECHNICAL_SPECIFICATION.md §6/§7 sequencing.
+Out of scope for this branch: `MarketPool`, `Router`, wiring `PrincipalManager` to actually call `SYWrapper`/`PTToken`/`YTToken`. Each gets its own branch once this lands, per TECHNICAL_SPECIFICATION.md §6/§7 sequencing.
+
+**Design provenance:** items 4–6 replace this document's original design after reviewing `Principal_compliance.pdf`, an external design note proposing that Principal inherit the underlying Stellar Asset Contract's own `authorized()`/`admin()` functions directly, rather than relying solely on a separate, protocol-managed `Permissioning` registry. Both functions were verified as real, public, no-auth-required SAC interface functions (confirmed against Stellar's own documentation) before any code was written against them. The result is strictly more capable than the version it replaces: it closes an operational gap where Principal's own `Permissioning` registry could drift out of sync with the issuer's actual authorization decisions, and it ties compliance-recovery authority to the real issuer's key instead of a separate Principal-controlled admin. `Permissioning` is kept as an *additional*, optional layer rather than removed — a pure SAC `authorized()` check can't express Principal-specific narrowing like asymmetric PT/YT eligibility (§1).
 
 ---
 
@@ -107,32 +111,44 @@ Every balance-changing path (`mint`, `burn`, `transfer`, `transfer_from`) calls 
 
 ---
 
-## 2. Closing the compliance gap (audit finding)
+## 2. Compliance checks — two mandatory layers, plus market-creation gating
 
-Verified during the SCF resubmission audit: `PrincipalManager.redeem()` and `SYWrapper.deposit`/`withdraw` had no `Permissioning` check — only `mint()` did. This branch closes it:
+`PrincipalManager.redeem()` and `SYWrapper.deposit`/`withdraw` originally had no `Permissioning` check at all (only `mint()` did). That gap is closed, and a second, independent layer was added on top:
 
-- `SYWrapper.initialize` gains a `permissioning: Address` parameter. `deposit` and `withdraw` call `assert_permitted(&env, &from)` (deposit) and `assert_permitted(&env, &to)` (withdraw), mirroring the existing `assert_permitted` pattern already in `PrincipalManager`.
-- `PrincipalManager.redeem()` calls `assert_permitted(&env, &from)` before paying out, same as `mint()` already does.
+- **`Permissioning`** (Principal-specific, optional narrowing) — `SYWrapper.initialize` takes a `permissioning: Address` parameter; `deposit`/`withdraw`/`mint`/`redeem`/token `transfer` all call `assert_permitted`.
+- **SAC authorization inheritance** (mandatory floor, inherited live from the issuer) — every one of those same functions also calls `assert_sac_authorized`, which queries `underlying_SAC.authorized(account)` directly. Both `authorized(id: Address) -> bool` and `admin(env) -> Address` are real, public, no-auth-required functions on Soroban's built-in Stellar Asset Contract interface (`StellarAssetInterface`) — confirmed against Stellar's own documentation before implementation, not assumed. Unrestricted (non-`AUTH_REQUIRED`) assets return `authorized() == true` for every address by default, so this degrades gracefully for assets that don't use Stellar's authorization flags at all.
+- **Market creation** — `initialize` on `SYWrapper`, `PrincipalManager`, `PTToken`, and `YTToken` now requires `admin` to equal `underlying_SAC.admin()` (read live) and requires `admin.require_auth()`. A third party cannot stand up a market — not even a new maturity on an already-integrated asset — without the actual issuer's signature. Read live, not cached: if the issuer rotates their SAC admin key, the new key is authoritative for any *future* market creation immediately, with nothing to update on already-deployed contracts (existing contracts keep whatever `admin` they were initialized with; only `initialize` itself checks the match).
 
-This is a breaking change to both contracts' `initialize` signatures (`SYWrapper` gains a parameter) — acceptable pre-mainnet, since nothing is deployed yet per PROOF_OF_CONCEPT.md.
+Why both compliance layers, not just one: a pure `authorized()` check can express "can this address hold the underlying asset at all" but nothing more specific — it can't express PT-vs-YT asymmetric policy (§1), since the SAC has no concept of Principal's derivative instruments. `Permissioning` narrows within that floor; it can never loosen it, since both checks must pass.
 
 ---
 
-## 3. Clawback Propagation
+## 3. Compliance recovery — `seize` and `RecoveryEscrow`
 
-Admin-authorized function on `SYWrapper` (the contract that actually holds pooled underlying reserves):
+The native clawback function of a Stellar Asset only applies to the underlying asset's own balance. It cannot reach SY, PT, or YT positions directly, since those are separate Soroban positions. The original version of this design (a `SYWrapper.remediate()` function, admin-authorized by a separate Principal-controlled key) has been replaced by a dedicated `RecoveryEscrow` contract plus a `seize` function on each of `SYWrapper`, `PTToken`, and `YTToken`:
 
 ```rust
-fn remediate(env, caller: Address, account: Address, shares: i128) -> i128;
+// On SYWrapper, PTToken, YTToken:
+fn seize(env, caller: Address, account: Address, amount: i128) -> i128;
+fn set_recovery_escrow(env, admin: Address, escrow: Address);  // one-time
+
+// On RecoveryEscrow:
+fn seize_sy(env, caller: Address, account: Address, shares: i128) -> i128;
+fn seize_pt(env, caller: Address, account: Address, amount: i128) -> i128;
+fn seize_yt(env, caller: Address, account: Address, amount: i128) -> i128;
 ```
 
-- `caller.require_auth()`; `caller` must equal `SYWrapper`'s admin (same `assert_admin` pattern already in the contract) — in production this role is expected to be a compliance-multisig the issuer has authorized, not the day-to-day protocol admin key, but that's an operational/deployment decision, not something the contract can enforce on its own.
-- **`account` must already be revoked in Permissioning** (`is_allowed(account) == false`), enforced by `assert_revoked`, or the call reverts `AccountNotRevoked`. Without this, an admin — or anyone who compromised that key — could call `remediate()` against any depositor regardless of whether they'd actually been flagged. This requirement was added after an initial version shipped without it (see §0.1); it also means revoking (Permissioning's admin) and remediating (SYWrapper's admin) are enforced as separate actions, which can be held by separate keys.
-- Burns exactly `shares` from `Balance(account)` — never more than that account holds, so co-depositors are structurally unaffected.
-- Reduces `TotalShares`/`TotalUnderlying` and transfers the equivalent underlying out to `caller` (the compliance role forwards it to the issuer off-chain, or a future extension could take an explicit `to: Address` — kept as `caller` for this pass to minimize new trust assumptions).
-- Emits a `remediate` event `(caller, account, shares, underlying_released)` for the audit trail.
+**Split responsibility, deliberately.** `SYWrapper.seize`/`PTToken.seize`/`YTToken.seize` do almost nothing on their own: each checks that `caller` equals its own configured `RecoveryEscrow` address (set once via `set_recovery_escrow`, same admin-gated one-time pattern as `set_minter`), then moves the balance — a forced transfer, not a burn. None of them authenticate the issuer or check the target's compliance state themselves. All of that lives once, in `RecoveryEscrow`:
 
-This only touches `SYWrapper`'s own internal balance — it does not call Stellar's native SAC clawback op, and it doesn't touch `PrincipalManager`'s PT/YT balances directly (those net out naturally: if `PrincipalManager.redeem` is later called against a remediated account's now-reduced SY entitlement, the existing formulas hold without special-casing). PT/YT-side remediation (burning a flagged account's PT/YT balance directly) is left for the `PrincipalManager`-owning branch once `PTToken`/`YTToken` are live and holding real balances, since right now `PrincipalManager` still tracks PT/YT internally.
+- `caller` must equal `underlying_SAC.admin()`, read live on every call — not a separate Principal-controlled admin key, and not cached from market-creation time.
+- `account` must already be deauthorized on the SAC (`!underlying_SAC.authorized(account)`) — the same defense-in-depth principle as the original `assert_revoked` check (§0.1), re-anchored to the real source of truth instead of Principal's own `Permissioning`. This is what stops `seize` from being a generic drain: the issuer's admin key alone isn't sufficient, they also have to have actually deauthorized the target first.
+- `RecoveryEscrow` has **no admin key of its own** — every check is a live read against the underlying SAC. If the issuer rotates their admin key, the new key is authoritative here immediately.
+
+**SY unwinds immediately.** `seize_sy` seizes the balance, then in the same call unwraps it via a normal `SYWrapper.withdraw(from=escrow, to=escrow)` — the escrow is pre-authorized on both compliance layers at market setup, same as any other legitimate holder — leaving the escrow holding raw underlying, ready for the issuer's native SAC `clawback`. No separate finalize step, since SY has no maturity.
+
+**PT/YT seizure works today; unwinding it does not, yet.** `seize_pt`/`seize_yt` correctly move a flagged account's real `PTToken`/`YTToken` balance to the escrow — this is tested and works. What doesn't exist yet is a `finalize_pt`/`finalize_yt` that redeems the seized position at maturity and unwraps it toward the underlying, the way `seize_sy` does immediately. Building that requires `PrincipalManager` to actually call `PTToken.burn()`/`YTToken.burn()` in exchange for underlying value — and `PrincipalManager` doesn't call either token contract at all right now; it still mints/burns against its own internal balance maps (see PROOF_OF_CONCEPT.md's Known Limitations). There is currently no function anywhere that burns a real `PTToken`/`YTToken` balance for value except through that internal, disconnected path. Writing `finalize_pt`/`finalize_yt` against an assumed future interface would be guesswork; it belongs in the same Router-integration work that wires `PrincipalManager` to the real token contracts.
+
+**This is not `LiquidationAdapter`.** `RecoveryEscrow` is for issuer-initiated compliance recovery — the SAC admin reclaiming value from a deauthorized holder. `LiquidationAdapter` (§4) is for third-party lending markets liquidating an under-collateralized borrower. Different caller, different trigger, different destination for the seized value. Both need PT to be movable without the holder's live authorization, but they solve unrelated problems.
 
 ---
 

@@ -53,28 +53,29 @@ At maturity:
 
 ## Protocol Architecture
 
-The protocol is composed of nine Soroban contracts organized in three layers. Seven are implemented and unit-tested today; `MarketPool` and `Router` are specified but not yet built (see [TECHNICAL_SPECIFICATION.md](TECHNICAL_SPECIFICATION.md)).
+The protocol is composed of ten Soroban contracts organized in four layers. Eight are implemented and unit-tested today; `MarketPool` and `Router` are specified but not yet built (see [TECHNICAL_SPECIFICATION.md](TECHNICAL_SPECIFICATION.md)).
 
 ### Infrastructure layer (shared across all markets) — implemented
 
 | Contract | Role |
 |---|---|
 | `OracleAdapter` | USDY/USDC reference value with freshness controls |
-| `Permissioning` | Account and asset eligibility registry for permissioned RWAs |
+| `Permissioning` | Account and asset eligibility registry — an optional layer on top of SAC authorization (see below) |
 | `RiskControl` | Global pause, multi-pauser roles, rolling 24h circuit breaker |
 
 ### Tokenization layer (per underlying asset) — implemented
 
 | Contract | Role |
 |---|---|
-| `SYWrapper` | Wraps the underlying asset into standardized SY shares; exchange rate grows if the underlying rebases, otherwise value is tracked through the oracle. Deposit/withdraw are eligibility-gated, and `remediate()` lets an issuer-authorized admin recover a single revoked account's balance without touching other depositors' shares. |
-| `PrincipalManager` | Mints PT + YT from SY shares; settles both at maturity. Both mint and redeem are eligibility-gated. |
+| `SYWrapper` | Wraps the underlying asset into standardized SY shares; exchange rate grows if the underlying rebases, otherwise value is tracked through the oracle. Deposit/withdraw are gated on both the underlying SAC's own `authorized()` and `Permissioning`. `seize()` lets a configured `RecoveryEscrow` forcibly recover a deauthorized account's balance. |
+| `PrincipalManager` | Mints PT + YT from SY shares; settles both at maturity. Mint and redeem are gated the same two-layer way. |
+| `RecoveryEscrow` | Authenticates the underlying SAC's real admin (read live) and orchestrates `seize` across `SYWrapper`/`PTToken`/`YTToken` — see [Compliance below](#compliance-inheritance-not-a-shadow-registry). |
 
 ### Market layer (per maturity date) — mixed
 
 | Contract | Status | Role |
 |---|---|---|
-| `PTToken` | Implemented | Standalone SEP-41 Principal Token. Transfers check both sender and recipient eligibility, at both the account level and a per-token asset level — PT and YT can carry independent eligibility policies. |
+| `PTToken` | Implemented | Standalone SEP-41 Principal Token. Transfers check both sender and recipient, at both the SAC-authorization and per-token Permissioning level — PT and YT can carry independent eligibility policies. |
 | `YTToken` | Implemented | Standalone SEP-41 Yield Token with continuous yield accrual and claiming, gated the same way as PTToken. |
 | `MarketPool` | Not yet implemented | Yield-curve AMM for PT ↔ SY trading (time-aware, no LP impermanent loss from time decay) |
 | `Router` | Not yet implemented | Single-transaction orchestration: wrap, mint, swap, recombine, redeem |
@@ -93,7 +94,7 @@ The protocol is composed of nine Soroban contracts organized in three layers. Se
 
 **Single liquidity pool** — PT and YT both trade through a single PT/SY pool. YT trading is routed through a flash-mint pattern, avoiding pool fragmentation and concentrating LP capital.
 
-**Permissioned by design** — Eligibility constraints from USDY are preserved across all derived instruments. `SYWrapper` deposit/withdraw, `PrincipalManager` mint/redeem, and `PTToken`/`YTToken` transfers all check the `Permissioning` registry, on both the sending and receiving side — a revoked account is frozen, not just blocked from new destinations. PT and YT additionally check a per-token eligibility list, so the two instruments can carry different eligibility policies for the same underlying market.
+**Compliance inheritance, not a shadow registry** — Most Stellar RWAs (BENJI, USDY) are issued as Stellar Assets with native `authorized()`/`admin()` controls the issuer already manages. Rather than maintaining a separate allow-list that could drift out of sync with the issuer's own decisions, `SYWrapper`, `PrincipalManager`, `PTToken`, and `YTToken` all check the underlying SAC's live `authorized(account)` as the mandatory floor, on both sides of every transfer-like operation. `Permissioning` remains available as an *optional* additional layer — e.g. for asymmetric PT/YT eligibility — but can only narrow, never loosen, what the issuer already allows. Market creation itself requires the issuer's real admin key (`initialize` checks `admin == underlying_SAC.admin()`), and `RecoveryEscrow.seize_*` authenticates the same way, live, with no separate Principal-controlled compliance key at all.
 
 **Asset-agnostic** — The SYWrapper and PrincipalManager are designed for any Stellar yield-bearing asset. USDY is the first market; the same contracts extend to BENJI, USTBL, or any future RWA.
 
@@ -148,12 +149,13 @@ YT holder receives:  floor(yt_amount * max(0, final_rate - initial_rate) / final
 ```
 contracts/
   oracle_adapter/        — USDY/USDC reference value oracle
-  permissioning/         — account and asset eligibility registry
+  permissioning/         — account and asset eligibility registry (optional layer)
   risk_control/          — pause, pauser roles, rolling circuit breaker
-  sy_wrapper/            — standardized yield wrapper (SY-USDY); remediate() for compliance recovery
+  sy_wrapper/            — standardized yield wrapper (SY-USDY); seize() for compliance recovery
   principal_manager/     — tokenization engine: mints/burns PT and YT internally
   pt_token/              — standalone SEP-41 Principal Token
   yt_token/              — standalone SEP-41 Yield Token with yield accrual/claiming
+  recovery_escrow/       — authenticates the issuer's SAC admin; orchestrates seize across SY/PT/YT
 
 Cargo.toml               — workspace (Soroban SDK 26.x, Rust 2021)
 TECHNICAL_SPECIFICATION.md — full protocol spec, AMM math, settlement, storage
@@ -192,9 +194,9 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for testnet and mainnet deployment.
 
 | Document | Contents |
 |---|---|
-| [TECHNICAL_SPECIFICATION.md](TECHNICAL_SPECIFICATION.md) | Full protocol spec: all nine contracts, AMM invariant, settlement math, fee structure, storage design, error codes, constants |
+| [TECHNICAL_SPECIFICATION.md](TECHNICAL_SPECIFICATION.md) | Full protocol spec: all ten contracts, AMM invariant, settlement math, fee structure, storage design, error codes, constants |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Contract interaction diagrams, sequence flows (mint, swap, redeem, flash-mint YT), AMM curve, deployment order |
-| [PROOF_OF_CONCEPT.md](PROOF_OF_CONCEPT.md) | Seven implemented contracts, what they demonstrate, test coverage, build instructions |
+| [PROOF_OF_CONCEPT.md](PROOF_OF_CONCEPT.md) | Eight implemented contracts, what they demonstrate, test coverage, build instructions |
 | [SECURITY.md](SECURITY.md) | Threat model, per-contract security properties, incident response |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Step-by-step Stellar CLI deployment for testnet and mainnet |
 | [AUDIT_REVIEW.md](AUDIT_REVIEW.md) | Security findings, status tracking, open items |
@@ -205,10 +207,10 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for testnet and mainnet deployment.
 ## Development Status
 
 ### Implemented and tested
-Seven of nine contracts, unit-tested on Soroban: `OracleAdapter`, `Permissioning`, `RiskControl`, `SYWrapper`, `PrincipalManager`, `PTToken`, `YTToken`. Eligibility is enforced at every deposit, withdrawal, mint, redeem, and PT/YT transfer, with asymmetric per-token policies and a compliance-recovery path (`SYWrapper.remediate()`) for accounts an issuer has revoked. See [PROOF_OF_CONCEPT.md](PROOF_OF_CONCEPT.md) for full details.
+Eight of ten contracts, unit-tested on Soroban: `OracleAdapter`, `Permissioning`, `RiskControl`, `SYWrapper`, `PrincipalManager`, `PTToken`, `YTToken`, `RecoveryEscrow`. Compliance is enforced at every deposit, withdrawal, mint, redeem, and PT/YT transfer via two layers — the underlying SAC's own live `authorized()` (mandatory) and `Permissioning` (optional, e.g. asymmetric PT/YT policy) — and market creation itself requires the underlying SAC's real `admin()` to authorize it. `RecoveryEscrow.seize_sy` performs full compliance recovery (seize + unwrap, ready for the issuer's native clawback); `seize_pt`/`seize_yt` seize correctly but can't yet be redeemed at maturity, since `PrincipalManager` doesn't call the token contracts yet (see Not yet implemented, below). See [PROOF_OF_CONCEPT.md](PROOF_OF_CONCEPT.md) for full details.
 
 ### Not yet implemented
-- Wiring `PrincipalManager` to actually call `SYWrapper` and mint/burn through the real `PTToken`/`YTToken` contracts, instead of tracking balances internally as it does today.
+- Wiring `PrincipalManager` to actually call `SYWrapper` and mint/burn through the real `PTToken`/`YTToken` contracts, instead of tracking balances internally as it does today. This also unblocks `RecoveryEscrow.finalize_pt`/`finalize_yt` (redeeming a seized PT/YT position at maturity and unwrapping it for native clawback), which depends on the same wiring.
 - `MarketPool` — yield-curve AMM with time-aware invariant, built-in implied-rate oracle, and LP fee distribution.
 - `Router` — single-transaction user flows including flash-mint YT and flash-redeem YT patterns.
 - Fee governance with timelock, protocol treasury accumulation.
