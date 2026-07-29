@@ -90,7 +90,9 @@ impl OracleAdapterContract {
         ledger_ts - stored_ts <= max_stale_seconds
     }
 
-    /// Two-step admin transfer: current admin authorizes and names a new admin.
+    /// Single-step admin transfer: current admin authorizes and immediately names a new admin
+    /// (no separate acceptance step from the new admin), matching every other contract's
+    /// transfer_admin in this codebase.
     pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) {
         current_admin.require_auth();
         let admin: Address = Self::require_admin(&env);
