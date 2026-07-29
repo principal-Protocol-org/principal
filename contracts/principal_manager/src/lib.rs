@@ -11,11 +11,27 @@
 //!   notional = n * R / SCALE
 //!
 //! PT minted  = notional   (redeemable for `pt * SCALE / final_rate` underlying at maturity)
-//! YT minted  = notional   (captures yield above initial_rate between issuance and maturity)
+//! YT minted  = notional   (captures yield above the rate at issuance, via YTToken's own index)
 //!
-//! At maturity, given final oracle rate `R_final` and per-user `R_initial` stored at mint:
+//! At maturity, given final oracle rate `R_final`:
 //!   PT redemption (underlying) = floor(pt_amount * SCALE / R_final)
-//!   YT redemption (underlying) = floor(yt_amount * max(0, R_final - R_initial) / R_final)
+//!   YT redemption (underlying) = whatever `YTToken.claim_yield` settles and returns (see below)
+//!
+//! # Why YT redemption delegates to YTToken instead of computing its own formula
+//! An earlier version of this contract computed YT's payout itself, from a per-user rate
+//! recorded at mint time: `yt_amount * max(0, R_final - R_initial) / R_final`. That formula is
+//! numerically correct for a single, unbroken holding period -- but `YTToken.claim_yield` is a
+//! separate, publicly callable entrypoint (`from.require_auth()` only, no permissioning around
+//! *when* it can be called) backed by its own continuously-compounding index
+//! (`update_yield_index`/`settle`, see YTToken's module docs). If this contract paid out its own
+//! independently-computed amount at redemption *and* a holder could also call
+//! `YTToken.claim_yield` directly at any point beforehand, the two paths could both pay out for
+//! the same accrued yield. Rather than have two payers for one claim, redemption calls
+//! `YTToken.update_yield_index` then `claim_yield` and treats its return value as authoritative --
+//! it is already expressed in underlying units (verified: for a single price movement it is
+//! numerically identical to the formula above; for multiple intermediate oracle updates it
+//! compounds per-step, which is the standard, defensible approach and the one actually reachable
+//! by any YT holder today).
 //!
 //! # Compliance — authorization inheritance and market creation
 //! `mint` and `redeem` check both `underlying_SAC.authorized(from)` (the mandatory floor,
@@ -24,11 +40,20 @@
 //! SAC's actual `admin()`, so a market can only be created with the issuer's participation --
 //! see `SYWrapper`'s module docs for the full rationale, which applies identically here.
 //!
-//! # Current integration scope
-//! SY share transfers are tracked internally (no actual SYWrapper cross-contract call).
-//! Underlying transfers at redemption are computed and returned but not dispatched. Both are
-//! Router-integration milestones: wiring this contract to actually call SYWrapper, PTToken, and
-//! YTToken instead of tracking balances in its own storage.
+//! # Integration scope
+//! `mint` takes real custody of the caller's SY shares via `SYWrapper.transfer` and mints real
+//! `PTToken`/`YTToken` balances. `redeem` burns those real balances and releases real underlying
+//! via `SYWrapper.withdraw`, self-authorizing as this contract's own address the same way
+//! `RecoveryEscrow` does when unwrapping a seizure. This contract's own address must itself be
+//! SAC-authorized and Permissioning-granted before deployment is usable, since it is now a
+//! genuine SY-share holder between mint and redemption -- see DEPLOYMENT.md.
+//!
+//! SY share custody is converted to/from underlying amounts via `SYWrapper.exchange_rate()`
+//! (shares-to-underlying), which is a *different* rate from the Oracle's USDC-per-underlying
+//! price feed used for the PT/YT notional split above. For a price-appreciating asset like USDY,
+//! where holding the token doesn't change its own balance, `SYWrapper`'s exchange rate stays at
+//! 1.0 and this conversion is a no-op; for a balance-rebasing asset it would not be, and that
+//! reconciliation is out of scope until a second asset type is actually onboarded.
 
 #![no_std]
 
@@ -41,9 +66,6 @@ pub const SCALE: i128 = 10_000_000; // 1e7
 
 /// Maximum seconds the oracle price may be stale at redemption.
 const MAX_ORACLE_STALENESS_SECS: u64 = 3_600;
-
-/// TTL extension applied to every persistent per-user entry (~30 days at 5 s/ledger).
-const BALANCE_TTL_LEDGERS: u32 = 518_400;
 
 // ---------------------------------------------------------------------------
 // External contract interfaces (used for cross-contract calls)
@@ -62,6 +84,34 @@ pub trait PermissioningInterface {
     fn is_allowed(env: Env, account: Address) -> bool;
 }
 
+/// Minimum interface required from SYWrapper.
+#[contractclient(name = "SYWrapperClient")]
+pub trait SYWrapperInterface {
+    fn transfer(env: Env, from: Address, to: Address, amount: i128) -> i128;
+    fn withdraw(env: Env, from: Address, shares: i128, to: Address) -> i128;
+    fn exchange_rate(env: Env) -> i128;
+}
+
+/// Minimum interface required from PTToken.
+#[contractclient(name = "PTTokenClient")]
+pub trait PTTokenInterface {
+    fn mint(env: Env, to: Address, amount: i128);
+    fn burn(env: Env, from: Address, amount: i128);
+    fn balance(env: Env, account: Address) -> i128;
+    fn total_supply(env: Env) -> i128;
+}
+
+/// Minimum interface required from YTToken.
+#[contractclient(name = "YTTokenClient")]
+pub trait YTTokenInterface {
+    fn mint(env: Env, to: Address, amount: i128);
+    fn burn(env: Env, from: Address, amount: i128);
+    fn update_yield_index(env: Env);
+    fn claim_yield(env: Env, from: Address) -> i128;
+    fn balance(env: Env, account: Address) -> i128;
+    fn total_supply(env: Env) -> i128;
+}
+
 // ---------------------------------------------------------------------------
 // Error codes
 // ---------------------------------------------------------------------------
@@ -77,7 +127,6 @@ pub enum Error {
     NotMature = 5,
     AlreadyMature = 6,
     OracleStale = 7,
-    InsufficientBalance = 8,
     Paused = 9,
     PermissionDenied = 10,
     NotAuthorizedOnSac = 11,
@@ -92,19 +141,13 @@ pub enum Error {
 pub enum DataKey {
     Admin,
     SYWrapper,
+    PTToken,
+    YTToken,
     Oracle,
     Permissioning,
     Underlying, // Address of the underlying SAC, used for authorization inheritance
     Maturity,   // u64 unix timestamp
     Paused,
-    PTBalance(Address),
-    YTBalance(Address),
-    TotalPT,
-    TotalYT,
-    /// SY shares credited to each minter (tracked internally; Router integration wires this to SYWrapper).
-    SYDeposit(Address),
-    /// Oracle rate stored at the time of this user's first mint, used for YT settlement.
-    InitialRate(Address),
 }
 
 // ---------------------------------------------------------------------------
@@ -137,6 +180,9 @@ impl PrincipalManagerContract {
     /// One-time initialization.
     ///
     /// * `sy_wrapper`    — address of the SYWrapper contract
+    /// * `pt_token`      — address of the PTToken contract (this contract must later be
+    ///                     registered as its minter via `PTToken.set_minter`)
+    /// * `yt_token`      — address of the YTToken contract (same two-phase pattern)
     /// * `oracle`        — address of the OracleAdapter contract
     /// * `permissioning` — address of the Permissioning contract
     /// * `underlying`    — address of the underlying SAC; `admin` must equal its `admin()`
@@ -149,6 +195,8 @@ impl PrincipalManagerContract {
         env: Env,
         admin: Address,
         sy_wrapper: Address,
+        pt_token: Address,
+        yt_token: Address,
         oracle: Address,
         permissioning: Address,
         underlying: Address,
@@ -166,6 +214,8 @@ impl PrincipalManagerContract {
         env.storage()
             .instance()
             .set(&DataKey::SYWrapper, &sy_wrapper);
+        env.storage().instance().set(&DataKey::PTToken, &pt_token);
+        env.storage().instance().set(&DataKey::YTToken, &yt_token);
         env.storage().instance().set(&DataKey::Oracle, &oracle);
         env.storage()
             .instance()
@@ -175,14 +225,12 @@ impl PrincipalManagerContract {
             .set(&DataKey::Underlying, &underlying);
         env.storage().instance().set(&DataKey::Maturity, &maturity);
         env.storage().instance().set(&DataKey::Paused, &false);
-        env.storage().instance().set(&DataKey::TotalPT, &0_i128);
-        env.storage().instance().set(&DataKey::TotalYT, &0_i128);
     }
 
     // --- core protocol operations ---
 
     /// Split `sy_shares` into PT + YT. The caller must already hold these shares in the
-    /// SYWrapper and must authorize the transfer to this contract.
+    /// SYWrapper and must authorize both this call and the resulting SYWrapper transfer.
     ///
     /// Returns the number of PT and YT minted (equal at issuance).
     pub fn mint(env: Env, from: Address, sy_shares: i128) -> MintResult {
@@ -198,50 +246,26 @@ impl PrincipalManagerContract {
         Self::assert_sac_authorized(&env, &from);
         Self::assert_permitted(&env, &from);
 
-        // Read the oracle rate at mint time; store it for this user's YT settlement.
-        // If the user mints again, we keep their first recorded rate so that each
-        // unit of YT in their balance is settled from the same baseline.
-        // Production should track per-batch rates when multiple mints are supported.
-        let initial_rate = Self::get_oracle_rate(&env);
-        let rate_key = DataKey::InitialRate(from.clone());
-        if !env.storage().persistent().has(&rate_key) {
-            env.storage().persistent().set(&rate_key, &initial_rate);
-            env.storage().persistent().extend_ttl(
-                &rate_key,
-                BALANCE_TTL_LEDGERS,
-                BALANCE_TTL_LEDGERS,
-            );
-        }
+        // Compute notional principal: sy_shares valued at the current oracle rate.
+        let rate = Self::get_oracle_rate(&env);
+        let notional = sy_shares * rate / SCALE;
 
-        // Track SY shares deposited (Router integration replaces this with an actual SYWrapper transfer).
-        let deposit: i128 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::SYDeposit(from.clone()))
-            .unwrap_or(0);
-        let sy_key = DataKey::SYDeposit(from.clone());
-        env.storage()
-            .persistent()
-            .set(&sy_key, &(deposit + sy_shares));
-        env.storage()
-            .persistent()
-            .extend_ttl(&sy_key, BALANCE_TTL_LEDGERS, BALANCE_TTL_LEDGERS);
+        // Take custody of the caller's SY shares -- this contract now holds them until
+        // redemption. `from` already authorized this call above; that authorization covers
+        // this nested SYWrapper invocation for the same address in the same transaction.
+        let sy_wrapper = Self::get_sy_wrapper(&env);
+        SYWrapperClient::new(&env, &sy_wrapper).transfer(
+            &from,
+            &env.current_contract_address(),
+            &sy_shares,
+        );
 
-        // Compute notional principal: sy_shares valued at oracle rate.
-        let notional = sy_shares * initial_rate / SCALE;
-
-        // Mint PT and YT (1:1 with notional).
-        Self::add_pt_balance(&env, &from, notional);
-        Self::add_yt_balance(&env, &from, notional);
-
-        let total_pt: i128 = env.storage().instance().get(&DataKey::TotalPT).unwrap_or(0);
-        let total_yt: i128 = env.storage().instance().get(&DataKey::TotalYT).unwrap_or(0);
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalPT, &(total_pt + notional));
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalYT, &(total_yt + notional));
+        // Mint real PT and YT (1:1 with notional) -- this contract must already be the
+        // registered minter on both (set via `set_minter` after this contract is deployed).
+        let pt_token = Self::get_pt_token(&env);
+        let yt_token = Self::get_yt_token(&env);
+        PTTokenClient::new(&env, &pt_token).mint(&from, &notional);
+        YTTokenClient::new(&env, &yt_token).mint(&from, &notional);
 
         env.events()
             .publish((symbol_short!("mint"),), (from, sy_shares, notional));
@@ -257,8 +281,8 @@ impl PrincipalManagerContract {
     /// * `pt_amount` — PT tokens to burn (0 = skip PT redemption)
     /// * `yt_amount` — YT tokens to burn (0 = skip YT redemption)
     ///
-    /// Returns underlying units released for each token type.
-    /// Note: actual transfer of underlying to the caller is a Router-integration milestone.
+    /// Burns the caller's real PT/YT balances and releases real underlying via SYWrapper.
+    /// Returns the underlying units actually transferred for each token type.
     pub fn redeem(env: Env, from: Address, pt_amount: i128, yt_amount: i128) -> RedeemResult {
         from.require_auth();
         Self::assert_not_paused(&env);
@@ -274,50 +298,38 @@ impl PrincipalManagerContract {
         }
 
         let final_rate = Self::get_oracle_rate(&env);
+        let sy_wrapper = Self::get_sy_wrapper(&env);
+        let sy_client = SYWrapperClient::new(&env, &sy_wrapper);
+        let this_contract = env.current_contract_address();
 
         let mut from_pt = 0_i128;
         let mut from_yt = 0_i128;
 
         if pt_amount > 0 {
-            let bal = Self::get_pt_balance(&env, &from);
-            if bal < pt_amount {
-                panic_with_error!(&env, Error::InsufficientBalance);
-            }
-            // PT: notional units → underlying = floor(pt_amount * SCALE / final_rate)
-            from_pt = pt_amount * SCALE / final_rate;
-            Self::sub_pt_balance(&env, &from, pt_amount);
+            let pt_token = Self::get_pt_token(&env);
+            PTTokenClient::new(&env, &pt_token).burn(&from, &pt_amount);
 
-            let total_pt: i128 = env.storage().instance().get(&DataKey::TotalPT).unwrap_or(0);
-            env.storage()
-                .instance()
-                .set(&DataKey::TotalPT, &(total_pt - pt_amount));
+            // PT: notional units → underlying = floor(pt_amount * SCALE / final_rate)
+            let desired_underlying = pt_amount * SCALE / final_rate;
+            let shares = Self::underlying_to_shares(sy_client.exchange_rate(), desired_underlying);
+            from_pt = sy_client.withdraw(&this_contract, &shares, &from);
         }
 
         if yt_amount > 0 {
-            let bal = Self::get_yt_balance(&env, &from);
-            if bal < yt_amount {
-                panic_with_error!(&env, Error::InsufficientBalance);
-            }
-            // YT: captures yield accrued above the rate at this user's mint time.
-            // yield_delta = max(0, final_rate - initial_rate)
-            // underlying  = floor(yt_amount * yield_delta / final_rate)
-            let initial_rate: i128 = env
-                .storage()
-                .persistent()
-                .get(&DataKey::InitialRate(from.clone()))
-                .unwrap_or(SCALE);
-            let yield_delta = if final_rate > initial_rate {
-                final_rate - initial_rate
-            } else {
-                0
-            };
-            from_yt = yt_amount * yield_delta / final_rate;
-            Self::sub_yt_balance(&env, &from, yt_amount);
+            let yt_token = Self::get_yt_token(&env);
+            let yt_client = YTTokenClient::new(&env, &yt_token);
 
-            let total_yt: i128 = env.storage().instance().get(&DataKey::TotalYT).unwrap_or(0);
-            env.storage()
-                .instance()
-                .set(&DataKey::TotalYT, &(total_yt - yt_amount));
+            // Bring the index current, then burn (settling pending yield) and claim it. See
+            // this module's doc comment for why redemption delegates to YTToken's own
+            // accrual/claim mechanism instead of computing a second, independent payout here.
+            yt_client.update_yield_index();
+            yt_client.burn(&from, &yt_amount);
+            let desired_underlying = yt_client.claim_yield(&from);
+            if desired_underlying > 0 {
+                let shares =
+                    Self::underlying_to_shares(sy_client.exchange_rate(), desired_underlying);
+                from_yt = sy_client.withdraw(&this_contract, &shares, &from);
+            }
         }
 
         env.events().publish(
@@ -334,19 +346,23 @@ impl PrincipalManagerContract {
     // --- views ---
 
     pub fn pt_balance(env: Env, account: Address) -> i128 {
-        Self::get_pt_balance(&env, &account)
+        let pt_token = Self::get_pt_token(&env);
+        PTTokenClient::new(&env, &pt_token).balance(&account)
     }
 
     pub fn yt_balance(env: Env, account: Address) -> i128 {
-        Self::get_yt_balance(&env, &account)
+        let yt_token = Self::get_yt_token(&env);
+        YTTokenClient::new(&env, &yt_token).balance(&account)
     }
 
     pub fn total_pt(env: Env) -> i128 {
-        env.storage().instance().get(&DataKey::TotalPT).unwrap_or(0)
+        let pt_token = Self::get_pt_token(&env);
+        PTTokenClient::new(&env, &pt_token).total_supply()
     }
 
     pub fn total_yt(env: Env) -> i128 {
-        env.storage().instance().get(&DataKey::TotalYT).unwrap_or(0)
+        let yt_token = Self::get_yt_token(&env);
+        YTTokenClient::new(&env, &yt_token).total_supply()
     }
 
     pub fn maturity(env: Env) -> u64 {
@@ -435,54 +451,32 @@ impl PrincipalManagerContract {
         }
     }
 
-    fn get_pt_balance(env: &Env, account: &Address) -> i128 {
+    fn get_sy_wrapper(env: &Env) -> Address {
         env.storage()
-            .persistent()
-            .get(&DataKey::PTBalance(account.clone()))
-            .unwrap_or(0)
+            .instance()
+            .get(&DataKey::SYWrapper)
+            .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized))
     }
 
-    fn get_yt_balance(env: &Env, account: &Address) -> i128 {
+    fn get_pt_token(env: &Env) -> Address {
         env.storage()
-            .persistent()
-            .get(&DataKey::YTBalance(account.clone()))
-            .unwrap_or(0)
+            .instance()
+            .get(&DataKey::PTToken)
+            .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized))
     }
 
-    fn add_pt_balance(env: &Env, account: &Address, delta: i128) {
-        let key = DataKey::PTBalance(account.clone());
-        let bal: i128 = env.storage().persistent().get(&key).unwrap_or(0);
-        env.storage().persistent().set(&key, &(bal + delta));
+    fn get_yt_token(env: &Env) -> Address {
         env.storage()
-            .persistent()
-            .extend_ttl(&key, BALANCE_TTL_LEDGERS, BALANCE_TTL_LEDGERS);
+            .instance()
+            .get(&DataKey::YTToken)
+            .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized))
     }
 
-    fn add_yt_balance(env: &Env, account: &Address, delta: i128) {
-        let key = DataKey::YTBalance(account.clone());
-        let bal: i128 = env.storage().persistent().get(&key).unwrap_or(0);
-        env.storage().persistent().set(&key, &(bal + delta));
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, BALANCE_TTL_LEDGERS, BALANCE_TTL_LEDGERS);
-    }
-
-    fn sub_pt_balance(env: &Env, account: &Address, delta: i128) {
-        let key = DataKey::PTBalance(account.clone());
-        let bal: i128 = env.storage().persistent().get(&key).unwrap_or(0);
-        env.storage().persistent().set(&key, &(bal - delta));
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, BALANCE_TTL_LEDGERS, BALANCE_TTL_LEDGERS);
-    }
-
-    fn sub_yt_balance(env: &Env, account: &Address, delta: i128) {
-        let key = DataKey::YTBalance(account.clone());
-        let bal: i128 = env.storage().persistent().get(&key).unwrap_or(0);
-        env.storage().persistent().set(&key, &(bal - delta));
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, BALANCE_TTL_LEDGERS, BALANCE_TTL_LEDGERS);
+    /// Convert a desired underlying payout into the SY shares needed to withdraw it, at
+    /// SYWrapper's current exchange rate (a different rate from the Oracle's pricing feed --
+    /// see this module's doc comment). Inverts SYWrapper's own `shares * rate / RATE_SCALE`.
+    fn underlying_to_shares(exchange_rate: i128, underlying: i128) -> i128 {
+        underlying * SCALE / exchange_rate
     }
 
     fn require_admin(env: &Env) -> Address {
@@ -541,11 +535,14 @@ impl PrincipalManagerContract {
 mod test {
     use soroban_sdk::{
         testutils::{Address as _, IssuerFlags, Ledger as _},
-        token, Address, Env,
+        token, Address, Env, String,
     };
 
     use principal_oracle_adapter::{OracleAdapterContract, OracleAdapterContractClient};
     use principal_permissioning::{PermissioningContract, PermissioningContractClient};
+    use principal_pt_token::{PTTokenContract, PTTokenContractClient};
+    use principal_sy_wrapper::{SYWrapperContract, SYWrapperContractClient};
+    use principal_yt_token::{YTTokenContract, YTTokenContractClient};
 
     use super::{
         PrincipalManagerContract, PrincipalManagerContractClient, MAX_ORACLE_STALENESS_SECS, SCALE,
@@ -555,75 +552,125 @@ mod test {
     const T0: u64 = 1_000;
 
     /// All contracts deployed into the same Env, returned together so tests can
-    /// create addresses, advance ledger time, and update the oracle after setup.
+    /// create addresses, advance ledger time, and update the oracle/mint SY after setup.
     struct TestFixture {
         env: Env,
         client: PrincipalManagerContractClient<'static>,
+        pm_id: Address,
         pm_admin: Address,
         underlying: Address,
         oracle: OracleAdapterContractClient<'static>,
         oracle_admin: Address,
         perm: PermissioningContractClient<'static>,
         perm_admin: Address,
+        sy: SYWrapperContractClient<'static>,
+        pt: PTTokenContractClient<'static>,
+        yt: YTTokenContractClient<'static>,
     }
 
-    /// Deploy oracle + permissioning + an underlying SAC + PrincipalManager into a single Env.
-    /// Oracle rate is seeded at SCALE (1.0) at ledger timestamp T0. `pm_admin` is also the
-    /// underlying SAC's real admin, satisfying the market-creation gate. No users are
-    /// pre-granted — tests call `grant_user` explicitly.
+    /// Deploy the full contract set (oracle, permissioning, an underlying SAC, SYWrapper,
+    /// PTToken, YTToken, PrincipalManager) into a single Env, and wire PrincipalManager as the
+    /// registered minter on both token contracts -- mirroring the real two-phase deployment
+    /// order in DEPLOYMENT.md. Oracle rate is seeded at SCALE (1.0) at ledger timestamp T0.
+    /// `pm_admin` is also the underlying SAC's real admin, satisfying the market-creation gate
+    /// on every contract. No users are pre-granted -- tests call `grant_user` explicitly.
     fn setup(maturity: u64) -> TestFixture {
         let env = Env::default();
         env.mock_all_auths();
         env.ledger().with_mut(|li| li.timestamp = T0);
 
-        // OracleAdapter: rate = 1.0 at T0.
         let oracle_id = env.register_contract(None, OracleAdapterContract);
         let oracle = OracleAdapterContractClient::new(&env, &oracle_id);
         let oracle_admin = Address::generate(&env);
         oracle.initialize(&oracle_admin);
         oracle.set_reference_value(&oracle_admin, &SCALE, &T0);
 
-        // Permissioning (no accounts granted yet).
         let perm_id = env.register_contract(None, PermissioningContract);
         let perm = PermissioningContractClient::new(&env, &perm_id);
         let perm_admin = Address::generate(&env);
         perm.initialize(&perm_admin);
 
-        // Underlying SAC. pm_admin doubles as its real admin, so PrincipalManager.initialize's
-        // issuer-match check passes. RevocableFlag lets tests simulate deauthorization.
         let pm_admin = Address::generate(&env);
         let underlying_sac = env.register_stellar_asset_contract_v2(pm_admin.clone());
         underlying_sac.issuer().set_flag(IssuerFlags::RevocableFlag);
         let underlying = underlying_sac.address();
 
-        // PrincipalManager.
-        let pm_id = env.register_contract(None, PrincipalManagerContract);
-        let client = PrincipalManagerContractClient::new(&env, &pm_id);
-        let sy_wrapper = Address::generate(&env);
-        client.initialize(
+        let sy_id = env.register_contract(None, SYWrapperContract);
+        let sy = SYWrapperContractClient::new(&env, &sy_id);
+        sy.initialize(&pm_admin, &underlying, &perm_id);
+
+        let pt_id = env.register_contract(None, PTTokenContract);
+        let pt = PTTokenContractClient::new(&env, &pt_id);
+        pt.initialize(
             &pm_admin,
-            &sy_wrapper,
-            &oracle_id,
             &perm_id,
             &underlying,
             &maturity,
+            &String::from_str(&env, "Principal Token USDY"),
+            &String::from_str(&env, "PT-USDY"),
+            &7,
         );
+
+        let yt_id = env.register_contract(None, YTTokenContract);
+        let yt = YTTokenContractClient::new(&env, &yt_id);
+        yt.initialize(
+            &pm_admin,
+            &perm_id,
+            &underlying,
+            &oracle_id,
+            &maturity,
+            &String::from_str(&env, "Yield Token USDY"),
+            &String::from_str(&env, "YT-USDY"),
+            &7,
+        );
+
+        let pm_id = env.register_contract(None, PrincipalManagerContract);
+        let client = PrincipalManagerContractClient::new(&env, &pm_id);
+        client.initialize(
+            &pm_admin, &sy_id, &pt_id, &yt_id, &oracle_id, &perm_id, &underlying, &maturity,
+        );
+
+        pt.set_minter(&pm_admin, &pm_id);
+        yt.set_minter(&pm_admin, &pm_id);
+
+        // PrincipalManager's own address becomes a genuine SY holder between mint and
+        // redemption, and a transfer/withdraw recipient-or-sender on both sides -- it needs
+        // the same two compliance layers as any other participant.
+        perm.grant_account(&perm_admin, &pm_id);
+        token::StellarAssetClient::new(&env, &underlying).set_authorized(&pm_id, &true);
 
         TestFixture {
             env,
             client,
+            pm_id,
             pm_admin,
             underlying,
             oracle,
             oracle_admin,
             perm,
             perm_admin,
+            sy,
+            pt,
+            yt,
         }
     }
 
+    /// Grants a user both compliance layers on the shared Permissioning/SAC, plus the
+    /// per-asset PT/YT grants PTToken/YTToken independently require, and mints them
+    /// `underlying_amount` of the underlying asset. Does not deposit into SYWrapper --
+    /// call `deposit_sy` for that, since not every test needs a real SY position.
     fn grant_user(f: &TestFixture, user: &Address) {
         f.perm.grant_account(&f.perm_admin, user);
+        f.perm.grant_asset(&f.perm_admin, user, &f.pt.address);
+        f.perm.grant_asset(&f.perm_admin, user, &f.yt.address);
         token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(user, &true);
+    }
+
+    /// Mints `amount` of the underlying to `user` and deposits it into SYWrapper, returning the
+    /// SY shares received (1:1 at inception). `user` must already be granted.
+    fn deposit_sy(f: &TestFixture, user: &Address, amount: i128) -> i128 {
+        token::StellarAssetClient::new(&f.env, &f.underlying).mint(user, &amount);
+        f.sy.deposit(user, &amount)
     }
 
     // --- tests ---
@@ -633,13 +680,17 @@ mod test {
         let f = setup(u64::MAX);
         let user = Address::generate(&f.env);
         grant_user(&f, &user);
+        let shares = deposit_sy(&f, &user, 100_i128 * SCALE);
 
-        let result = f.client.mint(&user, &(100_i128 * SCALE));
+        let result = f.client.mint(&user, &shares);
         // Oracle rate = SCALE → notional = 100 * SCALE * SCALE / SCALE = 100 * SCALE.
         assert_eq!(result.pt_minted, 100_i128 * SCALE);
         assert_eq!(result.yt_minted, 100_i128 * SCALE);
         assert_eq!(f.client.pt_balance(&user), 100_i128 * SCALE);
         assert_eq!(f.client.yt_balance(&user), 100_i128 * SCALE);
+        // Real custody: the shares moved from the user to PrincipalManager itself.
+        assert_eq!(f.sy.balance_of(&user), 0);
+        assert_eq!(f.sy.balance_of(&f.pm_id), shares);
     }
 
     #[test]
@@ -649,7 +700,8 @@ mod test {
         let f = setup(T0);
         let user = Address::generate(&f.env);
         grant_user(&f, &user);
-        f.client.mint(&user, &(100_i128 * SCALE));
+        let shares = deposit_sy(&f, &user, 100_i128 * SCALE);
+        f.client.mint(&user, &shares);
     }
 
     #[test]
@@ -658,7 +710,8 @@ mod test {
         let f = setup(u64::MAX);
         let user = Address::generate(&f.env);
         grant_user(&f, &user);
-        f.client.mint(&user, &(10_i128 * SCALE));
+        let shares = deposit_sy(&f, &user, 10_i128 * SCALE);
+        f.client.mint(&user, &shares);
         f.client.redeem(&user, &(10_i128 * SCALE), &0_i128);
     }
 
@@ -669,9 +722,11 @@ mod test {
         let u2 = Address::generate(&f.env);
         grant_user(&f, &u1);
         grant_user(&f, &u2);
+        let s1 = deposit_sy(&f, &u1, 30_i128 * SCALE);
+        let s2 = deposit_sy(&f, &u2, 70_i128 * SCALE);
 
-        f.client.mint(&u1, &(30_i128 * SCALE));
-        f.client.mint(&u2, &(70_i128 * SCALE));
+        f.client.mint(&u1, &s1);
+        f.client.mint(&u2, &s2);
         assert_eq!(f.client.total_pt(), 100_i128 * SCALE);
         assert_eq!(f.client.total_yt(), 100_i128 * SCALE);
     }
@@ -682,8 +737,9 @@ mod test {
         let f = setup(maturity);
         let user = Address::generate(&f.env);
         grant_user(&f, &user);
+        let shares = deposit_sy(&f, &user, 100_i128 * SCALE);
 
-        let result = f.client.mint(&user, &(100_i128 * SCALE));
+        let result = f.client.mint(&user, &shares);
         let pt = result.pt_minted;
         let yt = result.yt_minted;
         assert_eq!(f.client.total_pt(), pt);
@@ -696,7 +752,8 @@ mod test {
         assert_eq!(f.client.total_pt(), 0);
         assert_eq!(f.client.total_yt(), yt); // YT supply unchanged
 
-        // YT with no rate change → yield_delta = 0 → 0 returned.
+        // YT with no rate change → nothing accrued in YTToken's index → 0 returned, and the
+        // YT balance itself is still burned down to 0.
         f.client.redeem(&user, &0_i128, &yt);
         assert_eq!(f.client.total_yt(), 0);
     }
@@ -707,9 +764,10 @@ mod test {
         let f = setup(maturity);
         let user = Address::generate(&f.env);
         grant_user(&f, &user);
+        let shares = deposit_sy(&f, &user, 100_i128 * SCALE);
 
         // Mint at rate = SCALE (1.0).
-        let result = f.client.mint(&user, &(100_i128 * SCALE));
+        let result = f.client.mint(&user, &shares);
         let pt = result.pt_minted; // = 100 * SCALE
 
         // Advance to maturity; update oracle to 1.03.
@@ -722,6 +780,8 @@ mod test {
         let expected = pt * SCALE / final_rate;
         assert_eq!(r.underlying_from_pt, expected);
         assert_eq!(r.underlying_from_yt, 0);
+        // Real transfer: the user actually received the underlying asset.
+        assert_eq!(token::Client::new(&f.env, &f.underlying).balance(&user), expected);
     }
 
     #[test]
@@ -730,9 +790,10 @@ mod test {
         let f = setup(maturity);
         let user = Address::generate(&f.env);
         grant_user(&f, &user);
+        let shares = deposit_sy(&f, &user, 100_i128 * SCALE);
 
-        // Mint at rate = SCALE (1.0); initial_rate stored = SCALE.
-        let result = f.client.mint(&user, &(100_i128 * SCALE));
+        // Mint at rate = SCALE (1.0).
+        let result = f.client.mint(&user, &shares);
         let yt = result.yt_minted; // = 100 * SCALE
 
         // Advance to maturity; oracle → 1.03.
@@ -742,12 +803,43 @@ mod test {
             .set_reference_value(&f.oracle_admin, &final_rate, &(maturity + 1));
 
         let r = f.client.redeem(&user, &0_i128, &yt);
-        // yield_delta = 10_300_000 − 10_000_000 = 300_000
-        // underlying  = floor(yt * 300_000 / 10_300_000)
-        let yield_delta = final_rate - SCALE;
-        let expected = yt * yield_delta / final_rate;
+        // Mirrors YTToken's own index formula (see YTToken::update_yield_index): for a single
+        // price movement this is numerically very close to, but not bit-identical to,
+        // yt_amount * (final_rate - SCALE) / final_rate -- the two computations round
+        // differently in fixed-point (see this module's doc comment for why redeem() delegates
+        // to YTToken's own accrual instead of computing an independent amount here).
+        let delta_index = (final_rate - SCALE) * SCALE / final_rate;
+        let expected = yt * delta_index / SCALE;
         assert_eq!(r.underlying_from_yt, expected);
         assert_eq!(r.underlying_from_pt, 0);
+    }
+
+    #[test]
+    fn redeem_yt_does_not_double_pay_yield_already_claimed_directly() {
+        // YTToken.claim_yield is independently, publicly callable by any holder. If a user
+        // claims yield directly and then redeems through PrincipalManager, redeem() must not
+        // pay out that same accrued amount a second time -- both paths settle against the same
+        // index, so whichever runs second sees nothing left pending.
+        let maturity = T0 + 500;
+        let f = setup(maturity);
+        let user = Address::generate(&f.env);
+        grant_user(&f, &user);
+        let shares = deposit_sy(&f, &user, 100_i128 * SCALE);
+        let result = f.client.mint(&user, &shares);
+        let yt = result.yt_minted;
+
+        f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
+        f.oracle
+            .set_reference_value(&f.oracle_admin, &10_300_000_i128, &(maturity + 1));
+
+        // User claims directly, out-of-band from PrincipalManager, before redeeming.
+        f.yt.update_yield_index();
+        let direct_claim = f.yt.claim_yield(&user);
+        assert!(direct_claim > 0);
+
+        // Redemption must not pay the same yield again.
+        let r = f.client.redeem(&user, &0_i128, &yt);
+        assert_eq!(r.underlying_from_yt, 0);
     }
 
     #[test]
@@ -756,15 +848,16 @@ mod test {
         let f = setup(maturity);
         let user = Address::generate(&f.env);
         grant_user(&f, &user);
+        let shares = deposit_sy(&f, &user, 100_i128 * SCALE);
 
-        let result = f.client.mint(&user, &(100_i128 * SCALE));
+        let result = f.client.mint(&user, &shares);
         let yt = result.yt_minted;
 
         // Oracle set at T0; ledger at T0+501 → delta = 501 < 3600 → fresh.
         f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
 
         let r = f.client.redeem(&user, &0_i128, &yt);
-        assert_eq!(r.underlying_from_yt, 0); // final_rate == initial_rate
+        assert_eq!(r.underlying_from_yt, 0); // rate never moved → nothing accrued
     }
 
     #[test]
@@ -774,7 +867,8 @@ mod test {
         let f = setup(maturity);
         let user = Address::generate(&f.env);
         grant_user(&f, &user);
-        f.client.mint(&user, &(10_i128 * SCALE));
+        let shares = deposit_sy(&f, &user, 10_i128 * SCALE);
+        f.client.mint(&user, &shares);
 
         // Advance past maturity AND past the 1-hour staleness window.
         // Oracle set at T0=1000; ledger → 1000+3601=4601 → delta=3601 > 3600 → stale.
@@ -788,7 +882,8 @@ mod test {
     #[should_panic]
     fn unpermissioned_user_cannot_mint() {
         let f = setup(u64::MAX);
-        // stranger was never granted — must be rejected.
+        // stranger was never granted, so it also can't deposit into SYWrapper -- but even a
+        // caller who somehow held shares would still be rejected at PrincipalManager's own gate.
         let stranger = Address::generate(&f.env);
         f.client.mint(&stranger, &(10_i128 * SCALE));
     }
@@ -801,7 +896,8 @@ mod test {
         let f = setup(maturity);
         let user = Address::generate(&f.env);
         grant_user(&f, &user);
-        let result = f.client.mint(&user, &(10_i128 * SCALE));
+        let shares = deposit_sy(&f, &user, 10_i128 * SCALE);
+        let result = f.client.mint(&user, &shares);
 
         f.perm.revoke_account(&f.perm_admin, &user);
         f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
@@ -843,10 +939,14 @@ mod test {
         let pm_id = env.register_contract(None, PrincipalManagerContract);
         let client = PrincipalManagerContractClient::new(&env, &pm_id);
         let sy_wrapper = Address::generate(&env);
+        let pt_token = Address::generate(&env);
+        let yt_token = Address::generate(&env);
         // impostor is not the underlying SAC's admin -- market creation must be rejected.
         client.initialize(
             &impostor,
             &sy_wrapper,
+            &pt_token,
+            &yt_token,
             &oracle_id,
             &perm_id,
             &underlying,
@@ -873,7 +973,8 @@ mod test {
         let f = setup(maturity);
         let user = Address::generate(&f.env);
         grant_user(&f, &user);
-        let result = f.client.mint(&user, &(10_i128 * SCALE));
+        let shares = deposit_sy(&f, &user, 10_i128 * SCALE);
+        let result = f.client.mint(&user, &shares);
 
         // Issuer deauthorizes the account directly on the underlying SAC (not via Principal's
         // own Permissioning) after mint but before redeem.

@@ -13,6 +13,9 @@ soroban-sdk = { version = "26.0.1" }
 soroban-sdk = { version = "26.0.1", features = ["testutils"] }
 principal_oracle_adapter = { path = "../oracle_adapter", features = ["testutils"] }
 principal_permissioning = { path = "../permissioning", features = ["testutils"] }
+principal_sy_wrapper = { path = "../sy_wrapper", features = ["testutils"] }
+principal_pt_token = { path = "../pt_token", features = ["testutils"] }
+principal_yt_token = { path = "../yt_token", features = ["testutils"] }
 
 [features]
 testutils = ["soroban-sdk/testutils"]

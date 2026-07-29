@@ -1063,6 +1063,9 @@ version = "0.1.0"
 dependencies = [
  "principal_oracle_adapter",
  "principal_permissioning",
+ "principal_pt_token",
+ "principal_sy_wrapper",
+ "principal_yt_token",
  "soroban-sdk",
 ]
 

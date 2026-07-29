@@ -127,6 +127,37 @@ impl SYWrapperContract {
         env.storage().instance().set(&DataKey::Paused, &false);
     }
 
+    // --- share transfer ---
+
+    /// Move `amount` shares from `from` to `to`, both still subject to the same two-layer
+    /// compliance check as `deposit`/`withdraw`. This is what lets `PrincipalManager` take
+    /// custody of a user's SY shares when splitting them into PT + YT, and is otherwise a plain
+    /// SEP-41-style balance move: no change to `TotalUnderlying`/`TotalShares`, no external
+    /// token call, so there is no reentrancy surface here the way there is in deposit/withdraw.
+    pub fn transfer(env: Env, from: Address, to: Address, amount: i128) -> i128 {
+        from.require_auth();
+        Self::assert_not_paused(&env);
+        Self::assert_sac_authorized(&env, &from);
+        Self::assert_sac_authorized(&env, &to);
+        Self::assert_permitted(&env, &from);
+        Self::assert_permitted(&env, &to);
+        if amount <= 0 {
+            panic_with_error!(&env, Error::ZeroAmount);
+        }
+
+        let balance = Self::get_balance(&env, &from);
+        if balance < amount {
+            panic_with_error!(&env, Error::InsufficientShares);
+        }
+
+        Self::sub_balance(&env, &from, amount);
+        Self::add_balance(&env, &to, amount);
+
+        env.events()
+            .publish((symbol_short!("sy_xfer"),), (from, to, amount));
+        amount
+    }
+
     // --- deposit / withdraw ---
 
     /// Deposit `amount` of the underlying asset; returns shares minted to `from`.
@@ -709,6 +740,53 @@ mod test {
         let new_admin = Address::generate(&f.env);
         f.client.transfer_admin(&f.admin, &new_admin);
         assert_eq!(f.client.get_admin(), new_admin);
+    }
+
+    // --- share transfer ---
+
+    #[test]
+    fn transfer_moves_shares_between_eligible_accounts() {
+        let f = setup();
+        let user = Address::generate(&f.env);
+        let recipient = Address::generate(&f.env);
+        grant(&f, &user);
+        grant(&f, &recipient);
+        mint(&f.env, &f.underlying, &f.admin, &user, 500_000_000);
+        let shares = f.client.deposit(&user, &500_000_000_i128);
+
+        let moved = f.client.transfer(&user, &recipient, &shares);
+        assert_eq!(moved, shares);
+        assert_eq!(f.client.balance_of(&user), 0);
+        assert_eq!(f.client.balance_of(&recipient), shares);
+        // Pure balance move: total shares/underlying unaffected.
+        assert_eq!(f.client.total_shares(), shares);
+    }
+
+    #[test]
+    #[should_panic]
+    fn transfer_to_unpermitted_recipient_panics() {
+        let f = setup();
+        let user = Address::generate(&f.env);
+        let stranger = Address::generate(&f.env);
+        grant(&f, &user);
+        mint(&f.env, &f.underlying, &f.admin, &user, 500_000_000);
+        let shares = f.client.deposit(&user, &500_000_000_i128);
+
+        f.client.transfer(&user, &stranger, &shares); // stranger never granted
+    }
+
+    #[test]
+    #[should_panic]
+    fn transfer_more_than_balance_panics() {
+        let f = setup();
+        let user = Address::generate(&f.env);
+        let recipient = Address::generate(&f.env);
+        grant(&f, &user);
+        grant(&f, &recipient);
+        mint(&f.env, &f.underlying, &f.admin, &user, 100_000_000);
+        f.client.deposit(&user, &100_000_000_i128);
+
+        f.client.transfer(&user, &recipient, &200_000_000_i128);
     }
 
     // --- seize (compliance recovery) ---
