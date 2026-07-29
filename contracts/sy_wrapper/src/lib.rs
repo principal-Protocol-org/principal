@@ -1,7 +1,7 @@
 //! SYWrapper — standardized yield wrapper for a single underlying yield-bearing asset.
 //!
 //! # Design
-//! Users deposit the underlying asset (e.g. USDY) and receive SY shares in return.
+//! Users deposit the underlying asset (e.g. BENJI, USDY) and receive SY shares in return.
 //! The exchange rate (underlying per share) increases over time as the underlying accrues yield.
 //! The PrincipalManager reads the exchange rate to compute PT and YT amounts when splitting.
 //!
@@ -14,19 +14,43 @@
 //! On withdrawal of `s` shares:
 //!   underlying_returned = s * exchange_rate / RATE_SCALE
 //!
-//! # Compliance
-//! `deposit` and `withdraw` both check `Permissioning.is_allowed()` (added after the SCF #44
-//! resubmission audit found this contract had no eligibility gate at all — only
-//! `PrincipalManager.mint()` did). `remediate()` is Clawback Propagation: it lets the admin
-//! (expected in production to be an issuer-authorized compliance role, not the routine protocol
-//! admin key) burn a single flagged account's own SY balance and release the equivalent
-//! underlying, without touching any other depositor's share of the pool. See
-//! COMPLIANT_SETTLEMENT_DESIGN.md §2-3 for the full rationale.
+//! # Compliance — authorization inheritance
+//! Most Stellar RWAs are issued as Stellar Assets with native authorization and clawback
+//! controls exposed through their Stellar Asset Contract (SAC): `authorized(address) -> bool`
+//! and `admin() -> Address`, both public, no-auth-required view functions. Those controls apply
+//! to the underlying asset but do not automatically extend to SY shares — a separate Soroban
+//! position. Without inheritance, an investor deauthorized on the underlying asset could still
+//! hold or transfer SY.
+//!
+//! `deposit` and `withdraw` therefore check **both** layers on every affected account:
+//! `underlying_SAC.authorized(account)` (the mandatory floor — inherited live from the actual
+//! issuer, with no separate registry that could drift out of sync with the issuer's own
+//! decisions) and `Permissioning.is_allowed(account)` (an optional, Principal-specific
+//! additional layer, narrower than but never looser than the SAC's own authorization).
+//!
+//! # Market creation
+//! `initialize` requires the caller to be the underlying SAC's actual admin (`admin()`, read
+//! live), so only the entity that controls a regulated asset's authorization and clawback can
+//! stand up a market on it. This is checked once, at market creation; day-to-day operational
+//! admin can be transferred afterward via `transfer_admin`.
+//!
+//! # Compliance recovery — seize
+//! The native clawback function of a Stellar Asset only applies to the underlying asset's own
+//! balance; it cannot reach SY shares directly, since they are a separate Soroban position.
+//! `seize` lets a pre-configured `RecoveryEscrow` contract forcibly move a restricted holder's
+//! SY balance to itself, without the holder's authorization -- a forced transfer, not a burn.
+//! The escrow then unwraps that SY into the underlying asset via a normal `withdraw` call (the
+//! escrow is itself pre-authorized to hold the underlying, same as `SYWrapper`), leaving the
+//! escrow holding raw underlying, ready for the issuer's native SAC `clawback`. `SYWrapper`
+//! itself does not verify *why* a seizure is happening or authenticate the real issuer directly
+//! -- it only trusts calls from its one configured `RecoveryEscrow` address. All of that
+//! verification (issuer admin signature, target already deauthorized) lives once in the escrow,
+//! shared across SY/PT/YT, instead of being duplicated per contract.
 
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractclient, contractimpl, contracttype, panic_with_error,
+    contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error,
     symbol_short, token, Address, Env,
 };
 
@@ -52,14 +76,18 @@ pub enum Error {
     Paused = 6,
     ArithmeticOverflow = 7,
     PermissionDenied = 8,
-    AccountNotRevoked = 9,
+    NotAuthorizedOnSac = 9,
+    RecoveryEscrowAlreadySet = 10,
+    NotRecoveryEscrow = 11,
+    IssuerMismatch = 12,
 }
 
 #[contracttype]
 pub enum DataKey {
     Admin,
-    Underlying,   // Address of the underlying token contract
+    Underlying, // Address of the underlying SAC/token contract
     Permissioning,
+    RecoveryEscrow, // absent until set_recovery_escrow
     TotalUnderlying,
     TotalShares,
     Balance(Address), // SY share balance per holder
@@ -71,18 +99,30 @@ pub struct SYWrapperContract;
 
 #[contractimpl]
 impl SYWrapperContract {
-    /// Initialize with the admin address, the underlying token contract address, and the
-    /// Permissioning registry used to gate deposits/withdrawals.
+    /// Initialize with the admin address, the underlying SAC address, and the Permissioning
+    /// registry used as an additional eligibility layer. `admin` must be the underlying SAC's
+    /// actual admin (`admin()`, read live) and must authorize this call -- this is what ties
+    /// market creation to the entity that actually controls the regulated asset, rather than
+    /// letting any third party stand up a market for someone else's asset.
     pub fn initialize(env: Env, admin: Address, underlying: Address, permissioning: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
+        admin.require_auth();
+        let sac_admin = token::StellarAssetClient::new(&env, &underlying).admin();
+        if admin != sac_admin {
+            panic_with_error!(&env, Error::IssuerMismatch);
+        }
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::Underlying, &underlying);
+        env.storage()
+            .instance()
+            .set(&DataKey::Underlying, &underlying);
         env.storage()
             .instance()
             .set(&DataKey::Permissioning, &permissioning);
-        env.storage().instance().set(&DataKey::TotalUnderlying, &0_i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalUnderlying, &0_i128);
         env.storage().instance().set(&DataKey::TotalShares, &0_i128);
         env.storage().instance().set(&DataKey::Paused, &false);
     }
@@ -93,6 +133,7 @@ impl SYWrapperContract {
     pub fn deposit(env: Env, from: Address, amount: i128) -> i128 {
         from.require_auth();
         Self::assert_not_paused(&env);
+        Self::assert_sac_authorized(&env, &from);
         Self::assert_permitted(&env, &from);
         if amount <= 0 {
             panic_with_error!(&env, Error::ZeroAmount);
@@ -105,13 +146,19 @@ impl SYWrapperContract {
             panic_with_error!(&env, Error::ZeroAmount);
         }
 
-        // Effects before interaction (SECURITY.md's stated invariant for this contract, which
-        // this function previously violated: the external transfer ran before these updates,
-        // leaving a window where a malicious `underlying` token contract could reenter deposit
-        // with total_underlying/total_shares still at their pre-call values). Updating state
-        // first means a reentrant call sees this deposit already accounted for.
-        let total_u: i128 = env.storage().instance().get(&DataKey::TotalUnderlying).unwrap_or(0);
-        let total_s: i128 = env.storage().instance().get(&DataKey::TotalShares).unwrap_or(0);
+        // Effects before interaction (checks-effects-interactions): update state first so a
+        // reentrant call from a malicious `underlying` token would see this deposit already
+        // accounted for.
+        let total_u: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalUnderlying)
+            .unwrap_or(0);
+        let total_s: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0);
         env.storage()
             .instance()
             .set(&DataKey::TotalUnderlying, &(total_u + amount));
@@ -138,11 +185,11 @@ impl SYWrapperContract {
     pub fn withdraw(env: Env, from: Address, shares: i128, to: Address) -> i128 {
         from.require_auth();
         Self::assert_not_paused(&env);
-        // Both sides are checked, not just `to`: if only the recipient were gated, a flagged
-        // account could self-withdraw the instant it suspected remediation was coming,
-        // completely defeating remediate() (Clawback Propagation) by cashing out first. An
-        // account whose eligibility is revoked is frozen on both the sending and receiving
-        // side until remediated, not just blocked from directing funds to new destinations.
+        // Both sides are checked, not just `to`: if only the recipient were gated, a
+        // deauthorized account could self-withdraw the instant it suspected a seizure was
+        // coming. Frozen means frozen on both the sending and receiving side.
+        Self::assert_sac_authorized(&env, &from);
+        Self::assert_sac_authorized(&env, &to);
         Self::assert_permitted(&env, &from);
         Self::assert_permitted(&env, &to);
         if shares <= 0 {
@@ -160,8 +207,16 @@ impl SYWrapperContract {
         }
 
         // Update state before external call (checks-effects-interactions).
-        let total_u: i128 = env.storage().instance().get(&DataKey::TotalUnderlying).unwrap_or(0);
-        let total_s: i128 = env.storage().instance().get(&DataKey::TotalShares).unwrap_or(0);
+        let total_u: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalUnderlying)
+            .unwrap_or(0);
+        let total_s: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0);
         env.storage()
             .instance()
             .set(&DataKey::TotalUnderlying, &(total_u - underlying_out));
@@ -187,20 +242,34 @@ impl SYWrapperContract {
 
     /// Current exchange rate: underlying units per share, scaled by RATE_SCALE.
     pub fn exchange_rate(env: Env) -> i128 {
-        let total_s: i128 = env.storage().instance().get(&DataKey::TotalShares).unwrap_or(0);
+        let total_s: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0);
         if total_s == 0 {
             return RATE_SCALE; // 1:1 at inception
         }
-        let total_u: i128 = env.storage().instance().get(&DataKey::TotalUnderlying).unwrap_or(0);
+        let total_u: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalUnderlying)
+            .unwrap_or(0);
         total_u * RATE_SCALE / total_s
     }
 
     pub fn total_underlying(env: Env) -> i128 {
-        env.storage().instance().get(&DataKey::TotalUnderlying).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalUnderlying)
+            .unwrap_or(0)
     }
 
     pub fn total_shares(env: Env) -> i128 {
-        env.storage().instance().get(&DataKey::TotalShares).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0)
     }
 
     pub fn balance_of(env: Env, account: Address) -> i128 {
@@ -211,13 +280,16 @@ impl SYWrapperContract {
         Self::get_underlying(&env)
     }
 
+    pub fn recovery_escrow(env: Env) -> Address {
+        Self::require_escrow(&env)
+    }
+
     // --- admin ---
 
     pub fn set_paused(env: Env, caller: Address, paused: bool) {
         Self::assert_admin(&env, &caller);
         env.storage().instance().set(&DataKey::Paused, &paused);
-        env.events()
-            .publish((symbol_short!("paused"),), paused);
+        env.events().publish((symbol_short!("paused"),), paused);
     }
 
     pub fn transfer_admin(env: Env, current_admin: Address, new_admin: Address) {
@@ -231,26 +303,40 @@ impl SYWrapperContract {
         Self::require_admin(&env)
     }
 
-    // --- compliance remediation (Clawback Propagation) ---
+    /// One-time wiring of the RecoveryEscrow contract authorized to call `seize`. Mirrors the
+    /// `set_minter` pattern used on PTToken/YTToken: settable once, never reassigned, breaking
+    /// the circular dependency between SYWrapper and RecoveryEscrow at deployment time.
+    pub fn set_recovery_escrow(env: Env, admin: Address, escrow: Address) {
+        Self::assert_admin(&env, &admin);
+        if env.storage().instance().has(&DataKey::RecoveryEscrow) {
+            panic_with_error!(&env, Error::RecoveryEscrowAlreadySet);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::RecoveryEscrow, &escrow);
+        env.events().publish((symbol_short!("esc_set"),), escrow);
+    }
 
-    /// Burn exactly `shares` from `account`'s own SY balance and release the equivalent
-    /// underlying to `caller`. Never touches any other depositor's balance — `shares` can be
-    /// at most `account`'s own holding, so a single flagged account's remediation can't
-    /// haircut the shared pool the way a native issuer clawback against this contract's
-    /// pooled balance would. `caller` must be this contract's admin; in production that role
-    /// is expected to be an issuer-authorized compliance signer, not the routine protocol
-    /// admin key — the contract enforces *who* can call this, not *why* they're calling it.
+    // --- compliance recovery (seize) ---
+
+    /// Forcibly move `shares` from `account`'s SY balance to the caller's own balance, without
+    /// `account`'s authorization. Callable only by the configured `RecoveryEscrow` -- this
+    /// contract does not itself verify the issuer's admin signature or check whether `account`
+    /// has actually been deauthorized; that verification happens once, in the escrow, shared
+    /// across every position type instead of duplicated here. A pure forced transfer, not a
+    /// burn: `TotalShares`/`TotalUnderlying` are unaffected, since the value stays inside the
+    /// wrapper (now credited to the escrow) until the escrow separately calls `withdraw` to
+    /// unwrap it into raw underlying.
     ///
-    /// `account` must already be revoked in Permissioning (`is_allowed(account) == false`).
-    /// Without this check, remediate() would let a compromised or malicious admin key drain
-    /// any depositor's SY balance to itself, not just genuinely flagged accounts — the caller
-    /// controls *whom* to target with no on-chain link to an actual compliance action. Requiring
-    /// prior revocation also enforces separation of duties in practice: revoking an account is
-    /// Permissioning's admin action, which is not necessarily the same key as this contract's
-    /// admin, so a single compromised key cannot both flag and drain an account unilaterally.
-    pub fn remediate(env: Env, caller: Address, account: Address, shares: i128) -> i128 {
-        Self::assert_admin(&env, &caller);
-        Self::assert_revoked(&env, &account);
+    /// Deliberately callable while paused: `set_paused` blocks ordinary user activity, but a
+    /// seizure already gated on caller-is-the-escrow shouldn't become unusable during an
+    /// operational pause (e.g. triggered by the same incident that justifies a legal freeze).
+    pub fn seize(env: Env, caller: Address, account: Address, shares: i128) -> i128 {
+        caller.require_auth();
+        let escrow = Self::require_escrow(&env);
+        if caller != escrow {
+            panic_with_error!(&env, Error::NotRecoveryEscrow);
+        }
         if shares <= 0 {
             panic_with_error!(&env, Error::ZeroAmount);
         }
@@ -260,39 +346,22 @@ impl SYWrapperContract {
             panic_with_error!(&env, Error::InsufficientShares);
         }
 
-        let underlying_out = Self::shares_to_underlying(&env, shares);
-        if underlying_out <= 0 {
-            panic_with_error!(&env, Error::ZeroAmount);
-        }
-
-        let total_u: i128 = env.storage().instance().get(&DataKey::TotalUnderlying).unwrap_or(0);
-        let total_s: i128 = env.storage().instance().get(&DataKey::TotalShares).unwrap_or(0);
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalUnderlying, &(total_u - underlying_out));
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalShares, &(total_s - shares));
         Self::sub_balance(&env, &account, shares);
+        Self::add_balance(&env, &caller, shares);
 
-        let underlying = Self::get_underlying(&env);
-        token::Client::new(&env, &underlying).transfer(
-            &env.current_contract_address(),
-            &caller,
-            &underlying_out,
-        );
-
-        env.events().publish(
-            (symbol_short!("remediate"),),
-            (caller, account, shares, underlying_out),
-        );
-        underlying_out
+        env.events()
+            .publish((symbol_short!("seize"),), (caller, account, shares));
+        shares
     }
 
     // --- internal helpers ---
 
     fn underlying_to_shares(env: &Env, amount: i128) -> i128 {
-        let total_s: i128 = env.storage().instance().get(&DataKey::TotalShares).unwrap_or(0);
+        let total_s: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalShares)
+            .unwrap_or(0);
         if total_s == 0 {
             return amount; // first depositor: 1:1
         }
@@ -344,6 +413,13 @@ impl SYWrapperContract {
             .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized))
     }
 
+    fn require_escrow(env: &Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::RecoveryEscrow)
+            .unwrap_or_else(|| panic_with_error!(env, Error::NotRecoveryEscrow))
+    }
+
     fn assert_admin(env: &Env, caller: &Address) {
         caller.require_auth();
         let admin = Self::require_admin(env);
@@ -353,7 +429,11 @@ impl SYWrapperContract {
     }
 
     fn assert_not_paused(env: &Env) {
-        let paused: bool = env.storage().instance().get(&DataKey::Paused).unwrap_or(false);
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
         if paused {
             panic_with_error!(env, Error::Paused);
         }
@@ -370,30 +450,34 @@ impl SYWrapperContract {
         }
     }
 
-    fn assert_revoked(env: &Env, account: &Address) {
-        let perm_addr: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Permissioning)
-            .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
-        if PermClient::new(env, &perm_addr).is_allowed(account) {
-            panic_with_error!(env, Error::AccountNotRevoked);
+    fn assert_sac_authorized(env: &Env, account: &Address) {
+        let underlying = Self::get_underlying(env);
+        if !token::StellarAssetClient::new(env, &underlying).authorized(account) {
+            panic_with_error!(env, Error::NotAuthorizedOnSac);
         }
     }
 }
 
 #[cfg(test)]
 mod test {
-    use soroban_sdk::{testutils::Address as _, token, Address, Env};
+    use soroban_sdk::{
+        testutils::{Address as _, IssuerFlags},
+        token, Address, Env,
+    };
 
     use principal_permissioning::{PermissioningContract, PermissioningContractClient};
 
     use super::{SYWrapperContract, SYWrapperContractClient, RATE_SCALE};
 
-    /// Deploy a minimal mock token for testing without a full SAC.
+    /// Deploy a minimal mock SAC for testing. `admin` becomes the SAC's real admin, matching
+    /// how `initialize` now requires SYWrapper's own admin to equal `underlying.admin()`. The
+    /// issuer's `RevocableFlag` is set so tests can simulate deauthorization
+    /// (`set_authorized(_, false)`) -- without it, deauthorizing panics with "issuer does not
+    /// have AUTH_REVOCABLE set" instead of exercising the check under test.
     fn deploy_token(env: &Env, admin: &Address) -> Address {
-        let token_id = env.register_stellar_asset_contract_v2(admin.clone());
-        token_id.address()
+        let sac = env.register_stellar_asset_contract_v2(admin.clone());
+        sac.issuer().set_flag(IssuerFlags::RevocableFlag);
+        sac.address()
     }
 
     struct Fixture {
@@ -418,6 +502,7 @@ mod test {
 
         let wrapper_id = env.register_contract(None, SYWrapperContract);
         let client = SYWrapperContractClient::new(&env, &wrapper_id);
+        // admin == underlying's real SAC admin, satisfying the new issuer-match requirement.
         client.initialize(&admin, &underlying, &perm_id);
 
         Fixture {
@@ -430,13 +515,33 @@ mod test {
         }
     }
 
+    /// Grants both layers: Permissioning (Principal-specific) and SAC authorization (the
+    /// mandatory floor inherited from the issuer). Most tests want both cleared.
     fn grant(f: &Fixture, user: &Address) {
         f.perm.grant_account(&f.perm_admin, user);
+        token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(user, &true);
     }
 
     fn mint(env: &Env, token: &Address, _admin: &Address, to: &Address, amount: i128) {
         let tok = token::StellarAssetClient::new(env, token);
         tok.mint(to, &amount);
+    }
+
+    #[test]
+    #[should_panic]
+    fn initialize_rejects_admin_not_matching_sac_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let real_sac_admin = Address::generate(&env);
+        let underlying = deploy_token(&env, &real_sac_admin);
+        let perm_id = env.register_contract(None, PermissioningContract);
+        PermissioningContractClient::new(&env, &perm_id).initialize(&real_sac_admin);
+
+        let impostor = Address::generate(&env);
+        let wrapper_id = env.register_contract(None, SYWrapperContract);
+        let client = SYWrapperContractClient::new(&env, &wrapper_id);
+        // impostor is not the underlying SAC's admin -- market creation must be rejected.
+        client.initialize(&impostor, &underlying, &perm_id);
     }
 
     #[test]
@@ -458,25 +563,43 @@ mod test {
     fn deposit_without_permissioning_grant_panics() {
         let f = setup();
         let user = Address::generate(&f.env);
-        // Not granted.
+        // SAC-authorized but never granted in Principal's own Permissioning layer.
+        token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&user, &true);
         mint(&f.env, &f.underlying, &f.admin, &user, 1_000_000_000);
         f.client.deposit(&user, &1_000_000_000_i128);
     }
 
     #[test]
     #[should_panic]
-    fn revoked_holder_cannot_front_run_remediation_by_self_withdrawing() {
-        // If withdraw only checked `to`, a flagged account could cash out the instant it
-        // suspected remediation was coming, defeating remediate() entirely. Revocation must
-        // freeze the account on the sending side too, not just block new destinations.
+    fn deposit_without_sac_authorization_panics() {
+        // Granted in Principal's own Permissioning, but explicitly deauthorized on the
+        // underlying SAC itself (e.g. the issuer never cleared them, or revoked them) -- the
+        // mandatory floor inherited from the issuer must still block this regardless of
+        // Principal's own Permissioning state. (A freshly-registered test SAC defaults every
+        // address to authorized=true, matching real unrestricted-asset semantics, so this test
+        // explicitly deauthorizes rather than relying on an unset default.)
+        let f = setup();
+        let user = Address::generate(&f.env);
+        f.perm.grant_account(&f.perm_admin, &user);
+        token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&user, &false);
+        mint(&f.env, &f.underlying, &f.admin, &user, 1_000_000_000);
+        f.client.deposit(&user, &1_000_000_000_i128);
+    }
+
+    #[test]
+    #[should_panic]
+    fn deauthorized_on_sac_cannot_front_run_seizure_by_self_withdrawing() {
+        // If withdraw only checked `to`, an investor the issuer just deauthorized on the SAC
+        // could cash out the instant they suspected a seizure was coming.
         let f = setup();
         let user = Address::generate(&f.env);
         grant(&f, &user);
         mint(&f.env, &f.underlying, &f.admin, &user, 500_000_000);
         let shares = f.client.deposit(&user, &500_000_000_i128);
 
-        f.perm.revoke_account(&f.perm_admin, &user);
-        f.client.withdraw(&user, &shares, &user); // to == from, both now revoked
+        // Issuer deauthorizes the account directly on the underlying SAC.
+        token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&user, &false);
+        f.client.withdraw(&user, &shares, &user);
     }
 
     #[test]
@@ -588,75 +711,118 @@ mod test {
         assert_eq!(f.client.get_admin(), new_admin);
     }
 
-    // --- Clawback Propagation ---
+    // --- seize (compliance recovery) ---
 
     #[test]
-    fn remediate_burns_only_flagged_account_share() {
+    fn set_recovery_escrow_once() {
         let f = setup();
+        let escrow = Address::generate(&f.env);
+        f.client.set_recovery_escrow(&f.admin, &escrow);
+        assert_eq!(f.client.recovery_escrow(), escrow);
+    }
+
+    #[test]
+    #[should_panic]
+    fn set_recovery_escrow_twice_panics() {
+        let f = setup();
+        let escrow1 = Address::generate(&f.env);
+        let escrow2 = Address::generate(&f.env);
+        f.client.set_recovery_escrow(&f.admin, &escrow1);
+        f.client.set_recovery_escrow(&f.admin, &escrow2);
+    }
+
+    #[test]
+    fn seize_moves_balance_to_escrow_without_holder_auth() {
+        let f = setup();
+        let escrow = Address::generate(&f.env);
+        f.client.set_recovery_escrow(&f.admin, &escrow);
+
         let bad_actor = Address::generate(&f.env);
         let innocent = Address::generate(&f.env);
         grant(&f, &bad_actor);
         grant(&f, &innocent);
-
         mint(&f.env, &f.underlying, &f.admin, &bad_actor, 1_000_000_000);
         mint(&f.env, &f.underlying, &f.admin, &innocent, 1_000_000_000);
         f.client.deposit(&bad_actor, &1_000_000_000_i128);
         f.client.deposit(&innocent, &1_000_000_000_i128);
 
-        // Remediation only proceeds once Permissioning has actually revoked the account —
-        // this is what stops remediate() from being usable as a generic drain against any
-        // depositor.
-        f.perm.revoke_account(&f.perm_admin, &bad_actor);
-        let released = f.client.remediate(&f.admin, &bad_actor, &1_000_000_000_i128);
-        assert_eq!(released, 1_000_000_000);
+        let seized = f.client.seize(&escrow, &bad_actor, &1_000_000_000_i128);
+        assert_eq!(seized, 1_000_000_000);
 
-        // Bad actor's SY balance is gone; innocent depositor's share is untouched.
+        // Balance moved to the escrow; total shares unaffected (forced transfer, not a burn);
+        // innocent depositor untouched.
         assert_eq!(f.client.balance_of(&bad_actor), 0);
+        assert_eq!(f.client.balance_of(&escrow), 1_000_000_000);
         assert_eq!(f.client.balance_of(&innocent), 1_000_000_000);
-        assert_eq!(f.client.total_shares(), 1_000_000_000);
+        assert_eq!(f.client.total_shares(), 2_000_000_000);
     }
 
     #[test]
     #[should_panic]
-    fn remediate_requires_prior_revocation() {
-        // The core fix: an admin cannot remediate an account Permissioning still considers
-        // eligible, even though the admin role itself is legitimate. Revocation and
-        // remediation are deliberately separate actions, potentially separate keys.
+    fn seize_requires_configured_escrow_caller() {
         let f = setup();
-        let still_eligible = Address::generate(&f.env);
-        grant(&f, &still_eligible);
-        mint(&f.env, &f.underlying, &f.admin, &still_eligible, 500_000_000);
-        f.client.deposit(&still_eligible, &500_000_000_i128);
+        let escrow = Address::generate(&f.env);
+        let impostor = Address::generate(&f.env);
+        f.client.set_recovery_escrow(&f.admin, &escrow);
 
-        f.client.remediate(&f.admin, &still_eligible, &500_000_000_i128);
-    }
-
-    #[test]
-    #[should_panic]
-    fn remediate_cannot_exceed_flagged_account_balance() {
-        let f = setup();
         let bad_actor = Address::generate(&f.env);
         grant(&f, &bad_actor);
         mint(&f.env, &f.underlying, &f.admin, &bad_actor, 500_000_000);
         f.client.deposit(&bad_actor, &500_000_000_i128);
-        f.perm.revoke_account(&f.perm_admin, &bad_actor);
 
-        // Attempting to remediate more than the account holds must fail, not spill into
-        // the shared pool.
-        f.client.remediate(&f.admin, &bad_actor, &600_000_000_i128);
+        f.client.seize(&impostor, &bad_actor, &500_000_000_i128);
     }
 
     #[test]
     #[should_panic]
-    fn remediate_requires_admin() {
+    fn seize_cannot_exceed_target_balance() {
         let f = setup();
+        let escrow = Address::generate(&f.env);
+        f.client.set_recovery_escrow(&f.admin, &escrow);
+
         let bad_actor = Address::generate(&f.env);
-        let not_admin = Address::generate(&f.env);
         grant(&f, &bad_actor);
         mint(&f.env, &f.underlying, &f.admin, &bad_actor, 500_000_000);
         f.client.deposit(&bad_actor, &500_000_000_i128);
-        f.perm.revoke_account(&f.perm_admin, &bad_actor);
 
-        f.client.remediate(&not_admin, &bad_actor, &500_000_000_i128);
+        f.client.seize(&escrow, &bad_actor, &600_000_000_i128);
+    }
+
+    #[test]
+    fn seize_works_while_paused() {
+        let f = setup();
+        let escrow = Address::generate(&f.env);
+        f.client.set_recovery_escrow(&f.admin, &escrow);
+
+        let bad_actor = Address::generate(&f.env);
+        grant(&f, &bad_actor);
+        mint(&f.env, &f.underlying, &f.admin, &bad_actor, 500_000_000);
+        f.client.deposit(&bad_actor, &500_000_000_i128);
+
+        f.client.set_paused(&f.admin, &true);
+        let seized = f.client.seize(&escrow, &bad_actor, &500_000_000_i128);
+        assert_eq!(seized, 500_000_000);
+    }
+
+    #[test]
+    fn escrow_can_unwrap_seized_sy_via_normal_withdraw() {
+        // End-to-end: seize, then the escrow -- pre-authorized on both layers, same as any
+        // legitimate holder -- unwraps into raw underlying via the ordinary withdraw path.
+        let f = setup();
+        let escrow = Address::generate(&f.env);
+        f.client.set_recovery_escrow(&f.admin, &escrow);
+        grant(&f, &escrow); // issuer + Principal both pre-authorize the escrow
+
+        let bad_actor = Address::generate(&f.env);
+        grant(&f, &bad_actor);
+        mint(&f.env, &f.underlying, &f.admin, &bad_actor, 500_000_000);
+        f.client.deposit(&bad_actor, &500_000_000_i128);
+
+        f.client.seize(&escrow, &bad_actor, &500_000_000_i128);
+        let unwrapped = f.client.withdraw(&escrow, &500_000_000_i128, &escrow);
+        assert_eq!(unwrapped, 500_000_000);
+
+        let underlying_client = token::Client::new(&f.env, &f.underlying);
+        assert_eq!(underlying_client.balance(&escrow), 500_000_000);
     }
 }

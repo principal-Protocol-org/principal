@@ -6,23 +6,31 @@
 //!   `set_minter` (two-phase init, same rationale as PTToken).
 //! * Transfers gated the same way as PTToken: `Permissioning.is_allowed(to)` (coarse) AND
 //!   `Permissioning.is_allowed_for_asset(to, this_contract_address)` (per-instrument), so PT
-//!   and YT can carry independent eligibility policies. See COMPLIANT_SETTLEMENT_DESIGN.md §1.
+//!   and YT can carry independent eligibility policies, plus `underlying_SAC.authorized(account)`
+//!   — the mandatory floor inherited live from the actual issuer. See
+//!   COMPLIANT_SETTLEMENT_DESIGN.md.
 //! * Continuous yield accrual via a global index (TECHNICAL_SPECIFICATION.md §5.5), advanced
 //!   by `update_yield_index` and claimed via `claim_yield`.
+//! * `seize`: lets a pre-configured `RecoveryEscrow` forcibly move a restricted holder's YT
+//!   balance to itself, without the holder's authorization.
 //!
 //! # Yield-accounting correctness
-//! Balance changes (mint, burn, transfer in/out) settle each affected account's pending yield
-//! at their *old* balance against the *current* index before the balance moves, and reset that
-//! account's snapshot index. Skipping this step is a classic reward-accounting bug class: an
+//! Balance changes (mint, burn, transfer in/out, seize) settle each affected account's pending
+//! yield at their *old* balance against the *current* index before the balance moves, and reset
+//! that account's snapshot index. Skipping this step is a classic reward-accounting bug class: an
 //! account could otherwise receive yield accrued before it held the position (buying in right
 //! before a large index update) or lose yield it had already earned (transferring out right
-//! after one). `_settle` is called on every path that changes a balance, not only on claim.
+//! after one). `settle` is called on every path that changes a balance, not only on claim.
+//!
+//! # Market creation
+//! `initialize` requires `admin` to equal the underlying SAC's actual `admin()` (read live),
+//! matching `SYWrapper`'s market-creation gate — see its module docs for the full rationale.
 
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractclient, contractimpl, contracttype, panic_with_error,
-    symbol_short, Address, Env, String,
+    contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error,
+    symbol_short, token, Address, Env, String,
 };
 
 pub const SCALE: i128 = 10_000_000; // 1e7, matches PrincipalManager's SCALE
@@ -70,6 +78,10 @@ pub enum Error {
     MinterAlreadySet = 8,
     MinterNotSet = 9,
     OracleStale = 10,
+    NotAuthorizedOnSac = 11,
+    IssuerMismatch = 12,
+    RecoveryEscrowAlreadySet = 13,
+    NotRecoveryEscrow = 14,
 }
 
 // ---------------------------------------------------------------------------
@@ -81,6 +93,8 @@ pub enum DataKey {
     Admin,
     Minter,
     Permissioning,
+    Underlying,     // Address of the underlying SAC, for authorization inheritance
+    RecoveryEscrow, // Option<Address>; absent until set_recovery_escrow is called
     Oracle,
     Maturity,
     Name,
@@ -89,8 +103,8 @@ pub enum DataKey {
     TotalSupply,
     Balance(Address),
     Allowance(Address, Address),
-    YieldIndex,          // i128, scaled by SCALE
-    LastOracleRate,       // i128, high-water mark used to advance YieldIndex
+    YieldIndex,                // i128, scaled by SCALE
+    LastOracleRate,            // i128, high-water mark used to advance YieldIndex
     LastClaimedIndex(Address), // i128, per-user snapshot of YieldIndex
     PendingClaim(Address),     // i128, settled-but-unclaimed yield, underlying units
 }
@@ -111,10 +125,12 @@ pub struct YTTokenContract;
 
 #[contractimpl]
 impl YTTokenContract {
+    /// `admin` must be the underlying SAC's actual admin and must authorize this call.
     pub fn initialize(
         env: Env,
         admin: Address,
         permissioning: Address,
+        underlying: Address,
         oracle: Address,
         maturity: u64,
         name: String,
@@ -124,10 +140,18 @@ impl YTTokenContract {
         if env.storage().instance().has(&DataKey::Admin) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
+        admin.require_auth();
+        let sac_admin = token::StellarAssetClient::new(&env, &underlying).admin();
+        if admin != sac_admin {
+            panic_with_error!(&env, Error::IssuerMismatch);
+        }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
             .set(&DataKey::Permissioning, &permissioning);
+        env.storage()
+            .instance()
+            .set(&DataKey::Underlying, &underlying);
         env.storage().instance().set(&DataKey::Oracle, &oracle);
         env.storage().instance().set(&DataKey::Maturity, &maturity);
         env.storage().instance().set(&DataKey::Name, &name);
@@ -146,8 +170,19 @@ impl YTTokenContract {
             panic_with_error!(&env, Error::MinterAlreadySet);
         }
         env.storage().instance().set(&DataKey::Minter, &minter);
-        env.events()
-            .publish((symbol_short!("min_set"),), minter);
+        env.events().publish((symbol_short!("min_set"),), minter);
+    }
+
+    /// One-time wiring of the RecoveryEscrow contract authorized to call `seize`.
+    pub fn set_recovery_escrow(env: Env, admin: Address, escrow: Address) {
+        Self::assert_admin(&env, &admin);
+        if env.storage().instance().has(&DataKey::RecoveryEscrow) {
+            panic_with_error!(&env, Error::RecoveryEscrowAlreadySet);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::RecoveryEscrow, &escrow);
+        env.events().publish((symbol_short!("esc_set"),), escrow);
     }
 
     // --- SEP-41 token interface ---
@@ -159,6 +194,8 @@ impl YTTokenContract {
         }
         // Both sides checked — see PTToken::transfer for why checking only `to` would let a
         // revoked holder dump YT before being frozen.
+        Self::assert_sac_authorized(&env, &from);
+        Self::assert_sac_authorized(&env, &to);
         Self::assert_permitted(&env, &from);
         Self::assert_permitted(&env, &to);
 
@@ -182,6 +219,8 @@ impl YTTokenContract {
         if amount <= 0 {
             panic_with_error!(&env, Error::ZeroAmount);
         }
+        Self::assert_sac_authorized(&env, &from);
+        Self::assert_sac_authorized(&env, &to);
         Self::assert_permitted(&env, &from);
         Self::assert_permitted(&env, &to);
 
@@ -238,7 +277,10 @@ impl YTTokenContract {
     }
 
     pub fn decimals(env: Env) -> u32 {
-        env.storage().instance().get(&DataKey::Decimals).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::Decimals)
+            .unwrap_or(0)
     }
 
     pub fn name(env: Env) -> String {
@@ -263,12 +305,17 @@ impl YTTokenContract {
         if amount <= 0 {
             panic_with_error!(&env, Error::ZeroAmount);
         }
+        Self::assert_sac_authorized(&env, &to);
         Self::assert_permitted(&env, &to);
         Self::settle(&env, &to);
 
         let bal = Self::get_balance(&env, &to);
         Self::set_balance(&env, &to, bal + amount);
-        let total: i128 = env.storage().instance().get(&DataKey::TotalSupply).unwrap_or(0);
+        let total: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalSupply)
+            .unwrap_or(0);
         env.storage()
             .instance()
             .set(&DataKey::TotalSupply, &(total + amount));
@@ -289,13 +336,50 @@ impl YTTokenContract {
         Self::settle(&env, &from);
 
         Self::set_balance(&env, &from, bal - amount);
-        let total: i128 = env.storage().instance().get(&DataKey::TotalSupply).unwrap_or(0);
+        let total: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::TotalSupply)
+            .unwrap_or(0);
         env.storage()
             .instance()
             .set(&DataKey::TotalSupply, &(total - amount));
 
         env.events()
             .publish((symbol_short!("burn"),), (from, amount));
+    }
+
+    // --- compliance recovery (seize) ---
+
+    /// Forcibly move `amount` from `account`'s YT balance to the caller's own balance, without
+    /// `account`'s authorization. Callable only by the configured `RecoveryEscrow` — see
+    /// `SYWrapper::seize` for the full rationale. Settles both sides' pending yield first, same
+    /// as any other balance-changing path, so the seizure doesn't shift already-accrued yield
+    /// between the flagged account and the escrow.
+    pub fn seize(env: Env, caller: Address, account: Address, amount: i128) -> i128 {
+        caller.require_auth();
+        let escrow = Self::require_escrow(&env);
+        if caller != escrow {
+            panic_with_error!(&env, Error::NotRecoveryEscrow);
+        }
+        if amount <= 0 {
+            panic_with_error!(&env, Error::ZeroAmount);
+        }
+
+        let bal = Self::get_balance(&env, &account);
+        if bal < amount {
+            panic_with_error!(&env, Error::InsufficientBalance);
+        }
+        Self::settle(&env, &account);
+        Self::settle(&env, &caller);
+
+        Self::set_balance(&env, &account, bal - amount);
+        let to_balance = Self::get_balance(&env, &caller);
+        Self::set_balance(&env, &caller, to_balance + amount);
+
+        env.events()
+            .publish((symbol_short!("seize"),), (caller, account, amount));
+        amount
     }
 
     // --- yield accrual ---
@@ -322,7 +406,11 @@ impl YTTokenContract {
 
         if now_rate > last_rate {
             let delta_index = (now_rate - last_rate) * SCALE / now_rate;
-            let idx: i128 = env.storage().instance().get(&DataKey::YieldIndex).unwrap_or(0);
+            let idx: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::YieldIndex)
+                .unwrap_or(0);
             env.storage()
                 .instance()
                 .set(&DataKey::YieldIndex, &(idx + delta_index));
@@ -349,7 +437,10 @@ impl YTTokenContract {
     }
 
     pub fn accrued_yield_index(env: Env) -> i128 {
-        env.storage().instance().get(&DataKey::YieldIndex).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::YieldIndex)
+            .unwrap_or(0)
     }
 
     pub fn last_claimed_index(env: Env, account: Address) -> i128 {
@@ -369,7 +460,10 @@ impl YTTokenContract {
     // --- views ---
 
     pub fn total_supply(env: Env) -> i128 {
-        env.storage().instance().get(&DataKey::TotalSupply).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::TotalSupply)
+            .unwrap_or(0)
     }
 
     pub fn maturity(env: Env) -> u64 {
@@ -387,14 +481,29 @@ impl YTTokenContract {
         Self::require_admin(&env)
     }
 
+    pub fn recovery_escrow(env: Env) -> Address {
+        Self::require_escrow(&env)
+    }
+
+    pub fn underlying_address(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Underlying)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized))
+    }
+
     // --- internal helpers ---
 
     /// Settle `account`'s pending yield at its balance *before* any change, against the
     /// current global index, then advance its snapshot to the current index. Must be called
-    /// on every path that mutates a balance (mint/burn/transfer, both sides), before the
+    /// on every path that mutates a balance (mint/burn/transfer/seize, both sides), before the
     /// balance itself changes.
     fn settle(env: &Env, account: &Address) {
-        let idx: i128 = env.storage().instance().get(&DataKey::YieldIndex).unwrap_or(0);
+        let idx: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::YieldIndex)
+            .unwrap_or(0);
         let last_key = DataKey::LastClaimedIndex(account.clone());
         let last: i128 = env.storage().persistent().get(&last_key).unwrap_or(0);
 
@@ -406,9 +515,11 @@ impl YTTokenContract {
                     let pc_key = DataKey::PendingClaim(account.clone());
                     let acc: i128 = env.storage().persistent().get(&pc_key).unwrap_or(0);
                     env.storage().persistent().set(&pc_key, &(acc + pending));
-                    env.storage()
-                        .persistent()
-                        .extend_ttl(&pc_key, BALANCE_TTL_LEDGERS, BALANCE_TTL_LEDGERS);
+                    env.storage().persistent().extend_ttl(
+                        &pc_key,
+                        BALANCE_TTL_LEDGERS,
+                        BALANCE_TTL_LEDGERS,
+                    );
                 }
             }
         }
@@ -433,11 +544,29 @@ impl YTTokenContract {
         }
     }
 
+    fn assert_sac_authorized(env: &Env, account: &Address) {
+        let underlying: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Underlying)
+            .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
+        if !token::StellarAssetClient::new(env, &underlying).authorized(account) {
+            panic_with_error!(env, Error::NotAuthorizedOnSac);
+        }
+    }
+
     fn require_minter(env: &Env) -> Address {
         env.storage()
             .instance()
             .get(&DataKey::Minter)
             .unwrap_or_else(|| panic_with_error!(env, Error::MinterNotSet))
+    }
+
+    fn require_escrow(env: &Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::RecoveryEscrow)
+            .unwrap_or_else(|| panic_with_error!(env, Error::NotRecoveryEscrow))
     }
 
     fn require_admin(env: &Env) -> Address {
@@ -507,8 +636,8 @@ impl YTTokenContract {
 #[cfg(test)]
 mod test {
     use soroban_sdk::{
-        testutils::{Address as _, Ledger as _},
-        Address, Env, String,
+        testutils::{Address as _, IssuerFlags, Ledger as _},
+        token, Address, Env, String,
     };
 
     use principal_oracle_adapter::{OracleAdapterContract, OracleAdapterContractClient};
@@ -522,6 +651,7 @@ mod test {
         env: Env,
         client: YTTokenContractClient<'static>,
         admin: Address,
+        underlying: Address,
         perm: PermissioningContractClient<'static>,
         perm_admin: Address,
         oracle: OracleAdapterContractClient<'static>,
@@ -545,12 +675,19 @@ mod test {
         oracle.initialize(&oracle_admin);
         oracle.set_reference_value(&oracle_admin, &SCALE, &T0);
 
+        // admin doubles as the underlying SAC's real admin, satisfying the issuer-match check.
+        // RevocableFlag lets tests simulate deauthorization.
+        let admin = Address::generate(&env);
+        let underlying_sac = env.register_stellar_asset_contract_v2(admin.clone());
+        underlying_sac.issuer().set_flag(IssuerFlags::RevocableFlag);
+        let underlying = underlying_sac.address();
+
         let yt_id = env.register_contract(None, YTTokenContract);
         let client = YTTokenContractClient::new(&env, &yt_id);
-        let admin = Address::generate(&env);
         client.initialize(
             &admin,
             &perm_id,
+            &underlying,
             &oracle_id,
             &u64::MAX,
             &String::from_str(&env, "Yield Token USDY"),
@@ -562,6 +699,7 @@ mod test {
             env,
             client,
             admin,
+            underlying,
             perm,
             perm_admin,
             oracle,
@@ -573,6 +711,40 @@ mod test {
     fn grant(f: &Fixture, user: &Address) {
         f.perm.grant_account(&f.perm_admin, user);
         f.perm.grant_asset(&f.perm_admin, user, &f.yt_id);
+        token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(user, &true);
+    }
+
+    #[test]
+    #[should_panic]
+    fn initialize_rejects_admin_not_matching_sac_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|li| li.timestamp = T0);
+
+        let perm_id = env.register_contract(None, PermissioningContract);
+        let real_sac_admin = Address::generate(&env);
+        PermissioningContractClient::new(&env, &perm_id).initialize(&real_sac_admin);
+
+        let oracle_id = env.register_contract(None, OracleAdapterContract);
+        OracleAdapterContractClient::new(&env, &oracle_id).initialize(&real_sac_admin);
+
+        let underlying = env
+            .register_stellar_asset_contract_v2(real_sac_admin.clone())
+            .address();
+
+        let impostor = Address::generate(&env);
+        let yt_id = env.register_contract(None, YTTokenContract);
+        let client = YTTokenContractClient::new(&env, &yt_id);
+        client.initialize(
+            &impostor,
+            &perm_id,
+            &underlying,
+            &oracle_id,
+            &u64::MAX,
+            &String::from_str(&env, "Yield Token USDY"),
+            &String::from_str(&env, "YT-USDY"),
+            &7,
+        );
     }
 
     #[test]
@@ -585,6 +757,21 @@ mod test {
 
         f.client.mint(&user, &1_000);
         assert_eq!(f.client.balance(&user), 1_000);
+    }
+
+    #[test]
+    #[should_panic]
+    fn mint_without_sac_authorization_panics() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+
+        let user = Address::generate(&f.env);
+        f.perm.grant_account(&f.perm_admin, &user);
+        f.perm.grant_asset(&f.perm_admin, &user, &f.yt_id);
+        token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&user, &false);
+
+        f.client.mint(&user, &1_000);
     }
 
     #[test]
@@ -685,7 +872,7 @@ mod test {
 
     #[test]
     #[should_panic]
-    fn revoked_holder_cannot_dump_yt_before_remediation() {
+    fn revoked_holder_cannot_dump_yt_before_seizure() {
         let f = setup();
         let minter = Address::generate(&f.env);
         f.client.set_minter(&f.admin, &minter);
@@ -701,14 +888,75 @@ mod test {
 
     #[test]
     #[should_panic]
+    fn deauthorized_on_sac_cannot_dump_yt_before_seizure() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        let alice = Address::generate(&f.env);
+        let bob = Address::generate(&f.env);
+        grant(&f, &alice);
+        grant(&f, &bob);
+        f.client.mint(&alice, &(500 * SCALE));
+
+        token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&alice, &false);
+        f.client.transfer(&alice, &bob, &(100 * SCALE));
+    }
+
+    #[test]
+    #[should_panic]
     fn update_yield_index_blocked_by_stale_oracle() {
         // Without a freshness check, this would silently advance the accrual index off a rate
         // the oracle relay stopped refreshing long ago.
         let f = setup();
         // Ledger advances far past the oracle's last update without a fresh price ever landing.
-        f.env
-            .ledger()
-            .with_mut(|li| li.timestamp = T0 + 3_601);
+        f.env.ledger().with_mut(|li| li.timestamp = T0 + 3_601);
         f.client.update_yield_index();
+    }
+
+    // --- seize (compliance recovery) ---
+
+    #[test]
+    fn seize_moves_balance_and_settles_both_sides() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        let escrow = Address::generate(&f.env);
+        f.client.set_recovery_escrow(&f.admin, &escrow);
+
+        let bad_actor = Address::generate(&f.env);
+        grant(&f, &bad_actor);
+        f.client.mint(&bad_actor, &(1_000 * SCALE));
+
+        // Rate rises before the seizure.
+        f.oracle
+            .set_reference_value(&f.oracle_admin, &10_300_000, &(T0 + 1));
+        f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
+        f.client.update_yield_index();
+
+        let seized = f.client.seize(&escrow, &bad_actor, &(1_000 * SCALE));
+        assert_eq!(seized, 1_000 * SCALE);
+        assert_eq!(f.client.balance(&bad_actor), 0);
+        assert_eq!(f.client.balance(&escrow), 1_000 * SCALE);
+
+        // Yield accrued before seizure stays with the original holder, not the escrow.
+        assert!(f.client.claim_yield(&bad_actor) > 0);
+        assert_eq!(f.client.claim_yield(&escrow), 0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn seize_requires_configured_escrow_caller() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        let escrow = Address::generate(&f.env);
+        let impostor = Address::generate(&f.env);
+        f.client.set_recovery_escrow(&f.admin, &escrow);
+
+        let bad_actor = Address::generate(&f.env);
+        grant(&f, &bad_actor);
+        f.client.mint(&bad_actor, &(500 * SCALE));
+
+        f.client.seize(&impostor, &bad_actor, &(500 * SCALE));
     }
 }

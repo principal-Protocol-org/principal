@@ -50,9 +50,11 @@ impl PermissioningContract {
         Self::assert_admin(&env, &caller);
         let key = DataKey::AccountAllowed(account.clone());
         env.storage().persistent().set(&key, &true);
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, ELIGIBILITY_TTL_LEDGERS, ELIGIBILITY_TTL_LEDGERS);
+        env.storage().persistent().extend_ttl(
+            &key,
+            ELIGIBILITY_TTL_LEDGERS,
+            ELIGIBILITY_TTL_LEDGERS,
+        );
         env.events()
             .publish((symbol_short!("acc_grant"),), (caller, account));
     }
@@ -72,12 +74,13 @@ impl PermissioningContract {
         for account in accounts.iter() {
             let key = DataKey::AccountAllowed(account.clone());
             env.storage().persistent().set(&key, &true);
-            env.storage()
-                .persistent()
-                .extend_ttl(&key, ELIGIBILITY_TTL_LEDGERS, ELIGIBILITY_TTL_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &key,
+                ELIGIBILITY_TTL_LEDGERS,
+                ELIGIBILITY_TTL_LEDGERS,
+            );
         }
-        env.events()
-            .publish((symbol_short!("acc_batch"),), caller);
+        env.events().publish((symbol_short!("acc_batch"),), caller);
     }
 
     pub fn is_allowed(env: Env, account: Address) -> bool {
@@ -93,18 +96,21 @@ impl PermissioningContract {
         Self::assert_admin(&env, &caller);
         let key = DataKey::AssetAllowed(account.clone(), asset.clone());
         env.storage().persistent().set(&key, &true);
-        env.storage()
-            .persistent()
-            .extend_ttl(&key, ELIGIBILITY_TTL_LEDGERS, ELIGIBILITY_TTL_LEDGERS);
+        env.storage().persistent().extend_ttl(
+            &key,
+            ELIGIBILITY_TTL_LEDGERS,
+            ELIGIBILITY_TTL_LEDGERS,
+        );
         env.events()
             .publish((symbol_short!("ast_grant"),), (caller, account, asset));
     }
 
     pub fn revoke_asset(env: Env, caller: Address, account: Address, asset: Address) {
         Self::assert_admin(&env, &caller);
-        env.storage()
-            .persistent()
-            .set(&DataKey::AssetAllowed(account.clone(), asset.clone()), &false);
+        env.storage().persistent().set(
+            &DataKey::AssetAllowed(account.clone(), asset.clone()),
+            &false,
+        );
         env.events()
             .publish((symbol_short!("ast_rev"),), (caller, account, asset));
     }

@@ -88,7 +88,10 @@ impl RiskControlContract {
     }
 
     pub fn is_paused(env: Env) -> bool {
-        env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
     }
 
     // --- pauser role management ---
@@ -142,7 +145,12 @@ impl RiskControlContract {
     /// Reverts if paused or if the circuit breaker limit would be exceeded.
     /// Records the deposit volume against the current window.
     pub fn check_deposit(env: Env, amount: i128) {
-        if env.storage().instance().get(&DataKey::Paused).unwrap_or(false) {
+        if env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+        {
             panic_with_error!(&env, Error::Paused);
         }
 
@@ -162,7 +170,11 @@ impl RiskControlContract {
             // Window has rolled over — reset.
             (0_i128, now)
         } else {
-            let v: i128 = env.storage().instance().get(&DataKey::CbVolume).unwrap_or(0);
+            let v: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::CbVolume)
+                .unwrap_or(0);
             (v, window_start)
         };
 
@@ -170,8 +182,12 @@ impl RiskControlContract {
             panic_with_error!(&env, Error::CircuitBreakerTripped);
         }
 
-        env.storage().instance().set(&DataKey::CbVolume, &(volume + amount));
-        env.storage().instance().set(&DataKey::CbWindowStart, &start);
+        env.storage()
+            .instance()
+            .set(&DataKey::CbVolume, &(volume + amount));
+        env.storage()
+            .instance()
+            .set(&DataKey::CbWindowStart, &start);
     }
 
     pub fn set_cb_limit(env: Env, caller: Address, new_limit: i128) {
@@ -186,7 +202,10 @@ impl RiskControlContract {
     }
 
     pub fn get_cb_volume(env: Env) -> i128 {
-        env.storage().instance().get(&DataKey::CbVolume).unwrap_or(0)
+        env.storage()
+            .instance()
+            .get(&DataKey::CbVolume)
+            .unwrap_or(0)
     }
 
     // --- admin ---
@@ -226,7 +245,7 @@ mod test {
         Address, Env,
     };
 
-    use super::{CB_WINDOW_SECS, RiskControlContract, RiskControlContractClient};
+    use super::{RiskControlContract, RiskControlContractClient, CB_WINDOW_SECS};
 
     fn setup(cb_limit: i128) -> (Env, RiskControlContractClient<'static>, Address) {
         let env = Env::default();
@@ -270,8 +289,8 @@ mod test {
         let (_env, client, _admin) = setup(1_000_000);
         client.check_deposit(&500_000_i128); // ok: 500k
         client.check_deposit(&499_999_i128); // ok: 999_999k
-        // next deposit would exceed the 1M limit
-        // (panics)
+                                             // next deposit would exceed the 1M limit
+                                             // (panics)
     }
 
     #[test]

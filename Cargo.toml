@@ -8,6 +8,7 @@ members = [
     "contracts/risk_control",
     "contracts/pt_token",
     "contracts/yt_token",
+    "contracts/recovery_escrow",
 ]
 
 [profile.release]

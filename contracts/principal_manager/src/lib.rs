@@ -17,16 +17,24 @@
 //!   PT redemption (underlying) = floor(pt_amount * SCALE / R_final)
 //!   YT redemption (underlying) = floor(yt_amount * max(0, R_final - R_initial) / R_final)
 //!
-//! # POC scope
+//! # Compliance — authorization inheritance and market creation
+//! `mint` and `redeem` check both `underlying_SAC.authorized(from)` (the mandatory floor,
+//! inherited live from the actual issuer) and `Permissioning.is_allowed(from)` (an optional,
+//! Principal-specific additional layer). `initialize` requires `admin` to equal the underlying
+//! SAC's actual `admin()`, so a market can only be created with the issuer's participation --
+//! see `SYWrapper`'s module docs for the full rationale, which applies identically here.
+//!
+//! # Current integration scope
 //! SY share transfers are tracked internally (no actual SYWrapper cross-contract call).
-//! Underlying transfers at redemption are computed and returned but not dispatched.
-//! Both are Phase 2 integration milestones once Router is available.
+//! Underlying transfers at redemption are computed and returned but not dispatched. Both are
+//! Router-integration milestones: wiring this contract to actually call SYWrapper, PTToken, and
+//! YTToken instead of tracking balances in its own storage.
 
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractclient, contractimpl, contracttype, panic_with_error,
-    symbol_short, Address, Env,
+    contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error,
+    symbol_short, token, Address, Env,
 };
 
 pub const SCALE: i128 = 10_000_000; // 1e7
@@ -72,6 +80,8 @@ pub enum Error {
     InsufficientBalance = 8,
     Paused = 9,
     PermissionDenied = 10,
+    NotAuthorizedOnSac = 11,
+    IssuerMismatch = 12,
 }
 
 // ---------------------------------------------------------------------------
@@ -84,13 +94,14 @@ pub enum DataKey {
     SYWrapper,
     Oracle,
     Permissioning,
-    Maturity,     // u64 unix timestamp
+    Underlying, // Address of the underlying SAC, used for authorization inheritance
+    Maturity,   // u64 unix timestamp
     Paused,
     PTBalance(Address),
     YTBalance(Address),
     TotalPT,
     TotalYT,
-    /// SY shares credited to each minter (tracked internally; Phase 2 wires to SYWrapper).
+    /// SY shares credited to each minter (tracked internally; Router integration wires this to SYWrapper).
     SYDeposit(Address),
     /// Oracle rate stored at the time of this user's first mint, used for YT settlement.
     InitialRate(Address),
@@ -128,22 +139,40 @@ impl PrincipalManagerContract {
     /// * `sy_wrapper`    — address of the SYWrapper contract
     /// * `oracle`        — address of the OracleAdapter contract
     /// * `permissioning` — address of the Permissioning contract
+    /// * `underlying`    — address of the underlying SAC; `admin` must equal its `admin()`
     /// * `maturity`      — Unix timestamp at which PT and YT can be redeemed
+    ///
+    /// `admin` must be the underlying SAC's actual admin and must authorize this call --
+    /// creating a new market (even a new maturity on an existing asset) requires the issuer's
+    /// participation, matching `SYWrapper`'s market-creation gate.
     pub fn initialize(
         env: Env,
         admin: Address,
         sy_wrapper: Address,
         oracle: Address,
         permissioning: Address,
+        underlying: Address,
         maturity: u64,
     ) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
+        admin.require_auth();
+        let sac_admin = token::StellarAssetClient::new(&env, &underlying).admin();
+        if admin != sac_admin {
+            panic_with_error!(&env, Error::IssuerMismatch);
+        }
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::SYWrapper, &sy_wrapper);
+        env.storage()
+            .instance()
+            .set(&DataKey::SYWrapper, &sy_wrapper);
         env.storage().instance().set(&DataKey::Oracle, &oracle);
-        env.storage().instance().set(&DataKey::Permissioning, &permissioning);
+        env.storage()
+            .instance()
+            .set(&DataKey::Permissioning, &permissioning);
+        env.storage()
+            .instance()
+            .set(&DataKey::Underlying, &underlying);
         env.storage().instance().set(&DataKey::Maturity, &maturity);
         env.storage().instance().set(&DataKey::Paused, &false);
         env.storage().instance().set(&DataKey::TotalPT, &0_i128);
@@ -164,7 +193,9 @@ impl PrincipalManagerContract {
             panic_with_error!(&env, Error::ZeroAmount);
         }
 
-        // Verify the caller is on the permissioning allow-list.
+        // Verify the caller clears both compliance layers: the mandatory floor inherited from
+        // the underlying SAC, and Principal's own optional additional narrowing.
+        Self::assert_sac_authorized(&env, &from);
         Self::assert_permitted(&env, &from);
 
         // Read the oracle rate at mint time; store it for this user's YT settlement.
@@ -175,12 +206,14 @@ impl PrincipalManagerContract {
         let rate_key = DataKey::InitialRate(from.clone());
         if !env.storage().persistent().has(&rate_key) {
             env.storage().persistent().set(&rate_key, &initial_rate);
-            env.storage()
-                .persistent()
-                .extend_ttl(&rate_key, BALANCE_TTL_LEDGERS, BALANCE_TTL_LEDGERS);
+            env.storage().persistent().extend_ttl(
+                &rate_key,
+                BALANCE_TTL_LEDGERS,
+                BALANCE_TTL_LEDGERS,
+            );
         }
 
-        // Track SY shares deposited (Phase 2 replaces this with an actual SYWrapper transfer).
+        // Track SY shares deposited (Router integration replaces this with an actual SYWrapper transfer).
         let deposit: i128 = env
             .storage()
             .persistent()
@@ -225,14 +258,15 @@ impl PrincipalManagerContract {
     /// * `yt_amount` — YT tokens to burn (0 = skip YT redemption)
     ///
     /// Returns underlying units released for each token type.
-    /// Note: actual transfer of underlying to the caller is a Phase 2 milestone.
+    /// Note: actual transfer of underlying to the caller is a Router-integration milestone.
     pub fn redeem(env: Env, from: Address, pt_amount: i128, yt_amount: i128) -> RedeemResult {
         from.require_auth();
         Self::assert_not_paused(&env);
         Self::assert_mature(&env);
         Self::assert_oracle_fresh(&env);
-        // Closes the gap found during the SCF #44 resubmission audit: redeem() previously had
-        // no eligibility check at all, only mint() did. See COMPLIANT_SETTLEMENT_DESIGN.md §2.
+        // Same two-layer check as mint(): the SAC's own authorization is the mandatory floor,
+        // Permissioning is an optional additional layer. See COMPLIANT_SETTLEMENT_DESIGN.md.
+        Self::assert_sac_authorized(&env, &from);
         Self::assert_permitted(&env, &from);
 
         if pt_amount == 0 && yt_amount == 0 {
@@ -323,8 +357,19 @@ impl PrincipalManagerContract {
     }
 
     pub fn is_mature(env: Env) -> bool {
-        let mat: u64 = env.storage().instance().get(&DataKey::Maturity).unwrap_or(u64::MAX);
+        let mat: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Maturity)
+            .unwrap_or(u64::MAX);
         env.ledger().timestamp() >= mat
+    }
+
+    pub fn underlying_address(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Underlying)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized))
     }
 
     // --- admin ---
@@ -376,6 +421,17 @@ impl PrincipalManagerContract {
             .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
         if !PermClient::new(env, &perm_addr).is_allowed(account) {
             panic_with_error!(env, Error::PermissionDenied);
+        }
+    }
+
+    fn assert_sac_authorized(env: &Env, account: &Address) {
+        let underlying: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Underlying)
+            .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
+        if !token::StellarAssetClient::new(env, &underlying).authorized(account) {
+            panic_with_error!(env, Error::NotAuthorizedOnSac);
         }
     }
 
@@ -444,20 +500,33 @@ impl PrincipalManagerContract {
     }
 
     fn assert_not_paused(env: &Env) {
-        if env.storage().instance().get(&DataKey::Paused).unwrap_or(false) {
+        if env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+        {
             panic_with_error!(env, Error::Paused);
         }
     }
 
     fn assert_mature(env: &Env) {
-        let mat: u64 = env.storage().instance().get(&DataKey::Maturity).unwrap_or(u64::MAX);
+        let mat: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Maturity)
+            .unwrap_or(u64::MAX);
         if env.ledger().timestamp() < mat {
             panic_with_error!(env, Error::NotMature);
         }
     }
 
     fn assert_not_mature(env: &Env) {
-        let mat: u64 = env.storage().instance().get(&DataKey::Maturity).unwrap_or(u64::MAX);
+        let mat: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Maturity)
+            .unwrap_or(u64::MAX);
         if env.ledger().timestamp() >= mat {
             panic_with_error!(env, Error::AlreadyMature);
         }
@@ -471,14 +540,16 @@ impl PrincipalManagerContract {
 #[cfg(test)]
 mod test {
     use soroban_sdk::{
-        testutils::{Address as _, Ledger as _},
-        Address, Env,
+        testutils::{Address as _, IssuerFlags, Ledger as _},
+        token, Address, Env,
     };
 
     use principal_oracle_adapter::{OracleAdapterContract, OracleAdapterContractClient};
     use principal_permissioning::{PermissioningContract, PermissioningContractClient};
 
-    use super::{PrincipalManagerContract, PrincipalManagerContractClient, MAX_ORACLE_STALENESS_SECS, SCALE};
+    use super::{
+        PrincipalManagerContract, PrincipalManagerContractClient, MAX_ORACLE_STALENESS_SECS, SCALE,
+    };
 
     /// Base ledger timestamp (> 0 so the oracle can accept its first update).
     const T0: u64 = 1_000;
@@ -489,15 +560,17 @@ mod test {
         env: Env,
         client: PrincipalManagerContractClient<'static>,
         pm_admin: Address,
+        underlying: Address,
         oracle: OracleAdapterContractClient<'static>,
         oracle_admin: Address,
         perm: PermissioningContractClient<'static>,
         perm_admin: Address,
     }
 
-    /// Deploy oracle + permissioning + PrincipalManager into a single Env.
-    /// Oracle rate is seeded at SCALE (1.0) at ledger timestamp T0.
-    /// No users are pre-granted — tests call `grant_user` explicitly.
+    /// Deploy oracle + permissioning + an underlying SAC + PrincipalManager into a single Env.
+    /// Oracle rate is seeded at SCALE (1.0) at ledger timestamp T0. `pm_admin` is also the
+    /// underlying SAC's real admin, satisfying the market-creation gate. No users are
+    /// pre-granted — tests call `grant_user` explicitly.
     fn setup(maturity: u64) -> TestFixture {
         let env = Env::default();
         env.mock_all_auths();
@@ -516,18 +589,41 @@ mod test {
         let perm_admin = Address::generate(&env);
         perm.initialize(&perm_admin);
 
+        // Underlying SAC. pm_admin doubles as its real admin, so PrincipalManager.initialize's
+        // issuer-match check passes. RevocableFlag lets tests simulate deauthorization.
+        let pm_admin = Address::generate(&env);
+        let underlying_sac = env.register_stellar_asset_contract_v2(pm_admin.clone());
+        underlying_sac.issuer().set_flag(IssuerFlags::RevocableFlag);
+        let underlying = underlying_sac.address();
+
         // PrincipalManager.
         let pm_id = env.register_contract(None, PrincipalManagerContract);
         let client = PrincipalManagerContractClient::new(&env, &pm_id);
-        let pm_admin = Address::generate(&env);
         let sy_wrapper = Address::generate(&env);
-        client.initialize(&pm_admin, &sy_wrapper, &oracle_id, &perm_id, &maturity);
+        client.initialize(
+            &pm_admin,
+            &sy_wrapper,
+            &oracle_id,
+            &perm_id,
+            &underlying,
+            &maturity,
+        );
 
-        TestFixture { env, client, pm_admin, oracle, oracle_admin, perm, perm_admin }
+        TestFixture {
+            env,
+            client,
+            pm_admin,
+            underlying,
+            oracle,
+            oracle_admin,
+            perm,
+            perm_admin,
+        }
     }
 
     fn grant_user(f: &TestFixture, user: &Address) {
         f.perm.grant_account(&f.perm_admin, user);
+        token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(user, &true);
     }
 
     // --- tests ---
@@ -619,7 +715,8 @@ mod test {
         // Advance to maturity; update oracle to 1.03.
         f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
         let final_rate: i128 = 10_300_000;
-        f.oracle.set_reference_value(&f.oracle_admin, &final_rate, &(maturity + 1));
+        f.oracle
+            .set_reference_value(&f.oracle_admin, &final_rate, &(maturity + 1));
 
         let r = f.client.redeem(&user, &pt, &0_i128);
         let expected = pt * SCALE / final_rate;
@@ -641,7 +738,8 @@ mod test {
         // Advance to maturity; oracle → 1.03.
         f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
         let final_rate: i128 = 10_300_000;
-        f.oracle.set_reference_value(&f.oracle_admin, &final_rate, &(maturity + 1));
+        f.oracle
+            .set_reference_value(&f.oracle_admin, &final_rate, &(maturity + 1));
 
         let r = f.client.redeem(&user, &0_i128, &yt);
         // yield_delta = 10_300_000 − 10_000_000 = 300_000
@@ -716,5 +814,71 @@ mod test {
         let new_admin = Address::generate(&f.env);
         f.client.transfer_admin(&f.pm_admin, &new_admin);
         assert_eq!(f.client.get_admin(), new_admin);
+    }
+
+    #[test]
+    #[should_panic]
+    fn initialize_rejects_admin_not_matching_sac_admin() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|li| li.timestamp = T0);
+
+        let oracle_id = env.register_contract(None, OracleAdapterContract);
+        let oracle = OracleAdapterContractClient::new(&env, &oracle_id);
+        let oracle_admin = Address::generate(&env);
+        oracle.initialize(&oracle_admin);
+        oracle.set_reference_value(&oracle_admin, &SCALE, &T0);
+
+        let perm_id = env.register_contract(None, PermissioningContract);
+        let perm = PermissioningContractClient::new(&env, &perm_id);
+        let perm_admin = Address::generate(&env);
+        perm.initialize(&perm_admin);
+
+        let real_sac_admin = Address::generate(&env);
+        let underlying = env
+            .register_stellar_asset_contract_v2(real_sac_admin.clone())
+            .address();
+
+        let impostor = Address::generate(&env);
+        let pm_id = env.register_contract(None, PrincipalManagerContract);
+        let client = PrincipalManagerContractClient::new(&env, &pm_id);
+        let sy_wrapper = Address::generate(&env);
+        // impostor is not the underlying SAC's admin -- market creation must be rejected.
+        client.initialize(
+            &impostor,
+            &sy_wrapper,
+            &oracle_id,
+            &perm_id,
+            &underlying,
+            &u64::MAX,
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn deauthorized_on_sac_cannot_mint() {
+        // Granted in Principal's own Permissioning, but never authorized (or since revoked) on
+        // the underlying SAC -- the mandatory floor inherited from the issuer must still block.
+        let f = setup(u64::MAX);
+        let user = Address::generate(&f.env);
+        f.perm.grant_account(&f.perm_admin, &user);
+        token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&user, &false);
+        f.client.mint(&user, &(10_i128 * SCALE));
+    }
+
+    #[test]
+    #[should_panic]
+    fn deauthorized_on_sac_cannot_redeem() {
+        let maturity = T0 + 500;
+        let f = setup(maturity);
+        let user = Address::generate(&f.env);
+        grant_user(&f, &user);
+        let result = f.client.mint(&user, &(10_i128 * SCALE));
+
+        // Issuer deauthorizes the account directly on the underlying SAC (not via Principal's
+        // own Permissioning) after mint but before redeem.
+        token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&user, &false);
+        f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
+        f.client.redeem(&user, &result.pt_minted, &0_i128);
     }
 }

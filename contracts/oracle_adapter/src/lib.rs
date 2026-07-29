@@ -54,7 +54,9 @@ impl OracleAdapterContract {
             panic_with_error!(&env, Error::TimestampTooOld);
         }
         env.storage().instance().set(&DataKey::Price, &value);
-        env.storage().instance().set(&DataKey::Timestamp, &timestamp);
+        env.storage()
+            .instance()
+            .set(&DataKey::Timestamp, &timestamp);
         env.events()
             .publish((symbol_short!("ref_set"),), (value, timestamp));
     }
