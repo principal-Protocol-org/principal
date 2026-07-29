@@ -803,13 +803,15 @@ mod test {
             .set_reference_value(&f.oracle_admin, &final_rate, &(maturity + 1));
 
         let r = f.client.redeem(&user, &0_i128, &yt);
-        // Mirrors YTToken's own index formula (see YTToken::update_yield_index): for a single
-        // price movement this is numerically very close to, but not bit-identical to,
-        // yt_amount * (final_rate - SCALE) / final_rate -- the two computations round
-        // differently in fixed-point (see this module's doc comment for why redeem() delegates
-        // to YTToken's own accrual instead of computing an independent amount here).
-        let delta_index = (final_rate - SCALE) * SCALE / final_rate;
-        let expected = yt * delta_index / SCALE;
+        // Mirrors YTToken's own multiplicative index formula exactly (see
+        // YTToken::update_yield_index / settle): new_factor = SCALE * SCALE / final_rate, then
+        // pending = yt * (SCALE - new_factor) / SCALE for a user whose own snapshot is SCALE
+        // (settled at mint, before the index ever moved). This is not the same arithmetic as
+        // yt_amount * (final_rate - SCALE) / final_rate -- both are correct to within ordinary
+        // floor-rounding, but they round differently, so the test must mirror the contract's
+        // actual computation, not an algebraically-equivalent real-number rearrangement of it.
+        let new_factor = SCALE * SCALE / final_rate;
+        let expected = yt * (SCALE - new_factor) / SCALE;
         assert_eq!(r.underlying_from_yt, expected);
         assert_eq!(r.underlying_from_pt, 0);
     }

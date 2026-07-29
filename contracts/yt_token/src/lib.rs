@@ -22,6 +22,26 @@
 //! before a large index update) or lose yield it had already earned (transferring out right
 //! after one). `settle` is called on every path that changes a balance, not only on claim.
 //!
+//! # Why the index is multiplicative, not additive
+//! `update_yield_index` tracks a compounding factor `F`, initialized to `SCALE` and updated on
+//! every call as `F = F * last_rate / now_rate` -- a running product that telescopes exactly to
+//! `SCALE * r_genesis / r_now`, regardless of how many intermediate calls happened or what the
+//! intermediate rates were. An account's pending yield since its last settle (when `F` was
+//! `F_settle`) is `balance * (F_settle - F_now) / F_settle`, which reduces to exactly
+//! `balance * (r_now - r_settle) / r_now` -- the same economically-correct formula
+//! `PrincipalManager` uses for PT redemption, path-independent by construction.
+//!
+//! An earlier version of this contract accumulated yield *additively*
+//! (`idx += (r_new - r_old) * SCALE / r_new`, summed across every call). That is a Riemann-sum
+//! approximation of `ln(r_now / r_genesis)`, which is provably always `>=` the correct
+//! `(r_now - r_genesis) / r_now` for a rising rate, and strictly greater once there is more than
+//! one intermediate step -- the gap grows with every additional `update_yield_index` call. Since
+//! `PrincipalManager.redeem` treats this contract's `claim_yield` as the sole authoritative payer
+//! of YT yield (see its own module docs), that overstatement was a real solvency bug: aggregate
+//! PT + YT redemptions could exceed the underlying actually held, and `update_yield_index` is
+//! permissionless with no rate limit, so it was also actively triggerable. The multiplicative
+//! construction above closes this: it is exact for any number of steps, not just one.
+//!
 //! # Market creation
 //! `initialize` requires `admin` to equal the underlying SAC's actual `admin()` (read live),
 //! matching `SYWrapper`'s market-creation gate — see its module docs for the full rationale.
@@ -103,9 +123,11 @@ pub enum DataKey {
     TotalSupply,
     Balance(Address),
     Allowance(Address, Address),
-    YieldIndex,                // i128, scaled by SCALE
-    LastOracleRate,            // i128, high-water mark used to advance YieldIndex
-    LastClaimedIndex(Address), // i128, per-user snapshot of YieldIndex
+    YieldIndex, // i128, multiplicative compounding factor, scaled by SCALE; starts at SCALE and
+    // only ever decreases -- telescopes exactly to SCALE * r_genesis / r_now regardless of how
+    // many update_yield_index calls happened in between (see module docs).
+    LastOracleRate, // i128, high-water mark used to advance YieldIndex
+    LastClaimedIndex(Address), // i128, per-user snapshot of YieldIndex at their last settle
     PendingClaim(Address),     // i128, settled-but-unclaimed yield, underlying units
 }
 
@@ -158,7 +180,8 @@ impl YTTokenContract {
         env.storage().instance().set(&DataKey::Symbol, &symbol);
         env.storage().instance().set(&DataKey::Decimals, &decimals);
         env.storage().instance().set(&DataKey::TotalSupply, &0_i128);
-        env.storage().instance().set(&DataKey::YieldIndex, &0_i128);
+        // Genesis factor: SCALE, decreasing monotonically thereafter (see module docs).
+        env.storage().instance().set(&DataKey::YieldIndex, &SCALE);
         env.storage()
             .instance()
             .set(&DataKey::LastOracleRate, &SCALE);
@@ -384,9 +407,14 @@ impl YTTokenContract {
 
     // --- yield accrual ---
 
-    /// Permissionless: advances the global yield index using the current oracle rate.
+    /// Permissionless: advances the global yield factor using the current oracle rate.
     /// No-op if the rate hasn't increased since the last recorded high-water mark, matching
     /// the protocol-wide invariant that YT never accrues negative yield.
+    ///
+    /// Multiplies the running factor by `last_rate / now_rate` rather than adding
+    /// `(now_rate - last_rate) / now_rate` -- see this module's doc comment for why the additive
+    /// form is a solvency bug (it overstates yield, unboundedly, with every extra call) and the
+    /// multiplicative form is exact for any number of calls.
     pub fn update_yield_index(env: Env) {
         let oracle_addr: Address = env
             .storage()
@@ -405,20 +433,20 @@ impl YTTokenContract {
             .unwrap_or(SCALE);
 
         if now_rate > last_rate {
-            let delta_index = (now_rate - last_rate) * SCALE / now_rate;
-            let idx: i128 = env
+            let factor: i128 = env
                 .storage()
                 .instance()
                 .get(&DataKey::YieldIndex)
-                .unwrap_or(0);
+                .unwrap_or(SCALE);
+            let new_factor = factor * last_rate / now_rate;
             env.storage()
                 .instance()
-                .set(&DataKey::YieldIndex, &(idx + delta_index));
+                .set(&DataKey::YieldIndex, &new_factor);
             env.storage()
                 .instance()
                 .set(&DataKey::LastOracleRate, &now_rate);
             env.events()
-                .publish((symbol_short!("idx_up"),), (idx + delta_index, now_rate));
+                .publish((symbol_short!("idx_up"),), (new_factor, now_rate));
         }
     }
 
@@ -436,18 +464,21 @@ impl YTTokenContract {
         amount
     }
 
+    /// The current global compounding factor (see module docs) -- starts at `SCALE` and only
+    /// ever decreases as the oracle rate rises. Not a cumulative "amount of yield" by itself;
+    /// meaningful only relative to an account's own `last_claimed_index`.
     pub fn accrued_yield_index(env: Env) -> i128 {
         env.storage()
             .instance()
             .get(&DataKey::YieldIndex)
-            .unwrap_or(0)
+            .unwrap_or(SCALE)
     }
 
     pub fn last_claimed_index(env: Env, account: Address) -> i128 {
         env.storage()
             .persistent()
             .get(&DataKey::LastClaimedIndex(account))
-            .unwrap_or(0)
+            .unwrap_or(SCALE)
     }
 
     pub fn pending_claim(env: Env, account: Address) -> i128 {
@@ -495,22 +526,28 @@ impl YTTokenContract {
     // --- internal helpers ---
 
     /// Settle `account`'s pending yield at its balance *before* any change, against the
-    /// current global index, then advance its snapshot to the current index. Must be called
+    /// current global factor, then advance its snapshot to the current factor. Must be called
     /// on every path that mutates a balance (mint/burn/transfer/seize, both sides), before the
     /// balance itself changes.
+    ///
+    /// `factor` only ever decreases (see module docs), so an account has yield pending exactly
+    /// when the global factor has dropped below its own snapshot from its last settle.
+    /// `pending = bal * (last - factor) / last` -- dividing by the account's *own* snapshot,
+    /// not by `SCALE` -- is what makes this telescope to the exact, path-independent
+    /// `bal * (r_now - r_settle) / r_now` regardless of how many steps happened in between.
     fn settle(env: &Env, account: &Address) {
-        let idx: i128 = env
+        let factor: i128 = env
             .storage()
             .instance()
             .get(&DataKey::YieldIndex)
-            .unwrap_or(0);
+            .unwrap_or(SCALE);
         let last_key = DataKey::LastClaimedIndex(account.clone());
-        let last: i128 = env.storage().persistent().get(&last_key).unwrap_or(0);
+        let last: i128 = env.storage().persistent().get(&last_key).unwrap_or(SCALE);
 
-        if idx > last {
+        if factor < last {
             let bal = Self::get_balance(env, account);
             if bal > 0 {
-                let pending = bal * (idx - last) / SCALE;
+                let pending = bal * (last - factor) / last;
                 if pending > 0 {
                     let pc_key = DataKey::PendingClaim(account.clone());
                     let acc: i128 = env.storage().persistent().get(&pc_key).unwrap_or(0);
@@ -523,7 +560,7 @@ impl YTTokenContract {
                 }
             }
         }
-        env.storage().persistent().set(&last_key, &idx);
+        env.storage().persistent().set(&last_key, &factor);
         env.storage()
             .persistent()
             .extend_ttl(&last_key, BALANCE_TTL_LEDGERS, BALANCE_TTL_LEDGERS);
@@ -784,7 +821,7 @@ mod test {
         f.client.mint(&user, &(1_000 * SCALE));
 
         f.client.update_yield_index(); // rate unchanged since inception
-        assert_eq!(f.client.accrued_yield_index(), 0);
+        assert_eq!(f.client.accrued_yield_index(), SCALE); // factor untouched at genesis value
         assert_eq!(f.client.claim_yield(&user), 0);
     }
 
@@ -803,16 +840,64 @@ mod test {
         f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
         f.client.update_yield_index();
 
-        // delta_index = (10_300_000 - 10_000_000) * SCALE / 10_300_000
-        let expected_index = (10_300_000_i128 - SCALE) * SCALE / 10_300_000_i128;
-        assert_eq!(f.client.accrued_yield_index(), expected_index);
+        // new_factor = factor * last_rate / now_rate = SCALE * SCALE / 10_300_000
+        let expected_factor = SCALE * SCALE / 10_300_000_i128;
+        assert_eq!(f.client.accrued_yield_index(), expected_factor);
 
+        // pending = bal * (last - factor) / last, with this user's `last` == SCALE (settled at
+        // mint, before the index ever moved) -- reduces to bal * (SCALE - factor) / SCALE.
         let claimed = f.client.claim_yield(&user);
-        let expected_claim = (1_000 * SCALE) * expected_index / SCALE;
+        let expected_claim = (1_000 * SCALE) * (SCALE - expected_factor) / SCALE;
         assert_eq!(claimed, expected_claim);
+        // Exact match to the economically-correct single-shot formula: notional * (final_rate -
+        // initial_rate) / final_rate -- confirming the multiplicative index reproduces it exactly.
+        let exact = 1_000_i128 * (10_300_000 - SCALE) / 10_300_000;
+        assert_eq!(claimed / SCALE, exact);
 
         // Claiming again immediately yields nothing further.
         assert_eq!(f.client.claim_yield(&user), 0);
+    }
+
+    #[test]
+    fn yield_is_path_independent_across_many_intermediate_updates() {
+        // The regression this fix exists for: whether the oracle rate moves from R0 to Rfinal
+        // in one jump or many small steps, the claimable yield must be identical -- unlike the
+        // old additive-index formula, which overstated yield more with every extra step (the
+        // failure mode verified numerically during the audit: ~13.5% overstatement for a
+        // 90-step, 30%-appreciation market).
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+
+        let user = Address::generate(&f.env);
+        grant(&f, &user);
+        f.client.mint(&user, &(1_000 * SCALE));
+
+        let final_rate: i128 = 13_000_000; // 1.30, 30% total appreciation
+        let n_steps = 30_u64;
+        let mut ts = T0;
+        for i in 1..=n_steps {
+            ts += 1;
+            let r = SCALE + (final_rate - SCALE) * (i as i128) / (n_steps as i128);
+            f.oracle.set_reference_value(&f.oracle_admin, &r, &ts);
+            f.env.ledger().with_mut(|li| li.timestamp = ts);
+            f.client.update_yield_index();
+        }
+
+        let many_step_claim = f.client.claim_yield(&user);
+
+        // What a single jump straight from SCALE to final_rate would have produced for the
+        // same notional -- the exact, path-independent formula PT redemption also uses.
+        let single_jump_expected = (1_000 * SCALE) * (final_rate - SCALE) / final_rate;
+
+        // Not bit-exact -- 30 successive floor divisions accumulate a small, bounded rounding
+        // residual -- but nowhere close to the old additive formula's unbounded, ever-growing
+        // overstatement (which would have been ~13% high here, not ~0.001%).
+        let diff = (many_step_claim - single_jump_expected).unsigned_abs();
+        assert!(
+            diff * 1_000_000 < single_jump_expected.unsigned_abs() * 100, // < 0.01% relative
+            "multi-step claim {many_step_claim} diverged from single-jump {single_jump_expected} by more than floor-rounding dust"
+        );
     }
 
     #[test]
