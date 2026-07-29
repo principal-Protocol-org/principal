@@ -7,10 +7,11 @@ Scope for this branch (`feature/phase2-compliant-pt-yt-settlement` — the branc
 3. `Permissioning` checks extended to `SYWrapper.deposit`/`withdraw` and `PrincipalManager.redeem`. **Implemented.**
 4. **Authorization inheritance** — `SYWrapper`, `PrincipalManager`, `PTToken`, `YTToken` all check `underlying_SAC.authorized(account)` live, in addition to `Permissioning`. **Implemented.**
 5. **Market-creation gating** — `initialize` on `SYWrapper`, `PrincipalManager`, `PTToken`, `YTToken` requires `admin` to equal the underlying SAC's actual `admin()`. **Implemented.**
-6. **`RecoveryEscrow`** — replaces the original `SYWrapper.remediate()` with `seize_sy`/`seize_pt`/`seize_yt`, authenticated against the SAC's live `admin()` instead of a separate protocol admin key. **Implemented for SY (full seize + unwrap); PT/YT seizure implemented, post-maturity unwind not yet possible — see §3.**
-7. `LiquidationAdapter` — a distinct mechanism from `RecoveryEscrow` (see §4); still design-only. **Not implemented.**
+6. **`RecoveryEscrow`** — replaces the original `SYWrapper.remediate()` with `seize_sy`/`seize_pt`/`seize_yt`, authenticated against the SAC's live `admin()` instead of a separate protocol admin key. **Implemented for SY (full seize + unwrap); PT/YT seizure implemented, post-maturity unwind (`finalize_pt`/`finalize_yt`) not yet built — see §3.**
+7. **Wiring `PrincipalManager` to actually call `SYWrapper`/`PTToken`/`YTToken`** — `mint` takes real SY custody and mints real PT/YT; `redeem` burns real PT/YT and releases real underlying. **Implemented — see §2.1.**
+8. `LiquidationAdapter` — a distinct mechanism from `RecoveryEscrow` (see §4); still design-only. **Not implemented.**
 
-Out of scope for this branch: `MarketPool`, `Router`, wiring `PrincipalManager` to actually call `SYWrapper`/`PTToken`/`YTToken`. Each gets its own branch once this lands, per TECHNICAL_SPECIFICATION.md §6/§7 sequencing.
+Out of scope for this branch: `MarketPool`, `Router`, `RecoveryEscrow.finalize_pt`/`finalize_yt` (unblocked by item 7, not yet built — see §3). Each gets its own branch once this lands, per TECHNICAL_SPECIFICATION.md §6/§7 sequencing.
 
 **Design provenance:** items 4–6 replace this document's original design after reviewing `Principal_compliance.pdf`, an external design note proposing that Principal inherit the underlying Stellar Asset Contract's own `authorized()`/`admin()` functions directly, rather than relying solely on a separate, protocol-managed `Permissioning` registry. Both functions were verified as real, public, no-auth-required SAC interface functions (confirmed against Stellar's own documentation) before any code was written against them. The result is strictly more capable than the version it replaces: it closes an operational gap where Principal's own `Permissioning` registry could drift out of sync with the issuer's actual authorization decisions, and it ties compliance-recovery authority to the real issuer's key instead of a separate Principal-controlled admin. `Permissioning` is kept as an *additional*, optional layer rather than removed — a pure SAC `authorized()` check can't express Principal-specific narrowing like asymmetric PT/YT eligibility (§1).
 
@@ -53,13 +54,15 @@ This implementation uses `Permissioning.is_allowed_for_asset(to, asset_key)` ins
 ### 1.1 PTToken interface
 
 ```rust
-fn initialize(env, admin: Address, permissioning: Address, maturity: u64,
+fn initialize(env, admin: Address, permissioning: Address, underlying: Address, maturity: u64,
               name: String, symbol: String, decimals: u32);
 // No minter parameter here at all — matches the two-phase init in TECHNICAL_SPECIFICATION.md
 // §6.2 to break the PrincipalManager <-> PTToken circular dependency. set_minter() registers
-// the minter separately, once PrincipalManager exists.
+// the minter separately, once PrincipalManager exists. `admin` must equal `underlying`'s real,
+// live SAC admin() (§2's market-creation gate).
 
 fn set_minter(env, admin: Address, minter: Address);   // one-time, reverts MinterAlreadySet if already set
+fn set_recovery_escrow(env, admin: Address, escrow: Address);  // one-time, same pattern (§3)
 
 // SEP-41
 fn transfer(env, from: Address, to: Address, amount: i128);
@@ -73,25 +76,35 @@ fn symbol(env) -> String;
 
 // Minter-only
 fn mint(env, to: Address, amount: i128);   // caller must equal registered minter
-fn burn(env, from: Address, amount: i128); // caller must equal registered minter
+fn burn(env, from: Address, amount: i128); // caller must equal registered minter -- see §1.4
+                                            // for why there is no holder-callable burn at all
+
+// Compliance recovery (§3)
+fn seize(env, caller: Address, account: Address, amount: i128) -> i128;
 
 // Views
 fn total_supply(env) -> i128;
 fn maturity(env) -> u64;
 fn minter(env) -> Address;
+fn recovery_escrow(env) -> Address;
+fn underlying_address(env) -> Address;
 ```
 
-Storage: `Admin`, `Minter` (absent until `set_minter`), `Permissioning`, `Maturity`, `Name`, `Symbol`, `Decimals`, `TotalSupply` in `instance`; `Balance(Address)`, `Allowance(Address, Address)` in `persistent` with TTL extension on every touch (same `BALANCE_TTL_LEDGERS` constant used elsewhere in the codebase).
+Storage: `Admin`, `Minter` (absent until `set_minter`), `Permissioning`, `Underlying`, `RecoveryEscrow` (absent until `set_recovery_escrow`), `Maturity`, `Name`, `Symbol`, `Decimals`, `TotalSupply` in `instance`; `Balance(Address)`, `Allowance(Address, Address)` in `persistent` with TTL extension on every touch (same `BALANCE_TTL_LEDGERS` constant used elsewhere in the codebase).
 
-Errors: `AlreadyInitialized`, `Unauthorized`, `NotInitialized`, `ZeroAmount`, `InsufficientBalance`, `InsufficientAllowance`, `PermissionDenied`, `MinterAlreadySet`, `MinterNotSet`.
+Errors: `AlreadyInitialized`, `Unauthorized`, `NotInitialized`, `ZeroAmount`, `InsufficientBalance`, `InsufficientAllowance`, `PermissionDenied`, `MinterAlreadySet`, `MinterNotSet`, `NotAuthorizedOnSac`, `IssuerMismatch`, `RecoveryEscrowAlreadySet`, `NotRecoveryEscrow`.
 
 ### 1.2 YTToken interface
 
 Same as PTToken (including no minter parameter in `initialize`), plus the yield-index mechanism from TECHNICAL_SPECIFICATION.md §5.5:
 
 ```rust
-fn initialize(env, admin, permissioning, oracle, maturity, name, symbol, decimals);
+fn initialize(env, admin, permissioning, underlying, oracle, maturity, name, symbol, decimals);
 fn set_minter(env, admin, minter);
+fn set_recovery_escrow(env, admin, escrow);
+
+// compliance recovery (§3) -- settles both sides' pending yield before moving the balance
+fn seize(env, caller: Address, account: Address, amount: i128) -> i128;
 
 // yield accrual
 fn update_yield_index(env);              // permissionless — requires fresh oracle, advances index
@@ -99,15 +112,25 @@ fn claim_yield(env, from: Address) -> i128;
 fn accrued_yield_index(env) -> i128;
 fn last_claimed_index(env, account: Address) -> i128;
 fn pending_claim(env, account: Address) -> i128;   // settled-but-unclaimed amount
+fn recovery_escrow(env) -> Address;
+fn underlying_address(env) -> Address;
 ```
 
-`claim_yield` settles the caller (see §1.3), then returns and zeroes their accumulated `PendingClaim` — in this branch that's computed and recorded as an event rather than dispatched as an actual underlying transfer, matching `PrincipalManager.redeem`'s existing "computed and returned but not dispatched" convention. Wiring the real transfer, along with wiring `PrincipalManager` to call `YTToken` at all, is a `Router`-integration concern, not this one.
+`claim_yield` settles the caller (see §1.3), then returns and zeroes their accumulated `PendingClaim`. `PrincipalManager.redeem` now calls this directly as the authoritative payer of YT yield at redemption (rather than computing an independent amount itself) specifically because `claim_yield` is also independently, publicly callable by any holder at any time — see `contracts/principal_manager/src/lib.rs`'s module doc comment for the double-payment reasoning, and `redeem_yt_does_not_double_pay_yield_already_claimed_directly` for the regression test.
 
 Errors: same set as PTToken, plus `OracleStale` (`update_yield_index` called when the oracle isn't fresh).
 
 ### 1.3 Yield-accounting correctness (settle-before-mutate)
 
-Every balance-changing path (`mint`, `burn`, `transfer`, `transfer_from`) calls an internal `settle(account)` for each affected account **before** its balance changes: it computes `balance * (current_index - account's_last_index) / SCALE`, adds that to the account's `PendingClaim`, and advances `LastClaimedIndex` to the current index. Skipping this is a standard reward-accounting bug class — a buyer could otherwise receive yield accrued before they held the position (buying in right before a large index update), or a seller could lose yield already earned (transferring out right after one). Both are covered by regression tests (`late_buyer_does_not_receive_prior_yield`, `transfer_settles_both_sides`).
+Every balance-changing path (`mint`, `burn`, `transfer`, `transfer_from`, `seize`) calls an internal `settle(account)` for each affected account **before** its balance changes: it computes `balance * (current_index - account's_last_index) / SCALE`, adds that to the account's `PendingClaim`, and advances `LastClaimedIndex` to the current index. Skipping this is a standard reward-accounting bug class — a buyer could otherwise receive yield accrued before they held the position (buying in right before a large index update), or a seller could lose yield already earned (transferring out right after one). Both are covered by regression tests (`late_buyer_does_not_receive_prior_yield`, `transfer_settles_both_sides`).
+
+### 1.4 Why custom SEP-41 contracts, not Stellar Asset Contracts (SACs)
+
+SY, PT, and YT (and, when built, LP) are each a plain Soroban contract implementing SEP-41, not a Stellar Asset Contract. This is deliberate: a SAC's native `burn` is callable by any holder against their own balance, with no way for the issuing contract to intercept or refuse it. If PT (or SY, or LP) were a SAC, any holder could burn their own position directly, bypassing `PrincipalManager`/`SYWrapper` entirely.
+
+That matters here specifically because these tokens aren't just bearer balances — they're claims priced against pooled state (`SYWrapper`'s `total_underlying`/`total_shares` exchange rate, `PrincipalManager`'s PT/YT notional split, `YTToken`'s global yield index) and, once `MarketPool` exists, an AMM curve. An uncontrolled burn removes value from circulation without the corresponding accounting step (releasing the matching underlying, updating pool reserves, settling accrued yield) ever running, which desyncs total supply from the value actually backing it and can misprice every other holder's position. Pendle enforces the same restriction on its own PT/YT for the same reason: yield-bearing derivative positions can't be burned outside the protocol's own accounting path.
+
+Every burn path in this codebase already reflects that: `PTToken.burn`/`YTToken.burn`/`SYWrapper` have no holder-facing burn at all — `burn` is minter-only (`PrincipalManager`, once wired) or reachable only via `withdraw` (`SYWrapper`, which burns shares and releases the matching underlying in the same call, never one without the other). There is no `from.require_auth()`-gated self-burn on any of these contracts.
 
 ---
 
@@ -146,7 +169,15 @@ fn seize_yt(env, caller: Address, account: Address, amount: i128) -> i128;
 
 **SY unwinds immediately.** `seize_sy` seizes the balance, then in the same call unwraps it via a normal `SYWrapper.withdraw(from=escrow, to=escrow)` — the escrow is pre-authorized on both compliance layers at market setup, same as any other legitimate holder — leaving the escrow holding raw underlying, ready for the issuer's native SAC `clawback`. No separate finalize step, since SY has no maturity.
 
-**PT/YT seizure works today; unwinding it does not, yet.** `seize_pt`/`seize_yt` correctly move a flagged account's real `PTToken`/`YTToken` balance to the escrow — this is tested and works. What doesn't exist yet is a `finalize_pt`/`finalize_yt` that redeems the seized position at maturity and unwraps it toward the underlying, the way `seize_sy` does immediately. Building that requires `PrincipalManager` to actually call `PTToken.burn()`/`YTToken.burn()` in exchange for underlying value — and `PrincipalManager` doesn't call either token contract at all right now; it still mints/burns against its own internal balance maps (see PROOF_OF_CONCEPT.md's Known Limitations). There is currently no function anywhere that burns a real `PTToken`/`YTToken` balance for value except through that internal, disconnected path. Writing `finalize_pt`/`finalize_yt` against an assumed future interface would be guesswork; it belongs in the same Router-integration work that wires `PrincipalManager` to the real token contracts.
+**PT/YT seizure works today; unwinding it does not, yet.** `seize_pt`/`seize_yt` correctly move a flagged account's real `PTToken`/`YTToken` balance to the escrow — this is tested and works. What doesn't exist yet is a `finalize_pt`/`finalize_yt` that redeems the seized position at maturity and unwraps it toward the underlying, the way `seize_sy` does immediately. `PrincipalManager` now does call `SYWrapper`, `PTToken`, and `YTToken` for real (§2.1, below) — `redeem()` burns a real PT/YT balance for real underlying — so the blocking dependency this paragraph used to describe is resolved. `finalize_pt`/`finalize_yt` are not yet built regardless: they would need `RecoveryEscrow` to call `PrincipalManager.redeem(from=escrow_address, ...)`, which means adding a `principal_manager: Address` to `RecoveryEscrow.initialize` and extending its consistency check — a real, if now-straightforward, follow-up rather than a same-pass addition.
+
+### 2.1 `PrincipalManager` now takes real custody -- `mint`/`redeem` call the real contracts
+
+`mint` transfers the caller's SY shares into `PrincipalManager`'s own custody via `SYWrapper.transfer` (a new SEP-41-style function added specifically for this -- SYWrapper previously had no share-transfer capability at all, only `deposit`/`withdraw`), then mints real `PTToken`/`YTToken` balances. `redeem` burns those real balances and releases real underlying via `SYWrapper.withdraw`, self-authorizing as `PrincipalManager`'s own contract address the same way `RecoveryEscrow` does when unwrapping a seizure (§3). `PrincipalManager`'s own address is therefore now a genuine SY holder between mint and redemption, and must itself be SAC-authorized and Permissioning-granted for that reason (see DEPLOYMENT.md).
+
+PT redemption keeps `PrincipalManager`'s own `pt_amount * SCALE / final_rate` formula (verified correct against the underlying economics; there is no independent PT-side payer to conflict with). YT redemption does not: it now calls `YTToken.update_yield_index()` then `burn()` then `claim_yield()` and treats the returned amount as authoritative, instead of computing a second, independent payout the way an earlier version of this contract did. The reason is `claim_yield` is a separate, publicly callable entrypoint (`from.require_auth()` only) backed by its own index -- if `redeem()` also computed and paid its own amount, a holder could receive yield twice for the same accrued period through the two different paths. See `contracts/principal_manager/src/lib.rs`'s module doc comment and the `redeem_yt_does_not_double_pay_yield_already_claimed_directly` regression test.
+
+SY-share custody is converted to/from underlying amounts via `SYWrapper.exchange_rate()` -- a *different* rate from the Oracle's USDC-per-underlying price feed used for the PT/YT notional split. For a price-appreciating asset like USDY, where holding the token doesn't itself grow the wallet balance, `SYWrapper`'s exchange rate stays at 1.0 and this conversion is a no-op; for a balance-rebasing asset it would not be, and reconciling the two rate concepts for that case is out of scope until a second asset type is actually onboarded.
 
 **This is not `LiquidationAdapter`.** `RecoveryEscrow` is for issuer-initiated compliance recovery — the SAC admin reclaiming value from a deauthorized holder. `LiquidationAdapter` (§4) is for third-party lending markets liquidating an under-collateralized borrower. Different caller, different trigger, different destination for the seized value. Both need PT to be movable without the holder's live authorization, but they solve unrelated problems.
 

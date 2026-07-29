@@ -36,7 +36,8 @@
 
 - Follows checks-effects-interactions: all internal state (`total_underlying`, `total_shares`, `Balance`) is updated **before** the external `token::Client::transfer` call, on both `deposit` and `withdraw`. This prevents reentrancy from manipulating invariants.
 - `initialize` requires `admin == underlying_SAC.admin()` (read live) and `admin.require_auth()` — only the underlying asset's real issuer admin can stand up a market on it (reverts `IssuerMismatch` otherwise).
-- `deposit` checks `underlying_SAC.authorized(from)` and `Permissioning.is_allowed(from)`; `withdraw` checks **both** layers on **both** `from` and `to` — checking only the recipient would let a deauthorized or revoked account self-withdraw before any compliance action reached it.
+- `deposit` checks `underlying_SAC.authorized(from)` and `Permissioning.is_allowed(from)`; `withdraw` and `transfer` check **both** layers on **both** `from` and `to` — checking only the recipient would let a deauthorized or revoked account self-withdraw (or self-receive) before any compliance action reached it.
+- `transfer` is a plain internal balance move between two compliant accounts — no change to `total_underlying`/`total_shares`, no external token call, so it carries none of `deposit`/`withdraw`'s reentrancy surface. It exists specifically so `PrincipalManager.mint` can take custody of a caller's shares.
 - `seize()` — the compliance-recovery path — is restricted to the one address configured via `set_recovery_escrow` (a one-time, admin-gated setter). `SYWrapper` itself does not authenticate the issuer or check deauthorization; it only checks "is the caller my configured escrow," trusting `RecoveryEscrow` to have done that verification (see the `RecoveryEscrow` section below). It moves at most the target account's own balance, so other depositors' shares are never affected, and it is a forced transfer to the caller (not a burn), leaving the seized value recoverable rather than destroyed.
 - The exchange rate is derived from `total_underlying / total_shares` — it cannot be directly written. An attacker cannot set an arbitrary rate.
 - Pause flag blocks deposits and withdrawals; `seize()` intentionally still works while paused, since compliance recovery should not be blockable by the same switch that halts ordinary user activity.
@@ -49,9 +50,11 @@
 - `mint` is blocked after maturity (`assert_not_mature`). `redeem` is blocked before maturity (`assert_mature`). These checks use `env.ledger().timestamp()` — not caller-supplied values.
 - Oracle freshness is verified at redemption time. A stale oracle blocks settlement until the feed is updated.
 - `underlying_SAC.authorized(account)` and `Permissioning.is_allowed(account)` are both checked on `mint` and `redeem` — closing a gap where a deauthorized or revoked account could previously still redeem for the underlying asset after being flagged.
-- PT and YT balances use separate persistent storage keys — there is no shared counter that could be manipulated by burning one token to inflate the other.
-- YT yield is floored at zero: if `final_rate <= SCALE`, YT holders receive nothing but PT holders are unaffected.
-- Does not yet call `SYWrapper`, `PTToken`, or `YTToken` — mint/redeem operate on internal balance maps. This means the token-level protections below aren't yet reachable through `PrincipalManager`'s own mint/redeem flow (see PROOF_OF_CONCEPT.md's Known Limitations).
+- `mint` calls `SYWrapper.transfer` to take real custody of the caller's SY shares, then `PTToken.mint`/`YTToken.mint` to credit real, holdable balances. `redeem` calls `PTToken.burn`/`YTToken.burn` and releases real underlying via `SYWrapper.withdraw`, so the token-level protections below (§PTToken/YTToken, §SYWrapper) are reachable through the normal mint/redeem flow, not only by calling the token contracts directly.
+- PT and YT balances live in `PTToken`/`YTToken`'s own storage, not duplicated in `PrincipalManager` — there is no shared or secondary counter that could drift out of sync or be manipulated by burning one token to inflate the other.
+- YT redemption does not compute its own payout: it calls `YTToken.update_yield_index`/`burn`/`claim_yield` and forwards whatever that settles to. `YTToken.claim_yield` is separately, publicly callable by any holder at any time, so having `PrincipalManager` also compute and pay an independent amount would create a double-payment path for the same accrued yield — see `redeem_yt_does_not_double_pay_yield_already_claimed_directly`.
+- PT redemption keeps its own `pt_amount * SCALE / final_rate` formula; there is no analogous independent PT-side payer to conflict with, and YT yield is floored at zero regardless: if `final_rate <= SCALE`, YT holders receive nothing but PT holders are unaffected.
+- `PrincipalManager`'s own contract address must itself be SAC-authorized and Permissioning-granted before deployment is usable — it is now a genuine SY holder between mint and redemption, and self-authorizes as itself (a Soroban contract can `require_auth()` as its own address when it is the invoking contract) the same way `RecoveryEscrow` does when unwrapping a seizure.
 
 ### PTToken / YTToken
 
@@ -207,7 +210,7 @@ Compliance is enforced through **two layers**, checked independently on every af
 
 ## 9. Testing requirements
 
-Done, at the unit-test level (97 tests across eight contracts):
+Done, at the unit-test level (101 tests across eight contracts):
 
 - [x] Unit tests for arithmetic edge cases (zero amounts, exact-limit deposits, insufficient balance/allowance).
 - [x] Oracle failure scenarios: stale price blocks redemption (`PrincipalManager`) and blocks yield-index advancement (`YTToken`).
@@ -216,12 +219,13 @@ Done, at the unit-test level (97 tests across eight contracts):
 - [x] Market-creation gating: `initialize` rejects an admin that doesn't match the underlying SAC's real, live `admin()`.
 - [x] Compliance-recovery correctness: `seize()` on `SYWrapper`/`PTToken`/`YTToken` only affects the flagged account's own balance and requires the caller to be the one configured `RecoveryEscrow`; `RecoveryEscrow.seize_*` requires the caller to be the underlying SAC's real admin and the target to already be SAC-deauthorized; `seize_sy` unwraps to underlying in the same call; `YTToken.seize` settles both sides' pending yield before moving the balance.
 - [x] Yield-accounting correctness: late buyers don't retroactively receive prior yield; transfers and seizures settle both sides before the balance moves.
+- [x] Cross-contract integration: `PrincipalManager.mint`/`redeem` tested against real `SYWrapper`, `PTToken`, and `YTToken` deployments (not mocks) — real SY custody transfer, real PT/YT mint and burn, real underlying release, and a regression test confirming YT yield isn't paid twice through `YTToken.claim_yield`'s independent entrypoint and `PrincipalManager.redeem`.
 - [x] Circuit breaker trip and window-reset tests.
 - [x] Admin rotation tests on all seven admin-bearing contracts.
 
 Still outstanding before mainnet deployment:
 
-- [ ] Integration tests for cross-contract flows once `PrincipalManager` actually calls `SYWrapper`/`PTToken`/`YTToken` (not yet wired — see PROOF_OF_CONCEPT.md's Known Limitations). This also blocks `RecoveryEscrow.finalize_pt`/`finalize_yt` test coverage, since that functionality doesn't exist until the wiring does.
+- [ ] `RecoveryEscrow.finalize_pt`/`finalize_yt` and their test coverage — `RecoveryEscrow` doesn't yet know `PrincipalManager`'s address, so it can't call `redeem` on a seized position.
 - [ ] Cross-contract `RiskControl` wiring and associated integration tests.
 - [ ] `MarketPool` and `Router` test coverage once those contracts exist.
 - [ ] Third-party security audit with full access to source and test suite.
