@@ -1,12 +1,12 @@
 # Principal Protocol — Proof of Concept
 
-This document describes the current state of the Principal Protocol implementation: five Soroban smart contracts that form the foundational layer of the protocol and demonstrate the core yield-tokenization mechanics on Stellar.
+This document describes the current state of the Principal Protocol implementation: seven Soroban smart contracts that form the infrastructure, tokenization, and standalone-token layers of the protocol and demonstrate the core yield-tokenization mechanics on Stellar.
 
 ---
 
 ## Scope
 
-The POC implements the entire infrastructure and tokenization layer of the protocol:
+Seven of nine contracts are implemented:
 
 | Contract | Crate | Status |
 |---|---|---|
@@ -15,8 +15,10 @@ The POC implements the entire infrastructure and tokenization layer of the proto
 | `RiskControl` | `principal_risk_control` | Complete |
 | `SYWrapper` | `principal_sy_wrapper` | Complete |
 | `PrincipalManager` | `principal_manager` | Complete |
+| `PTToken` | `principal_pt_token` | Complete |
+| `YTToken` | `principal_yt_token` | Complete |
 
-The market layer (`PTToken`, `YTToken`, `MarketPool`, `Router`) is the Phase 2 scope and is not part of this POC. PT and YT balances are tracked internally within `PrincipalManager` rather than as standalone SEP-41 tokens.
+`MarketPool` and `Router` are not yet implemented. `PTToken` and `YTToken` are correct and fully tested as standalone contracts, but `PrincipalManager` does not yet call them — it still mints/burns against its own internal PT/YT balance maps, the same as before these two contracts existed. Wiring `PrincipalManager` to mint/burn through the real token contracts, and to move real `SYWrapper` shares instead of tracking deposits internally, is outstanding work — see [Known Limitations](#known-limitations) below.
 
 ---
 
@@ -40,11 +42,23 @@ At or after the maturity timestamp, `PrincipalManager.redeem()` computes and dis
 
 ### 5. Permissioned compliance flow
 
-`Permissioning` enforces per-account and per-asset eligibility, checked by `PrincipalManager` on every mint and redemption. This preserves the compliance constraints of the underlying USDY asset across all derived instruments.
+`Permissioning` enforces per-account and per-asset eligibility. It is checked by `PrincipalManager` on both mint and redemption, and by `SYWrapper` on both deposit and withdrawal — on every path, both the sending and receiving side are checked, so a revoked account is frozen rather than merely blocked from acquiring new positions. This preserves the compliance constraints of the underlying USDY asset across all derived instruments.
 
 ### 6. Risk controls
 
 `RiskControl` implements a global pause with multi-pauser roles and a rolling 24-hour circuit breaker on deposit volume. These are independent safety layers that can halt the protocol in response to oracle failures, market anomalies, or operational incidents.
+
+### 7. Standalone PT and YT tokens with per-instrument eligibility
+
+`PTToken` and `YTToken` are full SEP-41 tokens (transfer, transfer_from, approve, allowance) with minter-gated mint/burn, restricted to a single registered minter set once via `set_minter`. Transfers check both the coarse, account-level `Permissioning.is_allowed()` gate and a per-token `is_allowed_for_asset()` check keyed to the token's own contract address — so PT and YT can carry independent eligibility policies for the same underlying market, using allow-list infrastructure that already exists rather than new contracts.
+
+### 8. Continuous yield accrual
+
+`YTToken` implements a global yield index, advanced by the permissionless `update_yield_index()` (gated on oracle freshness) and claimed via `claim_yield()`. Every balance-changing operation — mint, burn, transfer in, transfer out — settles the affected account's pending yield against its balance *before* the change, so a buyer cannot retroactively receive yield accrued before they held the position, and a seller cannot lose yield already earned by transferring out.
+
+### 9. Compliance recovery without collateral damage
+
+`SYWrapper.remediate()` lets an issuer-authorized admin recover a single revoked account's SY balance, releasing the equivalent underlying without touching any other depositor's share of the pooled reserve. It only acts on accounts Permissioning has already marked ineligible — revoking (Permissioning's admin) and remediating (SYWrapper's admin) are enforced as separate actions, potentially separate keys.
 
 ---
 
@@ -82,7 +96,7 @@ fn get_admin(env: Env) -> Address
 ### SYWrapper
 
 ```rust
-fn initialize(env: Env, admin: Address, underlying: Address)
+fn initialize(env: Env, admin: Address, underlying: Address, permissioning: Address)
 fn deposit(env: Env, from: Address, amount: i128) -> i128       // returns shares minted
 fn withdraw(env: Env, from: Address, shares: i128, to: Address) -> i128  // returns underlying
 fn exchange_rate(env: Env) -> i128                               // scaled ×10⁷
@@ -93,7 +107,65 @@ fn underlying_address(env: Env) -> Address
 fn set_paused(env: Env, caller: Address, paused: bool)
 fn transfer_admin(env: Env, current_admin: Address, new_admin: Address)
 fn get_admin(env: Env) -> Address
+
+// Compliance recovery — see "Compliance recovery without collateral damage" above
+fn remediate(env: Env, caller: Address, account: Address, shares: i128) -> i128
 ```
+
+`deposit` checks `Permissioning.is_allowed(from)`; `withdraw` checks both `from` and `to`. `remediate` requires the caller to be admin *and* requires `account` to already be revoked (`is_allowed(account) == false`) — it cannot act on an eligible account regardless of who calls it.
+
+### PTToken
+
+```rust
+fn initialize(env: Env, admin: Address, permissioning: Address, maturity: u64,
+              name: String, symbol: String, decimals: u32)
+fn set_minter(env: Env, admin: Address, minter: Address)   // one-time; reverts if already set
+
+// SEP-41
+fn transfer(env: Env, from: Address, to: Address, amount: i128)
+fn transfer_from(env: Env, spender: Address, from: Address, to: Address, amount: i128)
+fn approve(env: Env, from: Address, spender: Address, amount: i128, expiration_ledger: u32)
+fn allowance(env: Env, from: Address, spender: Address) -> i128
+fn balance(env: Env, account: Address) -> i128
+fn decimals(env: Env) -> u32
+fn name(env: Env) -> String
+fn symbol(env: Env) -> String
+
+// Minter-only
+fn mint(env: Env, to: Address, amount: i128)
+fn burn(env: Env, from: Address, amount: i128)
+
+// Views
+fn total_supply(env: Env) -> i128
+fn maturity(env: Env) -> u64
+fn minter(env: Env) -> Address
+fn get_admin(env: Env) -> Address
+```
+
+`transfer` and `transfer_from` check both `from` and `to` against `Permissioning.is_allowed()` (account-level) and `is_allowed_for_asset(account, pt_token_address)` (per-instrument). `mint` checks the recipient the same way; `burn` has no permission check, since it only removes value and never redirects it.
+
+### YTToken
+
+Same shape as `PTToken`, plus yield accrual:
+
+```rust
+fn initialize(env: Env, admin: Address, permissioning: Address, oracle: Address, maturity: u64,
+              name: String, symbol: String, decimals: u32)
+fn set_minter(env: Env, admin: Address, minter: Address)
+
+// SEP-41 — identical to PTToken
+
+// Minter-only — identical to PTToken
+
+// Yield accrual
+fn update_yield_index(env: Env)                       // permissionless; requires fresh oracle
+fn claim_yield(env: Env, from: Address) -> i128
+fn accrued_yield_index(env: Env) -> i128
+fn last_claimed_index(env: Env, account: Address) -> i128
+fn pending_claim(env: Env, account: Address) -> i128
+```
+
+`update_yield_index` reverts with `OracleStale` if the oracle hasn't been refreshed within `MAX_ORACLE_STALENESS_SECS` — matching the same freshness discipline `PrincipalManager` already applies at mint and redeem.
 
 ### PrincipalManager
 
@@ -170,7 +242,8 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 | `SCALE` | `10_000_000` | All contracts | Universal fixed-point denominator (10^7). `RATE_SCALE` is a deprecated alias for the same value. |
 | `ELIGIBILITY_TTL_LEDGERS` | `518_400` | Permissioning | ~30 days at 5 s/ledger |
 | `CB_WINDOW_SECS` | `86_400` | RiskControl | 24-hour circuit breaker window |
-| `MAX_ORACLE_STALENESS_SECS` | `3_600` | PrincipalManager | 1-hour freshness at redemption |
+| `MAX_ORACLE_STALENESS_SECS` | `3_600` | PrincipalManager, YTToken | 1-hour freshness at redemption and at yield-index advancement |
+| `BALANCE_TTL_LEDGERS` | `518_400` | SYWrapper, PrincipalManager, PTToken, YTToken | ~30 days at 5 s/ledger, applied to every persistent per-user entry |
 
 ---
 
@@ -193,6 +266,8 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 | SYWrapper | 5 | `InsufficientShares` | withdraw > balance |
 | SYWrapper | 6 | `Paused` | operation while paused |
 | SYWrapper | 7 | `ArithmeticOverflow` | fixed-point overflow |
+| SYWrapper | 8 | `PermissionDenied` | account not in allow-list |
+| SYWrapper | 9 | `AccountNotRevoked` | `remediate` called on an account Permissioning still considers eligible |
 | PrincipalManager | 1 | `AlreadyInitialized` | initialize called twice |
 | PrincipalManager | 2 | `Unauthorized` | caller ≠ admin |
 | PrincipalManager | 3 | `NotInitialized` | read before initialize |
@@ -202,7 +277,18 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 | PrincipalManager | 7 | `OracleStale` | oracle too old at redemption |
 | PrincipalManager | 8 | `InsufficientBalance` | redeem > PT or YT balance |
 | PrincipalManager | 9 | `Paused` | operation while paused |
-| PrincipalManager | 10 | `PermissionDenied` | user not in allow-list |
+| PrincipalManager | 10 | `PermissionDenied` | user not in allow-list (mint and redeem) |
+| PTToken | 1 | `AlreadyInitialized` | initialize called twice |
+| PTToken | 2 | `Unauthorized` | caller ≠ admin |
+| PTToken | 3 | `NotInitialized` | read before initialize |
+| PTToken | 4 | `ZeroAmount` | amount ≤ 0 |
+| PTToken | 5 | `InsufficientBalance` | transfer/burn > balance |
+| PTToken | 6 | `InsufficientAllowance` | transfer_from > allowance or allowance expired |
+| PTToken | 7 | `PermissionDenied` | account fails account-level or per-asset eligibility |
+| PTToken | 8 | `MinterAlreadySet` | `set_minter` called twice |
+| PTToken | 9 | `MinterNotSet` | mint/burn before `set_minter` |
+| YTToken | 1–9 | *(same as PTToken)* | identical error set |
+| YTToken | 10 | `OracleStale` | `update_yield_index` called with a stale oracle |
 | RiskControl | 1 | `AlreadyInitialized` | initialize called twice |
 | RiskControl | 2 | `Unauthorized` | caller ≠ admin |
 | RiskControl | 3 | `NotInitialized` | read before initialize |
@@ -215,9 +301,9 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 
 ## Test Coverage
 
-Each contract has a unit test suite using `soroban_sdk::testutils`. Tests cover:
+72 unit tests across seven contracts, using `soroban_sdk::testutils`:
 
-**OracleAdapter**
+**OracleAdapter** (10 tests)
 - Initialization and double-init guard
 - Reference value update and retrieval
 - Monotonic timestamp enforcement (reject stale timestamps)
@@ -225,7 +311,7 @@ Each contract has a unit test suite using `soroban_sdk::testutils`. Tests cover:
 - Unauthorized update attempt
 - Admin transfer
 
-**Permissioning**
+**Permissioning** (6 tests)
 - Account grant and revoke
 - Asset-level grant and revoke
 - Batch `grant_accounts`
@@ -233,26 +319,48 @@ Each contract has a unit test suite using `soroban_sdk::testutils`. Tests cover:
 - Unauthorized grant attempt
 - Admin transfer
 
-**SYWrapper**
-- Deposit and share minting
+**SYWrapper** (16 tests)
+- Deposit and share minting; rejected when the depositor isn't on the allow-list
 - Exchange rate calculation at inception and after yield accrual simulation
-- Withdrawal and underlying return
+- Withdrawal and underlying return; rejected when either the withdrawer or the recipient isn't allowed
 - Insufficient share balance rejection
 - Pause and unpause behavior
+- A revoked account cannot self-withdraw to front-run `remediate()`
+- `remediate()` burns only the flagged account's own share, leaving other depositors untouched
+- `remediate()` rejects a target that hasn't actually been revoked
+- `remediate()` cannot exceed the flagged account's balance, and requires the caller to be admin
 - Admin transfer
 
-**PrincipalManager**
+**PrincipalManager** (12 tests)
 - Mint PT and YT from SY shares
 - Notional calculation at multiple oracle rates
 - Redeem at maturity — PT and YT separately
 - Redeem before maturity rejection (`NotMature`)
 - Mint after maturity rejection (`AlreadyMature`)
 - Oracle staleness rejection at redemption
-- Permission check rejection
+- Permission check rejection at mint, and at redeem for a revoked account
 - Pause behavior
 - Admin transfer
 
-**RiskControl**
+**PTToken** (9 tests)
+- Mint blocked until `set_minter` is called; `set_minter` cannot be called twice
+- Mint and balance tracking
+- Transfer between eligible accounts; rejected when the recipient lacks the per-token asset grant
+- A revoked holder cannot transfer PT to a still-eligible party before remediation
+- Insufficient balance rejection
+- `approve` / `transfer_from` delegated transfer
+- Burn reduces total supply
+
+**YTToken** (7 tests)
+- Mint and balance tracking
+- No yield accrual when the oracle rate hasn't increased
+- Yield accrues correctly after a rate increase, and is fully claimable
+- A late buyer does not retroactively receive yield accrued before they held the position
+- A transfer settles both sides' pending yield before the balance moves
+- A revoked holder cannot transfer YT to a still-eligible party before remediation
+- `update_yield_index` rejects a stale oracle
+
+**RiskControl** (12 tests)
 - Pause and unpause
 - Pauser role add and remove
 - Non-pauser `pause` rejection
@@ -277,16 +385,18 @@ cargo test
 cargo build --target wasm32-unknown-unknown --release
 ```
 
-WASM files are produced in `target/wasm32-unknown-unknown/release/`:
+WASM files are produced in `target/wasm32-unknown-unknown/release/` (or `target/wasm32v1-none/release/`, depending on Rust toolchain version — see note above):
 - `principal_oracle_adapter.wasm`
 - `principal_permissioning.wasm`
 - `principal_risk_control.wasm`
 - `principal_sy_wrapper.wasm`
 - `principal_manager.wasm`
+- `principal_pt_token.wasm`
+- `principal_yt_token.wasm`
 
 ---
 
-## Deployment Order (POC)
+## Deployment Order
 
 ```bash
 # 1. OracleAdapter
@@ -307,11 +417,14 @@ stellar contract deploy --wasm target/.../principal_risk_control.wasm \
 stellar contract invoke --id risk_control --source admin --network testnet \
   -- initialize --admin <ADMIN_ADDRESS> --cb-limit 0
 
-# 4. SYWrapper
+# 4. SYWrapper (initialize now also takes --permissioning)
 stellar contract deploy --wasm target/.../principal_sy_wrapper.wasm \
   --source admin --network testnet --alias sy_wrapper
 stellar contract invoke --id sy_wrapper --source admin --network testnet \
-  -- initialize --admin <ADMIN_ADDRESS> --underlying <USDY_CONTRACT_ADDRESS>
+  -- initialize \
+     --admin <ADMIN_ADDRESS> \
+     --underlying <USDY_CONTRACT_ADDRESS> \
+     --permissioning <PERMISSIONING_ADDRESS>
 
 # 5. PrincipalManager
 stellar contract deploy --wasm target/.../principal_manager.wasm \
@@ -326,7 +439,34 @@ stellar contract invoke --id principal_manager --source admin --network testnet 
      # UNIX_TIMESTAMP = current time + maturity duration in seconds
      # Example for 3-month market: $(date -d "+90 days" +%s)
      # Example for 6-month market: $(date -d "+180 days" +%s)
+
+# 6. PTToken (deployed before PrincipalManager needs to reference it in production;
+#    shown here after only because this repo's PrincipalManager doesn't yet call it —
+#    see "Known Limitations")
+stellar contract deploy --wasm target/.../principal_pt_token.wasm \
+  --source admin --network testnet --alias pt_token
+stellar contract invoke --id pt_token --source admin --network testnet \
+  -- initialize \
+     --admin <ADMIN_ADDRESS> \
+     --permissioning <PERMISSIONING_ADDRESS> \
+     --maturity <UNIX_TIMESTAMP> \
+     --name "Principal Token USDY" --symbol "PT-USDY" --decimals 7
+# set_minter is called once a minting contract exists to register:
+# stellar contract invoke --id pt_token -- set_minter --admin <ADMIN_ADDRESS> --minter <MINTER_ADDRESS>
+
+# 7. YTToken
+stellar contract deploy --wasm target/.../principal_yt_token.wasm \
+  --source admin --network testnet --alias yt_token
+stellar contract invoke --id yt_token --source admin --network testnet \
+  -- initialize \
+     --admin <ADMIN_ADDRESS> \
+     --permissioning <PERMISSIONING_ADDRESS> \
+     --oracle <ORACLE_ADAPTER_ADDRESS> \
+     --maturity <UNIX_TIMESTAMP> \
+     --name "Yield Token USDY" --symbol "YT-USDY" --decimals 7
 ```
+
+`PTToken` and `YTToken` are not part of the live testnet deployment recorded below — that deployment predates both contracts. The commands above are untested reference templates, not a record of an actual deployment.
 
 See [DEPLOYMENT.md](DEPLOYMENT.md) for the complete guide including network configuration and post-deployment verification.
 
@@ -334,8 +474,9 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for the complete guide including network conf
 
 ## Testnet Deployment
 
-All five POC contracts have been deployed and initialised on **Stellar Testnet** (June 2026).
-The deployment demonstrates the full infrastructure + tokenization layer of the protocol executing real on-chain transactions.
+All five originally-implemented contracts have been deployed and initialised on **Stellar Testnet** (June 2026). The deployment demonstrates the infrastructure and tokenization layer of the protocol executing real on-chain transactions.
+
+**This deployment predates `PTToken`, `YTToken`, and the compliance-gap fixes described elsewhere in this document.** Specifically: the deployed `SYWrapper` was initialized without a `permissioning` parameter (that argument didn't exist yet), so its deposit/withdraw calls on testnet are not eligibility-gated the way the current source code requires; and the deployed `PrincipalManager`'s `redeem()` predates the permissioning check added since. The deployed WASM reflects the source as it existed at deployment time — it does not update itself when the repository changes. Treat the addresses and transactions below as a historical record of that earlier version, not as a live demonstration of the current contract set. A redeployment reflecting the current source, including `PTToken` and `YTToken`, has not yet been done.
 
 ### Deployed Contract Addresses
 
@@ -558,6 +699,8 @@ Records a **10 USDY** deposit event (`100_000_000`) against the circuit breaker 
 
 ### What the Testnet Deployment Proves
 
+This table describes what the historical deployment above proved about the contract versions live at the time — it predates the compliance-gap fixes and PT/YT tokens (see the caveat at the top of this section), so treat it as evidence for the underlying mechanics, not for the current source as a whole.
+
 | Claim | Evidence |
 |---|---|
 | Soroban contracts compile and deploy | 5 contracts live on testnet with verified WASM hashes |
@@ -571,24 +714,24 @@ Records a **10 USDY** deposit event (`100_000_000`) against the circuit breaker 
 
 ---
 
-## Known POC Limitations
+## Known Limitations
 
-The following items are intentional scope boundaries for the POC and will be addressed in Phase 2:
+The following are the current, honest scope boundaries — each is either genuinely outstanding work or a nuance worth being precise about:
 
-1. **Internal PT/YT balances** — PT and YT are tracked as mappings inside `PrincipalManager`, not as standalone SEP-41 tokens. They cannot be held in external wallets or traded on DEX pools without Phase 2 contracts.
+1. **`PrincipalManager` does not yet call the real `PTToken`/`YTToken` contracts.** `PTToken` and `YTToken` now exist as standalone, fully tested SEP-41 contracts (see [What the POC Demonstrates](#what-the-poc-demonstrates) above) — but `PrincipalManager.mint()`/`redeem()` still operate on its own internal PT/YT balance maps, exactly as before these two contracts existed. Until that wiring is done, PT and YT minted through `PrincipalManager` cannot actually be held in external wallets or traded — the standalone contracts are correct in isolation but not yet reachable through the mint/redeem flow.
 
-2. **No AMM** — `MarketPool` is not implemented. There is no on-chain market for PT or YT trading in the POC.
+2. **No AMM.** `MarketPool` is not implemented. There is no on-chain market for PT or YT trading.
 
-3. **No Router** — Users interact with each contract individually. Single-transaction flows (wrap + mint, swap, recombine) require Phase 2 Router integration.
+3. **No Router.** Users interact with each contract individually. Single-transaction flows (wrap + mint, swap, recombine) require a `Router` contract that doesn't exist yet.
 
-4. **No yield claiming** — YT holders cannot claim accrued yield before maturity in the POC. The full YT yield streaming and claiming mechanism is a Phase 2 feature.
+4. **Yield claiming is implemented at the token-contract level, but not reachable end-to-end yet.** `YTToken.claim_yield()` — with a full accrual-index and pre-transfer settlement mechanism — is implemented and tested (see items 7–9 in [What the POC Demonstrates](#what-the-poc-demonstrates)). It isn't reachable through `PrincipalManager`'s current mint/redeem flow for the same reason as item 1, and even once wired, `claim_yield` computes and zeroes the claim without dispatching a real underlying transfer yet — see item 9 below.
 
-5. **No recombination** — PT + YT → SY recombination before maturity is planned for Phase 2.
+5. **No recombination.** PT + YT → SY recombination before maturity is not implemented.
 
-6. **Single oracle submitter** — The POC uses a single admin-controlled oracle. Multi-source aggregation and quorum oracle are Phase 2 infrastructure.
+6. **Single oracle submitter.** A single admin-controlled oracle is implemented. Multi-source aggregation and quorum oracle are not.
 
-7. **Cross-contract wiring of RiskControl** — In the POC, `RiskControl.check_deposit` is invoked directly by the caller (e.g. a test harness or admin script) rather than being called automatically by `SYWrapper` and `PrincipalManager` as cross-contract calls. The risk control logic and interface are fully implemented and tested; Phase 2 wires them into the deposit and mint call paths so no user can bypass the circuit breaker by calling `SYWrapper` directly. The POC focuses on proving the logic correctness of each contract in isolation; end-to-end cross-contract integration is the Phase 2 scope.
+7. **`RiskControl` is not cross-contract-wired.** `RiskControl.check_deposit` is invoked directly by the caller (e.g. a test harness or admin script) rather than being called automatically by `SYWrapper` and `PrincipalManager`. The risk control logic and interface are fully implemented and tested in isolation; wiring it into the deposit and mint call paths so no user can bypass the circuit breaker by calling `SYWrapper` directly remains outstanding.
 
-8. **SY share transfer not dispatched** — `PrincipalManager.mint()` records the SY share deposit internally but does not call `SYWrapper.transfer()` to move shares into the contract. Similarly, `redeem()` computes and returns the underlying amounts due but does not dispatch the token transfer to the caller. Both transfers are Phase 2 milestones once the Router contract is available to orchestrate multi-step flows in a single transaction.
+8. **SY share transfer not dispatched by `PrincipalManager`.** `PrincipalManager.mint()` records the SY share deposit internally but does not call `SYWrapper.transfer()` to move shares into the contract. `redeem()` computes and returns the underlying amounts due but does not dispatch the token transfer to the caller. Both are the same underlying gap as item 1 — `PrincipalManager` needs to actually call `SYWrapper`, `PTToken`, and `YTToken` instead of tracking everything in its own storage.
 
-9. **Single `initial_rate` per user** — `PrincipalManager` stores one oracle rate per user address at the time of their first mint. If a user mints multiple times across different oracle rates, all their YT is settled using the rate from the first mint. Production will track rates per mint batch to ensure each YT unit is settled against the rate at the time it was created.
+9. **Single `initial_rate` per user.** `PrincipalManager` stores one oracle rate per user address at the time of their first mint. If a user mints multiple times across different oracle rates, all their YT is settled using the rate from the first mint. Production will need to track rates per mint batch so each YT unit settles against the rate at the time it was created.

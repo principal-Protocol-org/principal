@@ -232,7 +232,7 @@ impl PrincipalManagerContract {
         Self::assert_mature(&env);
         Self::assert_oracle_fresh(&env);
         // Closes the gap found during the SCF #44 resubmission audit: redeem() previously had
-        // no eligibility check at all, only mint() did. See PHASE2_DESIGN.md §2.
+        // no eligibility check at all, only mint() did. See COMPLIANT_SETTLEMENT_DESIGN.md §2.
         Self::assert_permitted(&env, &from);
 
         if pt_amount == 0 && yt_amount == 0 {

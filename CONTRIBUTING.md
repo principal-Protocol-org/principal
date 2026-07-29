@@ -21,9 +21,13 @@ contracts/
   oracle_adapter/     — reference-value oracle with freshness and admin controls
   permissioning/      — account and asset eligibility registry
   sy_wrapper/         — yield wrapper: holds underlying, mints SY shares
-  principal_manager/  — splits SY shares into PT + YT; settles at maturity
+  principal_manager/  — splits SY shares into PT + YT internally; settles at maturity
   risk_control/       — global pause flag and rolling circuit breaker
+  pt_token/           — standalone SEP-41 Principal Token
+  yt_token/           — standalone SEP-41 Yield Token with yield accrual/claiming
 ```
+
+`MarketPool` and `Router` are specified in TECHNICAL_SPECIFICATION.md but not yet implemented.
 
 Each contract is an independent crate with its own `Cargo.toml`.
 

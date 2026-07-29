@@ -4,13 +4,14 @@
 
 | Threat | Impact | Mitigation |
 |---|---|---|
-| Malicious oracle price | Wrong settlement; PT/YT over/under-redeemed | `require_auth` on price setter; freshness window; multi-source feed in production |
-| Unauthorized mint | Inflation of PT/YT supply | `require_auth()` on all entrypoints; permissioning check before mint |
-| Permissioning bypass | Ineligible user holds PT/YT | Permissioning checked in PrincipalManager at mint and redeem |
+| Malicious oracle price | Wrong settlement; PT/YT over/under-redeemed | `require_auth` on price setter; freshness window checked at mint, redeem, and `YTToken.update_yield_index`; multi-source feed not yet implemented |
+| Unauthorized mint | Inflation of PT/YT supply | `require_auth()` on all entrypoints; permissioning check before mint; `PTToken`/`YTToken` mint restricted to a single registered minter, locked by `set_minter` |
+| Permissioning bypass | Ineligible user holds, moves, or redeems PT/YT | Checked at `SYWrapper` deposit/withdraw, `PrincipalManager` mint/redeem, and `PTToken`/`YTToken` transfer/transfer_from — on both the sending and receiving side, not only the recipient, so a revoked account is frozen rather than merely blocked from new positions |
+| Front-running compliance action | Flagged account cashes out or dumps its position before an admin can act | Both-sides eligibility checks (above) mean a revoked account cannot self-withdraw or transfer out; `SYWrapper.remediate()` additionally requires the target to already be revoked, so it can't be used against an account that hasn't been flagged |
 | Replay across maturities | Wrong redemption mapping | Each issuance has unique `maturity_timestamp`; maturity check on every redeem |
-| Flash deposit attack | Circuit breaker drained | Rolling 24h window circuit breaker in RiskControl |
-| Admin key compromise | Full protocol takeover | Two-step `transfer_admin`; recommend multisig for production |
-| Reentrancy | State corruption | Checks-effects-interactions pattern in SYWrapper; state updated before external calls |
+| Flash deposit attack | Circuit breaker drained | Rolling 24h window circuit breaker in RiskControl — logic implemented and tested, not yet cross-contract wired into `SYWrapper`/`PrincipalManager` |
+| Admin key compromise | Protocol takeover scoped to that contract | Single-call `transfer_admin`, requires the current admin's signature; recommend multisig for production. `SYWrapper.remediate()` requires the target account to already be revoked by `Permissioning`'s admin — a compromised `SYWrapper` admin key alone cannot drain an arbitrary account without `Permissioning`'s admin having also flagged it, so a single compromised key isn't sufficient for that specific action |
+| Reentrancy | State corruption | Checks-effects-interactions in `SYWrapper`: internal state is updated before the external `token::Client::transfer` call, on both `deposit` and `withdraw` |
 | Integer overflow | Incorrect accounting | Soroban `i128` arithmetic; `overflow-checks = true` in release profile |
 
 ## 2. Per-contract security properties
@@ -30,7 +31,9 @@
 
 ### SYWrapper
 
-- Follows checks-effects-interactions: all internal state (`total_underlying`, `total_shares`, `Balance`) is updated **before** the external `token::Client::transfer` call. This prevents reentrancy from manipulating invariants.
+- Follows checks-effects-interactions: all internal state (`total_underlying`, `total_shares`, `Balance`) is updated **before** the external `token::Client::transfer` call, on both `deposit` and `withdraw`. This prevents reentrancy from manipulating invariants.
+- `deposit` checks `Permissioning.is_allowed(from)`; `withdraw` checks **both** `from` and `to` — checking only the recipient would let a revoked account self-withdraw before any compliance action reached it.
+- `remediate()` — the compliance-recovery path — requires the caller to be admin **and** requires the target account to already be revoked (`is_allowed(account) == false`). It cannot act on an account Permissioning still considers eligible, regardless of who calls it, and it can burn at most that account's own balance, so other depositors' shares are never affected.
 - The exchange rate is derived from `total_underlying / total_shares` — it cannot be directly written. An attacker cannot set an arbitrary rate.
 - Pause flag blocks both deposits and withdrawals. Only admin can unpause.
 - Zero-amount deposits and withdrawals are rejected.
@@ -40,9 +43,18 @@
 
 - `mint` is blocked after maturity (`assert_not_mature`). `redeem` is blocked before maturity (`assert_mature`). These checks use `env.ledger().timestamp()` — not caller-supplied values.
 - Oracle freshness is verified at redemption time. A stale oracle blocks settlement until the feed is updated.
-- Permissioning is checked for every `mint` call.
+- Permissioning is checked on both `mint` and `redeem` — closing a gap where a revoked account could previously still redeem for the underlying asset after being flagged.
 - PT and YT balances use separate persistent storage keys — there is no shared counter that could be manipulated by burning one token to inflate the other.
 - YT yield is floored at zero: if `final_rate <= SCALE`, YT holders receive nothing but PT holders are unaffected.
+- Does not yet call `SYWrapper`, `PTToken`, or `YTToken` — mint/redeem operate on internal balance maps. This means the token-level protections below aren't yet reachable through `PrincipalManager`'s own mint/redeem flow (see PROOF_OF_CONCEPT.md's Known Limitations).
+
+### PTToken / YTToken
+
+- `transfer` and `transfer_from` check eligibility on **both** `from` and `to` — checking only the recipient would let a revoked holder freely move its position to any still-eligible party before being frozen.
+- Each check is two-layered: the coarse, account-level `Permissioning.is_allowed(account)` gate, and `Permissioning.is_allowed_for_asset(account, own_contract_address)` — a per-token gate that lets PT and YT carry independent eligibility policies for the same market.
+- `mint` and `burn` are restricted to a single registered minter, set exactly once via `set_minter` (reverts `MinterAlreadySet` on a second call); both revert `MinterNotSet` if called before a minter is registered. `burn` itself has no eligibility check — it only removes value and never redirects it to a new party, so there's nothing to gate.
+- `YTToken.update_yield_index()` is permissionless but requires the oracle to be fresh (`is_fresh(MAX_ORACLE_STALENESS_SECS)`, matching `PrincipalManager`'s own freshness discipline) and is a no-op if the rate hasn't increased since the last recorded high-water mark, so YT can never accrue negative yield.
+- Every balance-changing operation (mint, burn, transfer in, transfer out) settles the affected account's pending yield **before** the balance changes, against the current index, then advances that account's snapshot. Without this, a buyer could retroactively receive yield accrued before they held the position, or a seller could lose yield already earned by transferring out.
 
 ### RiskControl
 
@@ -92,7 +104,7 @@ The circuit breaker limits cumulative deposit volume within a 24-hour rolling wi
 
 ### Admin transfer (all contracts)
 
-All five contracts implement `transfer_admin(current_admin, new_admin)`. The current admin must authorize. Use this to rotate to a multisig or hardware key:
+All seven implemented contracts implement `transfer_admin(current_admin, new_admin)` as a single call — the current admin authorizes and the new admin takes effect immediately, with no separate acceptance step. Use this to rotate to a multisig or hardware key:
 
 ```bash
 stellar contract invoke --id <contract_id> \
@@ -101,27 +113,45 @@ stellar contract invoke --id <contract_id> \
      --new-admin <new_multisig_address>
 ```
 
+### Compliance recovery (remediate)
+
+```bash
+# Requires: caller is SYWrapper's admin, AND account is already revoked in Permissioning
+stellar contract invoke --id sy_wrapper \
+  -- remediate \
+     --caller <admin_address> \
+     --account <flagged_account> \
+     --shares <amount>
+```
+
+Reverts `AccountNotRevoked` if the target hasn't actually been revoked — revoke via `Permissioning.revoke_account` first. In production, `SYWrapper`'s admin role for this action is expected to be an issuer-authorized compliance signer, not the routine protocol admin key.
+
 ## 5. Access control matrix
 
-| Action | OracleAdapter | Permissioning | SYWrapper | PrincipalManager | RiskControl |
-|---|---|---|---|---|---|
-| Initialize | deployer (once) | deployer (once) | deployer (once) | deployer (once) | deployer (once) |
-| Set reference value | admin | — | — | — | — |
-| Grant/revoke account | — | admin | — | — | — |
-| Deposit | — | — | any (if allowed) | — | — |
-| Withdraw | — | — | share holder | — | — |
-| Mint PT/YT | — | — | — | permitted user | — |
-| Redeem PT/YT | — | — | — | PT/YT holder (post-maturity) | — |
-| Pause | — | — | admin | admin | admin or pauser |
-| Unpause | — | — | admin | admin | admin only |
-| Transfer admin | admin | admin | admin | admin | admin |
+| Action | OracleAdapter | Permissioning | SYWrapper | PrincipalManager | RiskControl | PTToken / YTToken |
+|---|---|---|---|---|---|---|
+| Initialize | deployer (once) | deployer (once) | deployer (once) | deployer (once) | deployer (once) | deployer (once) |
+| Set reference value | admin | — | — | — | — | — |
+| Grant/revoke account | — | admin | — | — | — | — |
+| Deposit | — | — | eligible account only | — | — | — |
+| Withdraw | — | — | eligible sender and eligible recipient | — | — | — |
+| Remediate (compliance recovery) | — | — | admin, target must already be revoked | — | — | — |
+| Mint PT/YT | — | — | — | permitted user | — | registered minter only, recipient must be eligible |
+| Burn PT/YT | — | — | — | — | — | registered minter only, no eligibility check |
+| Transfer PT/YT | — | — | — | — | — | eligible sender and eligible recipient (account + per-asset) |
+| Redeem PT/YT | — | — | — | eligible PT/YT holder (post-maturity) | — | — |
+| Claim yield (YT) | — | — | — | — | — | holder only (`require_auth`) |
+| Pause | — | — | admin | admin | admin or pauser | — |
+| Unpause | — | — | admin | admin | admin only | — |
+| Transfer admin | admin | admin | admin | admin | admin | admin |
 
 ## 6. Permissioning and compliance
 
-- `Permissioning.is_allowed(account)` must return `true` for every participant that mints, holds, transfers, or redeems PT or YT.
-- `Permissioning.is_allowed_for_asset(account, asset)` provides finer-grained per-asset gating when different assets have different eligibility requirements.
+- `Permissioning.is_allowed(account)` must return `true` for every participant that deposits, withdraws, mints, holds, transfers, or redeems SY, PT, or YT — checked on both sides of every transfer-like operation, not only the recipient, so a revoked account is frozen rather than merely blocked from acquiring new positions.
+- `Permissioning.is_allowed_for_asset(account, asset)` provides finer-grained per-asset gating. `PTToken` and `YTToken` both check this against their own contract address, so an admin can grant an account access to PT without granting YT for the same market, or vice versa.
 - Eligibility entries in persistent storage expire after `ELIGIBILITY_TTL_LEDGERS` (≈ 30 days). Issuers must refresh entries for active participants before expiry.
 - If an underlying asset (e.g. USDY) is permissioned by its issuer, the permissioning contract must mirror those restrictions. The protocol does not create a compliance bypass.
+- `SYWrapper.remediate()` gives issuers a way to recover a specific revoked account's value without a native Stellar Asset Contract clawback against the pooled reserve, which would otherwise haircut every other depositor along with the flagged account.
 
 ## 7. Governance and upgrade model
 
@@ -146,11 +176,19 @@ stellar contract invoke --id <contract_id> \
 
 ## 9. Testing requirements
 
-Before mainnet deployment:
+Done, at the unit-test level (72 tests across seven contracts):
 
-- [ ] Unit tests for all arithmetic edge cases (zero amounts, exact-limit deposits, rounding at large values).
-- [ ] Integration tests for oracle failure scenarios (stale price blocks redemption).
-- [ ] Integration tests for permissioning violations (unauthorized mint reverts).
-- [ ] Circuit breaker trip and window-reset tests.
-- [ ] Admin rotation tests on all five contracts.
+- [x] Unit tests for arithmetic edge cases (zero amounts, exact-limit deposits, insufficient balance/allowance).
+- [x] Oracle failure scenarios: stale price blocks redemption (`PrincipalManager`) and blocks yield-index advancement (`YTToken`).
+- [x] Permissioning violations: unauthorized mint reverts; revoked accounts blocked from redeem, deposit, withdraw, and PT/YT transfer on both sides.
+- [x] Compliance-recovery correctness: `remediate()` only affects the flagged account's own balance, requires prior revocation, requires admin.
+- [x] Yield-accounting correctness: late buyers don't retroactively receive prior yield; transfers settle both sides before the balance moves.
+- [x] Circuit breaker trip and window-reset tests.
+- [x] Admin rotation tests on all seven implemented contracts.
+
+Still outstanding before mainnet deployment:
+
+- [ ] Integration tests for cross-contract flows once `PrincipalManager` actually calls `SYWrapper`/`PTToken`/`YTToken` (not yet wired — see PROOF_OF_CONCEPT.md's Known Limitations).
+- [ ] Cross-contract `RiskControl` wiring and associated integration tests.
+- [ ] `MarketPool` and `Router` test coverage once those contracts exist.
 - [ ] Third-party security audit with full access to source and test suite.

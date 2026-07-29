@@ -13,7 +13,7 @@
 //! `Permissioning.is_allowed(to)`. This implementation checks eligibility keyed to this
 //! token's own contract address instead, so PTToken and YTToken can carry independent
 //! eligibility policies (asymmetric permissioning) using allow-list infrastructure that
-//! already exists — see PHASE2_DESIGN.md §1. The account-level gate still applies first;
+//! already exists — see COMPLIANT_SETTLEMENT_DESIGN.md §1. The account-level gate still applies first;
 //! per-asset eligibility narrows within it, it does not bypass it.
 
 #![no_std]

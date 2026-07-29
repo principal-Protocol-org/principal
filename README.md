@@ -53,9 +53,9 @@ At maturity:
 
 ## Protocol Architecture
 
-The protocol is composed of nine Soroban contracts organized in three layers:
+The protocol is composed of nine Soroban contracts organized in three layers. Seven are implemented and unit-tested today; `MarketPool` and `Router` are specified but not yet built (see [TECHNICAL_SPECIFICATION.md](TECHNICAL_SPECIFICATION.md)).
 
-### Infrastructure layer (shared across all markets)
+### Infrastructure layer (shared across all markets) — implemented
 
 | Contract | Role |
 |---|---|
@@ -63,21 +63,23 @@ The protocol is composed of nine Soroban contracts organized in three layers:
 | `Permissioning` | Account and asset eligibility registry for permissioned RWAs |
 | `RiskControl` | Global pause, multi-pauser roles, rolling 24h circuit breaker |
 
-### Tokenization layer (per underlying asset)
+### Tokenization layer (per underlying asset) — implemented
 
 | Contract | Role |
 |---|---|
-| `SYWrapper` | Wraps the underlying asset into standardized SY shares; exchange rate grows if the underlying rebases, otherwise value is tracked through the oracle |
-| `PrincipalManager` | Mints PT + YT from SY shares; settles both at maturity |
+| `SYWrapper` | Wraps the underlying asset into standardized SY shares; exchange rate grows if the underlying rebases, otherwise value is tracked through the oracle. Deposit/withdraw are eligibility-gated, and `remediate()` lets an issuer-authorized admin recover a single revoked account's balance without touching other depositors' shares. |
+| `PrincipalManager` | Mints PT + YT from SY shares; settles both at maturity. Both mint and redeem are eligibility-gated. |
 
-### Market layer (per maturity date)
+### Market layer (per maturity date) — mixed
 
-| Contract | Role |
-|---|---|
-| `PTToken` | Standalone SEP-41 Principal Token |
-| `YTToken` | Standalone SEP-41 Yield Token with claimable yield |
-| `MarketPool` | Yield-curve AMM for PT ↔ SY trading (time-aware, no LP impermanent loss from time decay) |
-| `Router` | Single-transaction orchestration: wrap, mint, swap, recombine, redeem |
+| Contract | Status | Role |
+|---|---|---|
+| `PTToken` | Implemented | Standalone SEP-41 Principal Token. Transfers check both sender and recipient eligibility, at both the account level and a per-token asset level — PT and YT can carry independent eligibility policies. |
+| `YTToken` | Implemented | Standalone SEP-41 Yield Token with continuous yield accrual and claiming, gated the same way as PTToken. |
+| `MarketPool` | Not yet implemented | Yield-curve AMM for PT ↔ SY trading (time-aware, no LP impermanent loss from time decay) |
+| `Router` | Not yet implemented | Single-transaction orchestration: wrap, mint, swap, recombine, redeem |
+
+`PTToken` and `YTToken` are correct and tested in isolation, but `PrincipalManager` does not yet call them — it still tracks PT/YT balances in its own internal storage, exactly as it did before these two contracts existed. Wiring `PrincipalManager` to mint/burn through the real token contracts (and to move real `SYWrapper` shares instead of tracking deposits internally) is `Router`-integration scope, same as before.
 
 ---
 
@@ -91,7 +93,7 @@ The protocol is composed of nine Soroban contracts organized in three layers:
 
 **Single liquidity pool** — PT and YT both trade through a single PT/SY pool. YT trading is routed through a flash-mint pattern, avoiding pool fragmentation and concentrating LP capital.
 
-**Permissioned by design** — Eligibility constraints from USDY are preserved across all derived instruments. PT, YT, and SY transfers check the `Permissioning` registry so the protocol cannot be used as a compliance bypass for restricted participants.
+**Permissioned by design** — Eligibility constraints from USDY are preserved across all derived instruments. `SYWrapper` deposit/withdraw, `PrincipalManager` mint/redeem, and `PTToken`/`YTToken` transfers all check the `Permissioning` registry, on both the sending and receiving side — a revoked account is frozen, not just blocked from new destinations. PT and YT additionally check a per-token eligibility list, so the two instruments can carry different eligibility policies for the same underlying market.
 
 **Asset-agnostic** — The SYWrapper and PrincipalManager are designed for any Stellar yield-bearing asset. USDY is the first market; the same contracts extend to BENJI, USTBL, or any future RWA.
 
@@ -101,25 +103,27 @@ The protocol is composed of nine Soroban contracts organized in three layers:
 
 ## User Flows
 
-### Buy PT (fixed income)
+The flows below describe the target end-to-end product. Deposit, split, and redeem work today through direct contract calls (`SYWrapper.deposit`, `PrincipalManager.mint`/`redeem`); everything that depends on `MarketPool` or `Router` — buying PT/YT without already holding the underlying, single-transaction flows, liquidity provision, pre-maturity exit — is not yet usable, since those two contracts aren't built.
+
+### Buy PT (fixed income) — requires MarketPool
 ```
 USDY → SYWrapper → SY shares → MarketPool (swap SY for PT)
 Redeem at maturity: PT → principal value in USDY
 ```
 
-### Buy YT (yield exposure)
+### Buy YT (yield exposure) — requires Router
 ```
 USDY → Router (flash-mint) → YT-USDY
 Claim yield incrementally or redeem all at maturity
 ```
 
-### Provide liquidity
+### Provide liquidity — requires MarketPool
 ```
 PT + SY → MarketPool → LP tokens
 Earn swap fees; no time-decay impermanent loss
 ```
 
-### Full exit before maturity
+### Full exit before maturity — requires PrincipalManager.recombine(), not yet implemented
 ```
 PT + YT (equal amounts) → PrincipalManager.recombine() → SY → USDY
 ```
@@ -146,13 +150,15 @@ contracts/
   oracle_adapter/        — USDY/USDC reference value oracle
   permissioning/         — account and asset eligibility registry
   risk_control/          — pause, pauser roles, rolling circuit breaker
-  sy_wrapper/            — standardized yield wrapper (SY-USDY)
-  principal_manager/     — tokenization engine: mints/burns PT and YT
+  sy_wrapper/            — standardized yield wrapper (SY-USDY); remediate() for compliance recovery
+  principal_manager/     — tokenization engine: mints/burns PT and YT internally
+  pt_token/              — standalone SEP-41 Principal Token
+  yt_token/              — standalone SEP-41 Yield Token with yield accrual/claiming
 
 Cargo.toml               — workspace (Soroban SDK 26.x, Rust 2021)
 TECHNICAL_SPECIFICATION.md — full protocol spec, AMM math, settlement, storage
 ARCHITECTURE.md          — contract diagrams, sequence flows, deployment order
-PROOF_OF_CONCEPT.md      — current POC scope, what is built, how to run it
+PROOF_OF_CONCEPT.md      — implemented scope, what is built, how to run it
 SECURITY.md              — threat model, per-contract security properties
 DEPLOYMENT.md            — Stellar CLI deployment guide
 AUDIT_REVIEW.md          — security findings tracker
@@ -177,7 +183,7 @@ cargo build --target wasm32-unknown-unknown --release
 
 WASM artifacts are produced in `target/wasm32-unknown-unknown/release/`.
 
-See [PROOF_OF_CONCEPT.md](PROOF_OF_CONCEPT.md) for the current POC scope and test instructions.  
+See [PROOF_OF_CONCEPT.md](PROOF_OF_CONCEPT.md) for the current implemented scope and test instructions.  
 See [DEPLOYMENT.md](DEPLOYMENT.md) for testnet and mainnet deployment.
 
 ---
@@ -188,7 +194,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for testnet and mainnet deployment.
 |---|---|
 | [TECHNICAL_SPECIFICATION.md](TECHNICAL_SPECIFICATION.md) | Full protocol spec: all nine contracts, AMM invariant, settlement math, fee structure, storage design, error codes, constants |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Contract interaction diagrams, sequence flows (mint, swap, redeem, flash-mint YT), AMM curve, deployment order |
-| [PROOF_OF_CONCEPT.md](PROOF_OF_CONCEPT.md) | Current POC: five implemented contracts, what they demonstrate, test coverage, build instructions |
+| [PROOF_OF_CONCEPT.md](PROOF_OF_CONCEPT.md) | Seven implemented contracts, what they demonstrate, test coverage, build instructions |
 | [SECURITY.md](SECURITY.md) | Threat model, per-contract security properties, incident response |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Step-by-step Stellar CLI deployment for testnet and mainnet |
 | [AUDIT_REVIEW.md](AUDIT_REVIEW.md) | Security findings, status tracking, open items |
@@ -196,15 +202,13 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for testnet and mainnet deployment.
 
 ---
 
-## Development Roadmap
+## Development Status
 
-### Phase 1 — Proof of Concept (complete)
-Five foundational contracts implemented and tested on Soroban:
-OracleAdapter, Permissioning, RiskControl, SYWrapper, PrincipalManager.
-See [PROOF_OF_CONCEPT.md](PROOF_OF_CONCEPT.md) for full details.
+### Implemented and tested
+Seven of nine contracts, unit-tested on Soroban: `OracleAdapter`, `Permissioning`, `RiskControl`, `SYWrapper`, `PrincipalManager`, `PTToken`, `YTToken`. Eligibility is enforced at every deposit, withdrawal, mint, redeem, and PT/YT transfer, with asymmetric per-token policies and a compliance-recovery path (`SYWrapper.remediate()`) for accounts an issuer has revoked. See [PROOF_OF_CONCEPT.md](PROOF_OF_CONCEPT.md) for full details.
 
-### Phase 2 — Full Protocol
-- Standalone SEP-41 `PTToken` and `YTToken` with transfer permissioning and yield claiming.
+### Not yet implemented
+- Wiring `PrincipalManager` to actually call `SYWrapper` and mint/burn through the real `PTToken`/`YTToken` contracts, instead of tracking balances internally as it does today.
 - `MarketPool` — yield-curve AMM with time-aware invariant, built-in implied-rate oracle, and LP fee distribution.
 - `Router` — single-transaction user flows including flash-mint YT and flash-redeem YT patterns.
 - Fee governance with timelock, protocol treasury accumulation.

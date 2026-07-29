@@ -1,12 +1,12 @@
-# Phase 2 Design — Compliant PT/YT Tokens and Settlement Extensions
+# Compliant Settlement Design — PT/YT Tokens and Permissioning Extensions
 
-Scope for this branch (`feature/phase2-compliant-pt-yt-settlement`), matching the deliverables committed to in `PRODUCT_CONCEPT_AND_COMPETITOR_ANALYSIS.md` §4/§6:
+Scope for this branch (`feature/phase2-compliant-pt-yt-settlement` — the branch name predates this file's rename), matching the deliverables committed to in `PRODUCT_CONCEPT_AND_COMPETITOR_ANALYSIS.md` §4/§6:
 
-1. `PTToken` — standalone SEP-41 Principal Token.
-2. `YTToken` — standalone SEP-41 Yield Token with claimable yield.
-3. Close the compliance gap found during audit: `Permissioning` checks extended to `SYWrapper.deposit`/`withdraw` and `PrincipalManager.redeem`.
-4. Clawback Propagation on `SYWrapper`.
-5. `LiquidationAdapter` — interface and design only in this pass (depends on an external Blend integration decision the team hasn't made yet; implementing against an assumed interface would be guesswork).
+1. `PTToken` — standalone SEP-41 Principal Token. **Implemented.**
+2. `YTToken` — standalone SEP-41 Yield Token with claimable yield. **Implemented.**
+3. Close the compliance gap found during review: `Permissioning` checks extended to `SYWrapper.deposit`/`withdraw` and `PrincipalManager.redeem`. **Implemented.**
+4. Clawback Propagation on `SYWrapper`. **Implemented.**
+5. `LiquidationAdapter` — interface and design only in this pass (depends on an external Blend integration decision the team hasn't made yet; implementing against an assumed interface would be guesswork). **Not implemented.**
 
 Out of scope for this branch: `MarketPool`, `Router`, asymmetric-permissioning admin tooling beyond the primitive itself. Each gets its own branch once this lands, per TECHNICAL_SPECIFICATION.md §6/§7 sequencing.
 
@@ -49,13 +49,13 @@ This implementation uses `Permissioning.is_allowed_for_asset(to, asset_key)` ins
 ### 1.1 PTToken interface
 
 ```rust
-fn initialize(env, admin: Address, minter: Address, permissioning: Address, maturity: u64,
+fn initialize(env, admin: Address, permissioning: Address, maturity: u64,
               name: String, symbol: String, decimals: u32);
-// `minter` is NOT set here — matches the two-phase init in TECHNICAL_SPECIFICATION.md §6.2 to
-// break the PrincipalManager <-> PTToken circular dependency. initialize() takes a placeholder
-// and set_minter() locks it in once PrincipalManager exists.
+// No minter parameter here at all — matches the two-phase init in TECHNICAL_SPECIFICATION.md
+// §6.2 to break the PrincipalManager <-> PTToken circular dependency. set_minter() registers
+// the minter separately, once PrincipalManager exists.
 
-fn set_minter(env, admin: Address, minter: Address);   // one-time, reverts if already set
+fn set_minter(env, admin: Address, minter: Address);   // one-time, reverts MinterAlreadySet if already set
 
 // SEP-41
 fn transfer(env, from: Address, to: Address, amount: i128);
@@ -77,26 +77,33 @@ fn maturity(env) -> u64;
 fn minter(env) -> Address;
 ```
 
-Storage: `Admin`, `Minter` (Option, unset until `set_minter`), `Permissioning`, `Maturity`, `TotalSupply` in `instance`; `Balance(Address)`, `Allowance(Address, Address)` in `persistent` with TTL extension on every touch (same `BALANCE_TTL_LEDGERS` constant used elsewhere in the codebase).
+Storage: `Admin`, `Minter` (absent until `set_minter`), `Permissioning`, `Maturity`, `Name`, `Symbol`, `Decimals`, `TotalSupply` in `instance`; `Balance(Address)`, `Allowance(Address, Address)` in `persistent` with TTL extension on every touch (same `BALANCE_TTL_LEDGERS` constant used elsewhere in the codebase).
 
-Errors: `AlreadyInitialized`, `Unauthorized`, `NotInitialized`, `MinterAlreadySet`, `ZeroAmount`, `InsufficientBalance`, `InsufficientAllowance`, `PermissionDenied`.
+Errors: `AlreadyInitialized`, `Unauthorized`, `NotInitialized`, `ZeroAmount`, `InsufficientBalance`, `InsufficientAllowance`, `PermissionDenied`, `MinterAlreadySet`, `MinterNotSet`.
 
 ### 1.2 YTToken interface
 
-Same as PTToken, plus the yield-index mechanism from TECHNICAL_SPECIFICATION.md §5.5:
+Same as PTToken (including no minter parameter in `initialize`), plus the yield-index mechanism from TECHNICAL_SPECIFICATION.md §5.5:
 
 ```rust
-fn initialize(env, admin, minter_placeholder, permissioning, oracle, maturity, name, symbol, decimals);
+fn initialize(env, admin, permissioning, oracle, maturity, name, symbol, decimals);
 fn set_minter(env, admin, minter);
 
 // yield accrual
-fn update_yield_index(env);              // permissionless — pulls current oracle rate, advances index
+fn update_yield_index(env);              // permissionless — requires fresh oracle, advances index
 fn claim_yield(env, from: Address) -> i128;
 fn accrued_yield_index(env) -> i128;
 fn last_claimed_index(env, account: Address) -> i128;
+fn pending_claim(env, account: Address) -> i128;   // settled-but-unclaimed amount
 ```
 
-`claim_yield` computes `yt_balance[from] * (accrued_yield_index - last_claimed_index[from]) / SCALE`, resets the caller's snapshot, and — in this branch — records the claim as an event rather than dispatching an actual underlying transfer, matching the POC's existing convention in `PrincipalManager` ("computed and returned but not dispatched... Phase 2 integration milestone once Router is available"). Wiring the real transfer is a Router-branch concern, not this one.
+`claim_yield` settles the caller (see §1.3), then returns and zeroes their accumulated `PendingClaim` — in this branch that's computed and recorded as an event rather than dispatched as an actual underlying transfer, matching `PrincipalManager.redeem`'s existing "computed and returned but not dispatched" convention. Wiring the real transfer, along with wiring `PrincipalManager` to call `YTToken` at all, is a `Router`-integration concern, not this one.
+
+Errors: same set as PTToken, plus `OracleStale` (`update_yield_index` called when the oracle isn't fresh).
+
+### 1.3 Yield-accounting correctness (settle-before-mutate)
+
+Every balance-changing path (`mint`, `burn`, `transfer`, `transfer_from`) calls an internal `settle(account)` for each affected account **before** its balance changes: it computes `balance * (current_index - account's_last_index) / SCALE`, adds that to the account's `PendingClaim`, and advances `LastClaimedIndex` to the current index. Skipping this is a standard reward-accounting bug class — a buyer could otherwise receive yield accrued before they held the position (buying in right before a large index update), or a seller could lose yield already earned (transferring out right after one). Both are covered by regression tests (`late_buyer_does_not_receive_prior_yield`, `transfer_settles_both_sides`).
 
 ---
 
@@ -113,16 +120,17 @@ This is a breaking change to both contracts' `initialize` signatures (`SYWrapper
 
 ## 3. Clawback Propagation
 
-New admin-authorized function on `SYWrapper` (the contract that actually holds pooled underlying reserves):
+Admin-authorized function on `SYWrapper` (the contract that actually holds pooled underlying reserves):
 
 ```rust
 fn remediate(env, caller: Address, account: Address, shares: i128) -> i128;
 ```
 
 - `caller.require_auth()`; `caller` must equal `SYWrapper`'s admin (same `assert_admin` pattern already in the contract) — in production this role is expected to be a compliance-multisig the issuer has authorized, not the day-to-day protocol admin key, but that's an operational/deployment decision, not something the contract can enforce on its own.
+- **`account` must already be revoked in Permissioning** (`is_allowed(account) == false`), enforced by `assert_revoked`, or the call reverts `AccountNotRevoked`. Without this, an admin — or anyone who compromised that key — could call `remediate()` against any depositor regardless of whether they'd actually been flagged. This requirement was added after an initial version shipped without it (see §0.1); it also means revoking (Permissioning's admin) and remediating (SYWrapper's admin) are enforced as separate actions, which can be held by separate keys.
 - Burns exactly `shares` from `Balance(account)` — never more than that account holds, so co-depositors are structurally unaffected.
 - Reduces `TotalShares`/`TotalUnderlying` and transfers the equivalent underlying out to `caller` (the compliance role forwards it to the issuer off-chain, or a future extension could take an explicit `to: Address` — kept as `caller` for this pass to minimize new trust assumptions).
-- Emits a `remediate` event `(caller, account, shares, underlying_released)` for audit trail.
+- Emits a `remediate` event `(caller, account, shares, underlying_released)` for the audit trail.
 
 This only touches `SYWrapper`'s own internal balance — it does not call Stellar's native SAC clawback op, and it doesn't touch `PrincipalManager`'s PT/YT balances directly (those net out naturally: if `PrincipalManager.redeem` is later called against a remediated account's now-reduced SY entitlement, the existing formulas hold without special-casing). PT/YT-side remediation (burning a flagged account's PT/YT balance directly) is left for the `PrincipalManager`-owning branch once `PTToken`/`YTToken` are live and holding real balances, since right now `PrincipalManager` still tracks PT/YT internally.
 

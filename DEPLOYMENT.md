@@ -2,15 +2,19 @@
 
 ## Overview
 
-The protocol deploys five independent Soroban contracts. They must be initialized in dependency order because later contracts reference earlier ones by address.
+Seven of the protocol's nine Soroban contracts are implemented. They must be initialized in dependency order because later contracts reference earlier ones by address. (`MarketPool` and `Router` are not yet implemented and aren't part of this guide.)
 
 ```
 1. OracleAdapter
 2. Permissioning
-3. SYWrapper          (needs: underlying asset address)
-4. RiskControl        (standalone)
+3. RiskControl        (standalone)
+4. SYWrapper          (needs: underlying asset address, Permissioning)
 5. PrincipalManager   (needs: SYWrapper, OracleAdapter, Permissioning, RiskControl)
+6. PTToken            (needs: Permissioning, maturity — not yet called by PrincipalManager)
+7. YTToken            (needs: Permissioning, OracleAdapter, maturity — not yet called by PrincipalManager)
 ```
+
+`PrincipalManager` does not yet call `SYWrapper`, `PTToken`, or `YTToken` — it still mints/burns PT and YT against its own internal balance maps. Deploying `PTToken`/`YTToken` today gives you correct, tested standalone contracts, but they aren't reachable through `PrincipalManager`'s mint/redeem flow yet. See PROOF_OF_CONCEPT.md's Known Limitations.
 
 ## Build WASM artifacts
 
@@ -27,6 +31,10 @@ Artifacts:
 | SYWrapper | `target/wasm32-unknown-unknown/release/principal_sy_wrapper.wasm` |
 | PrincipalManager | `target/wasm32-unknown-unknown/release/principal_manager.wasm` |
 | RiskControl | `target/wasm32-unknown-unknown/release/principal_risk_control.wasm` |
+| PTToken | `target/wasm32-unknown-unknown/release/principal_pt_token.wasm` |
+| YTToken | `target/wasm32-unknown-unknown/release/principal_yt_token.wasm` |
+
+(Or `target/wasm32v1-none/release/`, depending on Rust toolchain version — `wasm32-unknown-unknown` requires Rust ≤ 1.81; newer toolchains require `wasm32v1-none`.)
 
 ## Testnet deployment
 
@@ -95,7 +103,8 @@ stellar contract invoke --id sy_wrapper \
   --source admin --network testnet \
   -- initialize \
      --admin $(stellar keys address admin) \
-     --underlying <USDY_CONTRACT_ID>
+     --underlying <USDY_CONTRACT_ID> \
+     --permissioning $(stellar contract id alias permissioning --network testnet)
 ```
 
 ### 5. PrincipalManager
@@ -117,6 +126,41 @@ stellar contract invoke --id principal_manager \
      --permissioning $(stellar contract id alias permissioning --network testnet) \
      --maturity <MATURITY_UNIX_TS>
 ```
+
+### 6. PTToken and YTToken
+
+Standalone, tested contracts — deploying them is optional at this stage since `PrincipalManager` doesn't call them yet (see Overview above). Use the same `<MATURITY_UNIX_TS>` as step 5 if deploying for the same market.
+
+```bash
+stellar contract deploy \
+  --wasm target/wasm32-unknown-unknown/release/principal_pt_token.wasm \
+  --source admin --network testnet \
+  --alias pt_token
+
+stellar contract invoke --id pt_token \
+  --source admin --network testnet \
+  -- initialize \
+     --admin $(stellar keys address admin) \
+     --permissioning $(stellar contract id alias permissioning --network testnet) \
+     --maturity <MATURITY_UNIX_TS> \
+     --name "Principal Token USDY" --symbol "PT-USDY" --decimals 7
+
+stellar contract deploy \
+  --wasm target/wasm32-unknown-unknown/release/principal_yt_token.wasm \
+  --source admin --network testnet \
+  --alias yt_token
+
+stellar contract invoke --id yt_token \
+  --source admin --network testnet \
+  -- initialize \
+     --admin $(stellar keys address admin) \
+     --permissioning $(stellar contract id alias permissioning --network testnet) \
+     --oracle $(stellar contract id alias oracle_adapter --network testnet) \
+     --maturity <MATURITY_UNIX_TS> \
+     --name "Yield Token USDY" --symbol "YT-USDY" --decimals 7
+```
+
+`set_minter` is not called here because no contract currently mints through `PTToken`/`YTToken` — calling it against `PrincipalManager`'s address today would register a minter that never actually calls `mint`/`burn`.
 
 ## Post-deployment checklist
 

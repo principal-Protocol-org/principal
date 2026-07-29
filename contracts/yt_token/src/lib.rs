@@ -6,7 +6,7 @@
 //!   `set_minter` (two-phase init, same rationale as PTToken).
 //! * Transfers gated the same way as PTToken: `Permissioning.is_allowed(to)` (coarse) AND
 //!   `Permissioning.is_allowed_for_asset(to, this_contract_address)` (per-instrument), so PT
-//!   and YT can carry independent eligibility policies. See PHASE2_DESIGN.md §1.
+//!   and YT can carry independent eligibility policies. See COMPLIANT_SETTLEMENT_DESIGN.md §1.
 //! * Continuous yield accrual via a global index (TECHNICAL_SPECIFICATION.md §5.5), advanced
 //!   by `update_yield_index` and claimed via `claim_yield`.
 //!

@@ -21,7 +21,7 @@
 //! (expected in production to be an issuer-authorized compliance role, not the routine protocol
 //! admin key) burn a single flagged account's own SY balance and release the equivalent
 //! underlying, without touching any other depositor's share of the pool. See
-//! PHASE2_DESIGN.md §2-3 for the full rationale.
+//! COMPLIANT_SETTLEMENT_DESIGN.md §2-3 for the full rationale.
 
 #![no_std]
 

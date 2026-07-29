@@ -51,12 +51,14 @@ The protocol is **asset-agnostic**. Any Stellar yield-bearing asset represented 
 | `OracleAdapter` | One per underlying asset | Reference value feed for the underlying asset, with monotonic timestamps and freshness controls |
 | `Permissioning` | One per underlying asset or issuer policy | Account and per-asset eligibility registry for permissioned RWAs |
 | `RiskControl` | One per underlying asset or protocol risk domain | Global pause, pauser roles, and rolling deposit circuit breaker |
-| `SYWrapper` | One per underlying asset | Standardized yield wrapper; accepts a SAC-compatible yield-bearing asset and issues SY shares |
-| `PrincipalManager` | One per underlying asset and maturity | Splits SY shares into PT/YT notional claims and handles maturity settlement |
-| `PTToken` | One per maturity | SEP-41 Principal Token representing the fixed principal claim |
-| `YTToken` | One per maturity | SEP-41 Yield Token representing the future yield claim and claimable yield index |
-| `MarketPool` | One per maturity | Yield-curve AMM for PT ↔ SY trading |
-| `Router` | Shared across registered markets | Single-transaction orchestration for wrapping, minting, swapping, recombining, redeeming, and liquidity operations |
+| `SYWrapper` | One per underlying asset | Standardized yield wrapper; accepts a SAC-compatible yield-bearing asset and issues SY shares. Deposit and withdraw are eligibility-gated on both sides; `remediate()` recovers a single revoked account's balance without affecting other depositors. |
+| `PrincipalManager` | One per underlying asset and maturity | Splits SY shares into PT/YT notional claims and handles maturity settlement. Mint and redeem are both eligibility-gated. |
+| `PTToken` | One per maturity | SEP-41 Principal Token representing the fixed principal claim. Transfers check eligibility on both sender and recipient, at both the account level and a per-token asset level. |
+| `YTToken` | One per maturity | SEP-41 Yield Token representing the future yield claim, with continuous yield accrual and claiming. Gated the same way as PTToken; `update_yield_index` requires a fresh oracle. |
+| `MarketPool` | One per maturity | Yield-curve AMM for PT ↔ SY trading — not yet implemented |
+| `Router` | Shared across registered markets | Single-transaction orchestration for wrapping, minting, swapping, recombining, redeeming, and liquidity operations — not yet implemented |
+
+`PTToken` and `YTToken` carry independent eligibility policies by design: each checks `Permissioning.is_allowed_for_asset(account, own_contract_address)` in addition to the shared account-level `is_allowed()` gate, so an admin can grant an account access to PT without granting YT, or vice versa, using allow-list infrastructure shared with every other contract rather than a new mechanism per token.
 
 ### 2.2 Contract dependency graph
 
@@ -94,6 +96,7 @@ flowchart TD
     YTToken --> Permissioning
     YTToken --> OracleAdapter
     SYWrapper --> RiskControl
+    SYWrapper --> Permissioning
 ```
 
 ### 2.3 Asset-agnostic design
@@ -120,9 +123,11 @@ Each set of per-maturity contracts (`PrincipalManager`, `PTToken`, `YTToken`, `M
     Router (shared — registered for all maturities via register_market)
 ```
 
-**Two-phase token initialization:** `PTToken` and `YTToken` are deployed before `PrincipalManager` (so their addresses can be passed to it at init), then `set_minter(principal_manager_address)` is called on each after `PrincipalManager` is deployed. This breaks the circular dependency. Until `set_minter` is called, `mint` and `burn` revert with `Unauthorized`.
+**Two-phase token initialization:** `PTToken` and `YTToken` are deployed before `PrincipalManager` (so their addresses can be passed to it at init), then `set_minter(principal_manager_address)` is called on each after `PrincipalManager` is deployed. This breaks the circular dependency. Until `set_minter` is called, `mint` and `burn` revert with `MinterNotSet`; `set_minter` itself can only be called once and reverts with `MinterAlreadySet` on a second attempt. Note that in the current implementation, `PrincipalManager` does not yet call `PTToken`/`YTToken` at all — it still mints/burns against its own internal balance maps, so `set_minter` is not yet exercised end-to-end (see PROOF_OF_CONCEPT.md's Known Limitations).
 
 A new asset is onboarded by deploying a fresh infrastructure set and per-maturity contracts, then registering them in the Router. No changes to existing deployed contracts are required.
+
+**Compliance recovery:** `SYWrapper.remediate()` lets an issuer-authorized admin recover a single revoked account's SY balance, releasing the equivalent underlying without touching any other depositor's share of the pooled reserve. It only acts on accounts Permissioning has already marked ineligible (`is_allowed(account) == false`) — revoking (Permissioning's admin) and remediating (SYWrapper's admin) are enforced as separate actions, which can be held by separate keys, so a single compromised key cannot both flag and drain an account unilaterally.
 
 ### 2.4 Core on-chain sequences
 
@@ -144,20 +149,24 @@ sequenceDiagram
     RT->>RC: check_deposit(asset_amount)
     RC-->>RT: ok or revert Paused/CircuitBreakerTripped
     RT->>SYW: deposit(from=user, amount=asset_amount)
+    SYW->>PERM: is_allowed(user)
+    PERM-->>SYW: true or revert PermissionDenied
     SYW->>SYW: shares = amount * RATE_SCALE / exchange_rate
     SYW-->>RT: shares_minted
-    RT->>PERM: is_allowed(user)
-    PERM-->>RT: true or false
-    RT->>OA: is_fresh(MAX_ORACLE_STALENESS_SECS)
-    OA-->>RT: true or revert OracleStale
-    RT->>OA: get_reference_value()
-    OA-->>RT: oracle_rate
     RT->>PM: mint(from=user, sy_shares)
+    PM->>PERM: is_allowed(user)
+    PERM-->>PM: true or revert PermissionDenied
+    PM->>OA: is_fresh(MAX_ORACLE_STALENESS_SECS)
+    OA-->>PM: true or revert OracleStale
+    PM->>OA: get_reference_value()
+    OA-->>PM: oracle_rate
     PM->>PT: mint(to=user, amount=notional)
     PM->>YT: mint(to=user, amount=notional)
     PM-->>RT: MintResult pt_minted and yt_minted
     RT-->>U: MintResult
 ```
+
+`SYWrapper` and `PrincipalManager` each check `Permissioning` independently — neither relies on `Router` (or any other caller) to have checked on its behalf, so calling either contract directly, bypassing `Router` entirely, is exactly as eligibility-gated as going through it.
 
 #### AMM swap: SY → PT
 
@@ -210,6 +219,7 @@ sequenceDiagram
     participant U as User
     participant RT as Router
     participant PM as PrincipalManager
+    participant PERM as Permissioning
     participant OA as OracleAdapter
     participant PT as PTToken
     participant YT as YTToken
@@ -218,6 +228,8 @@ sequenceDiagram
     U->>RT: redeem_at_maturity(pt_amount, yt_amount)
     RT->>PM: redeem(from=user, pt_amount, yt_amount)
     PM->>PM: assert now at or after maturity
+    PM->>PERM: is_allowed(user)
+    PERM-->>PM: true or revert PermissionDenied
     PM->>OA: is_fresh(MAX_ORACLE_STALENESS_SECS)
     OA-->>PM: true or revert OracleStale
     PM->>OA: get_reference_value()
@@ -231,6 +243,8 @@ sequenceDiagram
     PM-->>RT: RedeemResult underlying_from_pt and underlying_from_yt
     RT-->>U: underlying asset delivered
 ```
+
+Eligibility is checked at redemption now, not only at mint — closing a gap where a revoked account could previously still redeem PT/YT for the underlying asset.
 
 #### Pre-maturity recombination
 
@@ -400,10 +414,12 @@ flowchart LR
 | Permissioning | `acc_grant`, `acc_rev`, `ast_grant`, `ast_rev` | Refresh eligibility cache for affected account and asset |
 | SYWrapper | `deposit` | Update TVL and SY supply; push market update |
 | SYWrapper | `withdraw` | Update TVL and SY supply |
+| SYWrapper | `remediate` | Log compliance-recovery action for audit trail; refresh affected account's balance |
 | PrincipalManager | `mint` | Update outstanding PT/YT supply and user position index |
 | PrincipalManager | `redeem` | Update settlement log and reduce supply |
 | PrincipalManager | `recombine` | Update supply and user position index |
-| PTToken / YTToken | `transfer`, `mint`, `burn` | Update holder balances and transfer history |
+| PTToken / YTToken | `transfer`, `mint`, `burn`, `min_set` | Update holder balances, transfer history, and registered minter |
+| YTToken | `idx_up`, `claim` | Update displayed accrued yield index and claim history |
 | MarketPool | `swap` | Update pool reserves; recompute implied rate; append rate history |
 | MarketPool | `add_liq` | Update pool depth and LP positions |
 | MarketPool | `rem_liq` | Update pool depth and LP positions |
@@ -975,7 +991,7 @@ OracleAdapter contract (on-chain)
 | `require_auth()` on all mutations | Every state-changing call requires Soroban-native authorization |
 | Monotonic oracle timestamps | New values rejected if `timestamp ≤ stored_timestamp` |
 | Oracle freshness at mint/redeem | `is_fresh()` called before any operation that prices against the oracle |
-| Eligibility checks | `Permissioning.is_allowed()` at every mint, transfer, and redemption for permissioned assets |
+| Eligibility checks | `Permissioning.is_allowed()` (account-level) at every deposit, withdraw, mint, and redeem, on both the sending and receiving side — not only the recipient — so a revoked account is frozen rather than merely blocked from new positions. `PTToken`/`YTToken` transfers additionally check `is_allowed_for_asset()` per token, enabling independent PT/YT eligibility policies. |
 | Global pause | `RiskControl.pause()` halts all minting, trading, and redemption |
 | Rolling circuit breaker | Caps deposit volume per 24-hour window; resets automatically |
 | Slippage protection | `min_out` on every Router swap; reverts with `SlippageExceeded` |
@@ -1017,7 +1033,7 @@ Stage A — Infrastructure (once per underlying asset)
   Step 1  OracleAdapter       no dependencies
   Step 2  Permissioning       no dependencies
   Step 3  RiskControl         no dependencies
-  Step 4  SYWrapper           needs: underlying asset SAC address
+  Step 4  SYWrapper           needs: underlying asset SAC address, Permissioning
 
 Stage B — Per-maturity contracts (repeat per expiry date)
   Step 5  PTToken             initialize without minter
@@ -1139,15 +1155,22 @@ Grant-review expectation: all user positions, LP balances, eligibility records, 
 | Contract | Symbol | Payload |
 |---|---|---|
 | OracleAdapter | `ref_set` | `(value: i128, timestamp: u64)` |
-| Permissioning | `acc_grant` | `(account: Address)` |
-| Permissioning | `acc_rev` | `(account: Address)` |
-| Permissioning | `ast_grant` | `(account: Address, asset: Address)` |
-| Permissioning | `ast_rev` | `(account: Address, asset: Address)` |
+| Permissioning | `acc_grant` | `(caller: Address, account: Address)` |
+| Permissioning | `acc_rev` | `(caller: Address, account: Address)` |
+| Permissioning | `ast_grant` | `(caller: Address, account: Address, asset: Address)` |
+| Permissioning | `ast_rev` | `(caller: Address, account: Address, asset: Address)` |
 | SYWrapper | `deposit` | `(from, amount, shares_minted, exchange_rate)` |
 | SYWrapper | `withdraw` | `(from, shares, underlying_returned)` |
+| SYWrapper | `remediate` | `(caller, account, shares, underlying_released)` |
 | PrincipalManager | `mint` | `(from, sy_shares, pt_minted, yt_minted, oracle_rate)` |
 | PrincipalManager | `redeem` | `(from, pt, yt, underlying_pt, underlying_yt, final_rate)` |
 | PrincipalManager | `recombine` | `(from, pt_amount, sy_returned)` |
+| PTToken / YTToken | `transfer` | `(from, to, amount)` |
+| PTToken / YTToken | `mint` | `(to, amount)` |
+| PTToken / YTToken | `burn` | `(from, amount)` |
+| PTToken / YTToken | `min_set` | `(minter: Address)` |
+| YTToken | `idx_up` | `(new_index: i128, oracle_rate: i128)` |
+| YTToken | `claim` | `(from, amount)` |
 | MarketPool | `swap` | `(from, token_in, amount_in, token_out, amount_out, fee, r_implied)` |
 | MarketPool | `add_liq` | `(from, pt_in, sy_in, lp_minted)` |
 | MarketPool | `rem_liq` | `(from, lp_burned, pt_out, sy_out)` |
