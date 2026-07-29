@@ -189,7 +189,7 @@ stellar contract invoke --id <USDY_CONTRACT_ID> --source admin --network testnet
 
 ### 7. RecoveryEscrow
 
-No admin of its own — `initialize` just verifies that `SYWrapper`, `PTToken`, and `YTToken` all report the same `underlying_address()` (reverts `PositionUnderlyingMismatch` otherwise), so any key can deploy and initialize it.
+No admin of its own — `initialize` just verifies that `SYWrapper`, `PTToken`, `YTToken`, and `PrincipalManager` all report the same `underlying_address()` (reverts `PositionUnderlyingMismatch` otherwise), so any key can deploy and initialize it. Must be deployed after `PrincipalManager` (step 6), since it now needs that address too.
 
 ```bash
 stellar contract deploy \
@@ -201,9 +201,10 @@ stellar contract invoke --id recovery_escrow \
   --source admin --network testnet \
   -- initialize \
      --underlying <USDY_CONTRACT_ID> \
-     --sy-wrapper $(stellar contract id alias sy_wrapper --network testnet) \
-     --pt-token   $(stellar contract id alias pt_token --network testnet) \
-     --yt-token   $(stellar contract id alias yt_token --network testnet)
+     --sy-wrapper       $(stellar contract id alias sy_wrapper --network testnet) \
+     --pt-token         $(stellar contract id alias pt_token --network testnet) \
+     --yt-token         $(stellar contract id alias yt_token --network testnet) \
+     --principal-manager $(stellar contract id alias principal_manager --network testnet)
 ```
 
 Then wire it into each token contract — one-time, admin-gated, must be signed by the underlying SAC's real admin (same key as steps 4–6):

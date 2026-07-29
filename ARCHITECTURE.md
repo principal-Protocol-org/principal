@@ -142,7 +142,7 @@ Each set of per-maturity contracts (`PrincipalManager`, `PTToken`, `YTToken`, `M
 
 A new asset is onboarded by deploying a fresh infrastructure set and per-maturity contracts, then registering them in the Router. No changes to existing deployed contracts are required.
 
-**Compliance recovery:** `RecoveryEscrow` is the one place that authenticates the underlying SAC's real `admin()` (read live, no separate key of its own) and verifies a target is actually deauthorized (`!underlying_SAC.authorized(account)`) before acting. `SYWrapper.seize`, `PTToken.seize`, and `YTToken.seize` each trust calls only from their own configured `RecoveryEscrow` address (wired once via `set_recovery_escrow`, mirroring the `set_minter` pattern) — none of them re-derive that authority themselves. `RecoveryEscrow.seize_sy` seizes and immediately unwraps into raw underlying, ready for the issuer's native SAC `clawback`. `seize_pt`/`seize_yt` seize correctly but cannot yet be redeemed at maturity — that depends on `PrincipalManager` being wired to call the token contracts, which it isn't yet (see §2.4 below and PROOF_OF_CONCEPT.md's Known Limitations).
+**Compliance recovery:** `RecoveryEscrow` is the one place that authenticates the underlying SAC's real `admin()` (read live, no separate key of its own) and verifies a target is actually deauthorized (`!underlying_SAC.authorized(account)`) before acting. `SYWrapper.seize`, `PTToken.seize`, and `YTToken.seize` each trust calls only from their own configured `RecoveryEscrow` address (wired once via `set_recovery_escrow`, mirroring the `set_minter` pattern) — none of them re-derive that authority themselves. `RecoveryEscrow.seize_sy` seizes and immediately unwraps into raw underlying, ready for the issuer's native SAC `clawback`. `seize_pt`/`seize_yt` seize a flagged position; `finalize_pt`/`finalize_yt` complete the unwind at or after maturity by calling `PrincipalManager.redeem(from=self, ...)` on the escrow's own already-seized balance, releasing underlying the same way `seize_sy` does immediately.
 
 ### 2.4 Core on-chain sequences
 
@@ -450,7 +450,7 @@ flowchart LR
 | SYWrapper | `sy_xfer` | Update sender/recipient SY balances (used by `PrincipalManager.mint` taking custody) |
 | SYWrapper / PTToken / YTToken | `seize` | Log compliance-recovery action for audit trail; refresh affected account's and escrow's balance |
 | SYWrapper / PTToken / YTToken | `esc_set` | Record the configured `RecoveryEscrow` address |
-| RecoveryEscrow | `seize_sy`, `seize_pt`, `seize_yt` | Log the orchestrated recovery action, including the unwrapped amount for `seize_sy` |
+| RecoveryEscrow | `seize_sy`, `seize_pt`, `seize_yt`, `fin_pt`, `fin_yt` | Log the orchestrated recovery action, including the unwrapped amount for `seize_sy` and the released underlying for `fin_pt`/`fin_yt` |
 | PrincipalManager | `mint` | Update outstanding PT/YT supply and user position index |
 | PrincipalManager | `redeem` | Update settlement log and reduce supply |
 | PrincipalManager | `recombine` | Update supply and user position index |
@@ -1096,8 +1096,8 @@ Stage B — Per-maturity contracts (repeat per expiry date)
            underlying_SAC.set_authorized(principal_manager_address, true)
   Step 9  MarketPool          needs: PTToken, SYWrapper, OracleAdapter, RiskControl
 
-Stage A.5 — RecoveryEscrow (once per underlying asset, after Stage B's token contracts exist)
-  Step 4.5  RecoveryEscrow    needs: underlying SAC, SYWrapper, PTToken, YTToken
+Stage A.5 — RecoveryEscrow (once per underlying asset, after Stage B's PrincipalManager exists)
+  Step 4.5  RecoveryEscrow    needs: underlying SAC, SYWrapper, PTToken, YTToken, PrincipalManager
             SYWrapper.set_recovery_escrow(admin, escrow)
             PTToken.set_recovery_escrow(admin, escrow)
             YTToken.set_recovery_escrow(admin, escrow)

@@ -80,7 +80,7 @@ The protocol is composed of ten Soroban contracts organized in four layers. Eigh
 | `MarketPool` | Not yet implemented | Yield-curve AMM for PT ↔ SY trading (time-aware, no LP impermanent loss from time decay) |
 | `Router` | Not yet implemented | Single-transaction orchestration: wrap, mint, swap, recombine, redeem |
 
-`PrincipalManager` mints and burns through the real `PTToken`/`YTToken` contracts — PT and YT are genuine SEP-41 balances, holdable in any wallet, not tracked in `PrincipalManager`'s own storage. What's still `Router`-integration scope is the AMM and single-transaction orchestration above (`MarketPool`, `Router`), plus `RecoveryEscrow.finalize_pt`/`finalize_yt` (see [PROOF_OF_CONCEPT.md](PROOF_OF_CONCEPT.md)'s Known Limitations).
+`PrincipalManager` mints and burns through the real `PTToken`/`YTToken` contracts — PT and YT are genuine SEP-41 balances, holdable in any wallet, not tracked in `PrincipalManager`'s own storage. What's still `Router`-integration scope is the AMM and single-transaction orchestration above (`MarketPool`, `Router`); compliance recovery is fully implemented end to end, including `RecoveryEscrow.finalize_pt`/`finalize_yt`.
 
 ---
 
@@ -207,10 +207,9 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for testnet and mainnet deployment.
 ## Development Status
 
 ### Implemented and tested
-Eight of ten contracts, unit-tested on Soroban: `OracleAdapter`, `Permissioning`, `RiskControl`, `SYWrapper`, `PrincipalManager`, `PTToken`, `YTToken`, `RecoveryEscrow`. Compliance is enforced at every deposit, withdrawal, mint, redeem, and PT/YT transfer via two layers — the underlying SAC's own live `authorized()` (mandatory) and `Permissioning` (optional, e.g. asymmetric PT/YT policy) — and market creation itself requires the underlying SAC's real `admin()` to authorize it. `PrincipalManager.mint`/`redeem` call the real `SYWrapper`, `PTToken`, and `YTToken` contracts, so PT and YT are genuine, holdable SEP-41 balances, not internally tracked balances. `RecoveryEscrow.seize_sy` performs full compliance recovery (seize + unwrap, ready for the issuer's native clawback); `seize_pt`/`seize_yt` seize correctly but can't yet be redeemed at maturity — `RecoveryEscrow` doesn't yet know `PrincipalManager`'s address (see Not yet implemented, below). See [PROOF_OF_CONCEPT.md](PROOF_OF_CONCEPT.md) for full details.
+Eight of ten contracts, unit-tested on Soroban: `OracleAdapter`, `Permissioning`, `RiskControl`, `SYWrapper`, `PrincipalManager`, `PTToken`, `YTToken`, `RecoveryEscrow`. Compliance is enforced at every deposit, withdrawal, mint, redeem, and PT/YT transfer via two layers — the underlying SAC's own live `authorized()` (mandatory) and `Permissioning` (optional, e.g. asymmetric PT/YT policy) — and market creation itself requires the underlying SAC's real `admin()` to authorize it. `PrincipalManager.mint`/`redeem` call the real `SYWrapper`, `PTToken`, and `YTToken` contracts, so PT and YT are genuine, holdable SEP-41 balances, not internally tracked balances. `RecoveryEscrow` performs full compliance recovery for all three position types: `seize_sy` unwraps to underlying immediately; `seize_pt`/`seize_yt` seize a flagged position, and `finalize_pt`/`finalize_yt` redeem it through `PrincipalManager` at or after maturity, releasing underlying the same way. See [PROOF_OF_CONCEPT.md](PROOF_OF_CONCEPT.md) for full details.
 
 ### Not yet implemented
-- `RecoveryEscrow.finalize_pt`/`finalize_yt` (redeeming a seized PT/YT position at maturity and unwrapping it for native clawback) — `RecoveryEscrow.initialize` doesn't take a `PrincipalManager` address yet, so the escrow has no way to call `redeem` on its own seized position.
 - `MarketPool` — yield-curve AMM with time-aware invariant, built-in implied-rate oracle, and LP fee distribution.
 - `Router` — single-transaction user flows including flash-mint YT and flash-redeem YT patterns.
 - Fee governance with timelock, protocol treasury accumulation.

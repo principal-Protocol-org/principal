@@ -71,7 +71,7 @@
 - Holds **no admin key of its own**. Every `seize_*` call re-derives authority by reading `underlying_SAC.admin()` live and requiring that address's `require_auth()` — if the issuer rotates their admin key, the new key is authoritative immediately, with nothing stored in this contract to become stale or need updating.
 - Also requires the target account to already fail `underlying_SAC.authorized(account)` — reverts `TargetStillAuthorized` otherwise. Compliance recovery can only be used against an account the issuer has actually deauthorized, never merely because it holds a balance.
 - Single point of verification: `SYWrapper`, `PTToken`, and `YTToken` do not each re-implement issuer-identity and deauthorization checks — they trust calls from their own configured `RecoveryEscrow` address, and all of the actual authentication logic lives once here, shared across all three.
-- `seize_sy` seizes and immediately unwraps (via `SYWrapper.withdraw(from=self, to=self)`) in the same call, since SY has no maturity — the escrow ends the call holding raw underlying, ready for the issuer's native SAC clawback. `seize_pt` and `seize_yt` seize a real balance but do not yet finalize it (redeem at maturity, unwrap toward underlying) — that requires `PrincipalManager` to call the real `PTToken`/`YTToken` contracts, which it doesn't do for any caller yet (see PROOF_OF_CONCEPT.md's Known Limitations).
+- `seize_sy` seizes and immediately unwraps (via `SYWrapper.withdraw(from=self, to=self)`) in the same call, since SY has no maturity — the escrow ends the call holding raw underlying, ready for the issuer's native SAC clawback. `seize_pt`/`seize_yt` seize a real balance; `finalize_pt`/`finalize_yt` complete the unwind at or after maturity by calling `PrincipalManager.redeem(from=self, ...)`, which burns the escrow's own seized balance and pays the resulting underlying back to the escrow the same way `seize_sy` does immediately. `finalize_yt` additionally calls `env.authorize_as_current_contract` before invoking `redeem`, since `YTToken.claim_yield(from=self)` sits two call frames below `finalize_yt` (`RecoveryEscrow -> PrincipalManager -> YTToken`) and a contract's ordinary self-authorization only covers calls it makes directly — `finalize_pt` doesn't need this because `PTToken.burn`/`YTToken.burn` are minter-gated (`PrincipalManager`'s own one-frame self-authorization), not `from`-gated.
 - `initialize` verifies that `SYWrapper`, `PTToken`, and `YTToken` all report the same `underlying_address()` (reverts `PositionUnderlyingMismatch` otherwise), preventing an escrow from being accidentally or maliciously wired to contracts for different underlying assets.
 
 ### RiskControl
@@ -149,12 +149,17 @@ stellar contract invoke --id recovery_escrow --source issuer_admin \
      --account <flagged_account> \
      --shares <amount>
 
-# PT/YT: seizes the real balance into RecoveryEscrow; does not yet finalize (see PROOF_OF_CONCEPT.md)
+# PT/YT: seizes the real balance into RecoveryEscrow
 stellar contract invoke --id recovery_escrow --source issuer_admin \
   -- seize_pt --caller <issuer_admin_address> --account <flagged_account> --amount <amount>
+
+# 3. Once at or after maturity, finalize the seized PT/YT position: redeems it through
+#    PrincipalManager and pays the resulting underlying back to the escrow
+stellar contract invoke --id recovery_escrow --source issuer_admin \
+  -- finalize_pt --caller <issuer_admin_address> --pt-amount <amount>
 ```
 
-`seize_sy`/`seize_pt`/`seize_yt` all revert `Unauthorized` unless `caller` is the underlying SAC's real, live `admin()`, and `TargetStillAuthorized` unless the target is already deauthorized on that SAC. There is no separate compliance-signer role to configure — authority is always exactly the issuer's own SAC admin key, whatever it currently is.
+`seize_sy`/`seize_pt`/`seize_yt`/`finalize_pt`/`finalize_yt` all revert `Unauthorized` unless `caller` is the underlying SAC's real, live `admin()`. `seize_*` additionally revert `TargetStillAuthorized` unless the target is already deauthorized on that SAC; `finalize_*` don't repeat that check since they only ever act on the escrow's own already-seized balance, not a third party's. There is no separate compliance-signer role to configure — authority is always exactly the issuer's own SAC admin key, whatever it currently is.
 
 ## 5. Access control matrix
 
@@ -167,6 +172,7 @@ stellar contract invoke --id recovery_escrow --source issuer_admin \
 | Withdraw | — | — | SAC-authorized + eligible sender and recipient | — | — | — | — |
 | Set recovery escrow | — | — | admin (once) | — | — | admin (once) | — |
 | Seize (compliance recovery) | — | — | configured RecoveryEscrow only | — | — | configured RecoveryEscrow only | underlying SAC's real, live admin; target must already be SAC-deauthorized |
+| Finalize seized PT/YT | — | — | — | — | — | — | underlying SAC's real, live admin; acts only on the escrow's own balance, post-maturity |
 | Mint PT/YT | — | — | — | permitted user | — | registered minter only, recipient must be SAC-authorized + eligible | — |
 | Burn PT/YT | — | — | — | — | — | registered minter only, no compliance check | — |
 | Transfer PT/YT | — | — | — | — | — | SAC-authorized + eligible sender and recipient (account + per-asset) | — |
@@ -210,7 +216,7 @@ Compliance is enforced through **two layers**, checked independently on every af
 
 ## 9. Testing requirements
 
-Done, at the unit-test level (101 tests across eight contracts):
+Done, at the unit-test level (105 tests across eight contracts):
 
 - [x] Unit tests for arithmetic edge cases (zero amounts, exact-limit deposits, insufficient balance/allowance).
 - [x] Oracle failure scenarios: stale price blocks redemption (`PrincipalManager`) and blocks yield-index advancement (`YTToken`).
@@ -220,12 +226,12 @@ Done, at the unit-test level (101 tests across eight contracts):
 - [x] Compliance-recovery correctness: `seize()` on `SYWrapper`/`PTToken`/`YTToken` only affects the flagged account's own balance and requires the caller to be the one configured `RecoveryEscrow`; `RecoveryEscrow.seize_*` requires the caller to be the underlying SAC's real admin and the target to already be SAC-deauthorized; `seize_sy` unwraps to underlying in the same call; `YTToken.seize` settles both sides' pending yield before moving the balance.
 - [x] Yield-accounting correctness: late buyers don't retroactively receive prior yield; transfers and seizures settle both sides before the balance moves.
 - [x] Cross-contract integration: `PrincipalManager.mint`/`redeem` tested against real `SYWrapper`, `PTToken`, and `YTToken` deployments (not mocks) — real SY custody transfer, real PT/YT mint and burn, real underlying release, and a regression test confirming YT yield isn't paid twice through `YTToken.claim_yield`'s independent entrypoint and `PrincipalManager.redeem`.
+- [x] `RecoveryEscrow.finalize_pt`/`finalize_yt` — full seize-then-finalize flow tested against a real `PrincipalManager` deployment (not a mock), including the nested-authorization requirement `finalize_yt` needs for `YTToken.claim_yield` and a negative test for a non-issuer caller.
 - [x] Circuit breaker trip and window-reset tests.
 - [x] Admin rotation tests on all seven admin-bearing contracts.
 
 Still outstanding before mainnet deployment:
 
-- [ ] `RecoveryEscrow.finalize_pt`/`finalize_yt` and their test coverage — `RecoveryEscrow` doesn't yet know `PrincipalManager`'s address, so it can't call `redeem` on a seized position.
 - [ ] Cross-contract `RiskControl` wiring and associated integration tests.
 - [ ] `MarketPool` and `Router` test coverage once those contracts exist.
 - [ ] Third-party security audit with full access to source and test suite.
