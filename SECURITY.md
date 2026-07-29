@@ -16,6 +16,7 @@
 | Rogue RecoveryEscrow substitution | An attacker points a market's `seize()` trust at an escrow they control | `set_recovery_escrow` is a one-time, admin-gated setter on each of `SYWrapper`/`PTToken`/`YTToken` — redirecting seizure authority requires that market's own real admin, and can only ever be done once |
 | Reentrancy | State corruption | Checks-effects-interactions in `SYWrapper`: internal state is updated before the external `token::Client::transfer` call, on both `deposit` and `withdraw` |
 | Integer overflow | Incorrect accounting | Soroban `i128` arithmetic; `overflow-checks = true` in release profile |
+| YT yield-index path-dependence | Aggregate PT + YT redemptions exceed the underlying actually held, once `PrincipalManager.redeem` began treating `YTToken.claim_yield` as authoritative | `YTToken`'s accrual factor is multiplicative (`F = F * last_rate / now_rate`, telescoping exactly to `SCALE * rate_genesis / rate_now`), not additive — found and fixed during a post-implementation audit; the earlier additive formula overstated yield, unboundedly, with every extra `update_yield_index` call. See COMPLIANT_SETTLEMENT_DESIGN.md §1.3 |
 
 ## 2. Per-contract security properties
 
@@ -216,7 +217,7 @@ Compliance is enforced through **two layers**, checked independently on every af
 
 ## 9. Testing requirements
 
-Done, at the unit-test level (105 tests across eight contracts):
+Done, at the unit-test level (106 tests across eight contracts):
 
 - [x] Unit tests for arithmetic edge cases (zero amounts, exact-limit deposits, insufficient balance/allowance).
 - [x] Oracle failure scenarios: stale price blocks redemption (`PrincipalManager`) and blocks yield-index advancement (`YTToken`).
@@ -224,7 +225,7 @@ Done, at the unit-test level (105 tests across eight contracts):
 - [x] Permissioning violations: unauthorized mint reverts; revoked accounts blocked from redeem, deposit, withdraw, and PT/YT transfer on both sides.
 - [x] Market-creation gating: `initialize` rejects an admin that doesn't match the underlying SAC's real, live `admin()`.
 - [x] Compliance-recovery correctness: `seize()` on `SYWrapper`/`PTToken`/`YTToken` only affects the flagged account's own balance and requires the caller to be the one configured `RecoveryEscrow`; `RecoveryEscrow.seize_*` requires the caller to be the underlying SAC's real admin and the target to already be SAC-deauthorized; `seize_sy` unwraps to underlying in the same call; `YTToken.seize` settles both sides' pending yield before moving the balance.
-- [x] Yield-accounting correctness: late buyers don't retroactively receive prior yield; transfers and seizures settle both sides before the balance moves.
+- [x] Yield-accounting correctness: late buyers don't retroactively receive prior yield; transfers and seizures settle both sides before the balance moves; yield is path-independent across any number of intermediate `update_yield_index` calls (`yield_is_path_independent_across_many_intermediate_updates`).
 - [x] Cross-contract integration: `PrincipalManager.mint`/`redeem` tested against real `SYWrapper`, `PTToken`, and `YTToken` deployments (not mocks) — real SY custody transfer, real PT/YT mint and burn, real underlying release, and a regression test confirming YT yield isn't paid twice through `YTToken.claim_yield`'s independent entrypoint and `PrincipalManager.redeem`.
 - [x] `RecoveryEscrow.finalize_pt`/`finalize_yt` — full seize-then-finalize flow tested against a real `PrincipalManager` deployment (not a mock), including the nested-authorization requirement `finalize_yt` needs for `YTToken.claim_yield` and a negative test for a non-issuer caller.
 - [x] Circuit breaker trip and window-reset tests.

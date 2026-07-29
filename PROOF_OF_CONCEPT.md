@@ -375,7 +375,7 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 
 ## Test Coverage
 
-105 unit tests across eight contracts, using `soroban_sdk::testutils`:
+106 unit tests across eight contracts, using `soroban_sdk::testutils`:
 
 **OracleAdapter** (10 tests)
 - Initialization and double-init guard
@@ -437,11 +437,12 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 - `seize()` requires the caller to be the configured escrow
 - `set_recovery_escrow` cannot be called twice
 
-**YTToken** (12 tests)
+**YTToken** (13 tests)
 - `initialize` rejects an admin that doesn't match the underlying SAC's real, live `admin()`
 - Mint and balance tracking; mint rejected for an account not `authorized()` on the underlying SAC
 - No yield accrual when the oracle rate hasn't increased
 - Yield accrues correctly after a rate increase, and is fully claimable
+- Yield is path-independent: many small oracle updates between mint and claim produce the same result (within ordinary floor-rounding dust) as one big jump straight to the final rate — the regression test for the multiplicative-index fix (see SECURITY.md)
 - A late buyer does not retroactively receive yield accrued before they held the position
 - A transfer settles both sides' pending yield before the balance moves
 - A revoked or deauthorized-on-SAC holder cannot transfer YT to a still-eligible party before seizure

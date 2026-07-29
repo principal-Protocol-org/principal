@@ -219,7 +219,7 @@ USDY_from_PT = floor(pt_amount * SCALE / final_rate)
 
 **YT redemption** — `PrincipalManager` does **not** compute this itself. It calls `YTToken.update_yield_index()`, then `YTToken.burn(from, yt_amount)`, then `YTToken.claim_yield(from)`, and treats the returned amount as the underlying to release via `SYWrapper.withdraw`. See §5.5 for why: `YTToken.claim_yield` is a separate, publicly callable entrypoint, and `PrincipalManager` computing its own independent amount here would risk paying the same accrued yield twice.
 
-For a single, unbroken price movement between mint and redemption, that delegated result is numerically very close to (though not bit-identical to, due to fixed-point rounding differences between the two computations) the formula an earlier version of this contract used directly:
+Regardless of how many times `update_yield_index()` was called between mint and redemption, that delegated result is economically equal (up to ordinary fixed-point floor-rounding dust — see §5.5 for why this is now true for *any* number of intermediate steps, not just one) to the formula an earlier version of this contract used directly:
 
 ```
 yield_delta  = max(0, final_rate - initial_rate)              // positive yield only
@@ -230,23 +230,28 @@ USDY_from_YT ≈ floor(yt_amount * yield_delta / final_rate)
 
 ### 5.5 Yield claiming — implemented in YTToken, and now the sole payer of YT yield
 
-The standalone `YTToken` contract implements continuous yield accrual through a global yield index. The index is advanced by the permissionless `update_yield_index()`, which requires the oracle to be fresh (`is_fresh(MAX_ORACLE_STALENESS_SECS)`, matching `PrincipalManager`'s own freshness discipline) and is a no-op if the rate hasn't increased since the last recorded high-water mark — matching the protocol-wide invariant that YT never accrues negative yield:
+The standalone `YTToken` contract implements continuous yield accrual through a global, **multiplicative** compounding factor. The factor is advanced by the permissionless `update_yield_index()`, which requires the oracle to be fresh (`is_fresh(MAX_ORACLE_STALENESS_SECS)`, matching `PrincipalManager`'s own freshness discipline) and is a no-op if the rate hasn't increased since the last recorded high-water mark — matching the protocol-wide invariant that YT never accrues negative yield:
 
 ```
 // Called by YTToken.update_yield_index(), only if oracle_rate_now > last_recorded_rate:
-accrued_yield_index += (oracle_rate_now - last_recorded_rate) * SCALE / oracle_rate_now
-                       // incremental USDC yield per SCALE unit of YT notional, in USDY terms
+yield_factor = yield_factor * last_recorded_rate / oracle_rate_now
+                       // starts at SCALE, only ever decreases; telescopes exactly to
+                       // SCALE * rate_at_genesis / rate_now regardless of step count
 ```
 
-Each YT holder's claimable amount since their last claim:
+Each YT holder's claimable amount since their last settle (at which their own `yield_factor` snapshot was `last_factor[user]`):
 
 ```
 claimable_usdy[user] = yt_balance[user]
-                       * (accrued_yield_index - last_claimed_index[user])
-                       / SCALE
+                       * (last_factor[user] - yield_factor)
+                       / last_factor[user]
 ```
 
-Every balance-changing operation (mint, burn, transfer in, transfer out, seize) settles the affected account's pending yield at its balance *before* the change, against the current index, and only then advances that account's snapshot — otherwise a buyer could retroactively receive yield accrued before they held the position, or a seller could lose yield already earned by transferring out. `claim_yield()` settles the caller, then returns and zeroes their accumulated pending amount, and now actually dispatches an underlying transfer: `PrincipalManager.redeem()` calls it directly and forwards the result through `SYWrapper.withdraw`. Because `claim_yield` remains independently callable by any holder at any time (`from.require_auth()` only, no gating on *when*), it — not `PrincipalManager` — is the single authoritative payer of YT yield, so a holder who claims directly before redeeming sees `redeem()` correctly pay nothing further for the same period (`redeem_yt_does_not_double_pay_yield_already_claimed_directly`).
+This reduces exactly to `yt_balance[user] * (rate_now - rate_at_last_settle) / rate_now` — the same formula `PrincipalManager` uses for PT redemption — **regardless of how many times `update_yield_index()` was called in between**, because the running product telescopes: intermediate rates cancel out algebraically.
+
+**This wasn't always multiplicative.** An earlier version accumulated yield additively (`index += (rate_now - rate_last) * SCALE / rate_now`, summed across calls). That sum is a Riemann approximation of `ln(rate_final/rate_genesis)`, which is provably always `≥` the correct `(rate_final - rate_genesis)/rate_final` once there's more than one intermediate step, and grows with every additional call. Since `PrincipalManager.redeem()` treats this contract's `claim_yield` as the sole authoritative payer of YT yield (below), that overstatement was a real solvency bug: aggregate PT + YT redemptions for a market could exceed the underlying actually held. Verified numerically during audit: a 90-day market with daily updates and 30% total appreciation produced a 13.5% overstatement on the YT side (3.1% aggregate shortfall) under the additive formula; the multiplicative formula above reduces the same scenario to a 0.0004% floor-rounding residual — ordinary fixed-point dust, not a growing solvency gap. `update_yield_index()` is permissionless with no rate limit, so the additive version was also actively triggerable, not just a passive drift.
+
+Every balance-changing operation (mint, burn, transfer in, transfer out, seize) settles the affected account's pending yield at its balance *before* the change, against the current factor, and only then advances that account's snapshot — otherwise a buyer could retroactively receive yield accrued before they held the position, or a seller could lose yield already earned by transferring out. `claim_yield()` settles the caller, then returns and zeroes their accumulated pending amount, and now actually dispatches an underlying transfer: `PrincipalManager.redeem()` calls it directly and forwards the result through `SYWrapper.withdraw`. Because `claim_yield` remains independently callable by any holder at any time (`from.require_auth()` only, no gating on *when*), it — not `PrincipalManager` — is the single authoritative payer of YT yield, so a holder who claims directly before redeeming sees `redeem()` correctly pay nothing further for the same period (`redeem_yt_does_not_double_pay_yield_already_claimed_directly`).
 
 ---
 
@@ -1256,7 +1261,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for the full step-by-step guide for all contr
 - [x] `RecoveryEscrow` — no-admin-key issuer authentication and target-deauthorization checks for compliance recovery; `seize_sy` (full seize-and-unwrap); `seize_pt`/`seize_yt` plus `finalize_pt`/`finalize_yt` for post-maturity unwind of a seized PT/YT position through `PrincipalManager` (§6.3)
 - [x] `PrincipalManager` wired to `SYWrapper`/`PTToken`/`YTToken` — `mint` takes real SY custody and mints real PT/YT; `redeem` burns real PT/YT and releases real underlying, with `SYWrapper.transfer` added to support taking that custody
 - [x] Deterministic settlement formula with fixed-point arithmetic
-- [x] 105 unit tests across all eight implemented contracts
+- [x] 106 unit tests across all eight implemented contracts
 
 ### Not yet implemented
 
