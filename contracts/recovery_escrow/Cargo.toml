@@ -16,6 +16,7 @@ principal_sy_wrapper = { path = "../sy_wrapper", features = ["testutils"] }
 principal_pt_token = { path = "../pt_token", features = ["testutils"] }
 principal_yt_token = { path = "../yt_token", features = ["testutils"] }
 principal_oracle_adapter = { path = "../oracle_adapter", features = ["testutils"] }
+principal_manager = { path = "../principal_manager", features = ["testutils"] }
 
 [features]
 testutils = ["soroban-sdk/testutils"]

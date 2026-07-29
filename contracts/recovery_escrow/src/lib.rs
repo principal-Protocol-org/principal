@@ -29,23 +29,29 @@
 //! `SYWrapper.withdraw` (self-directed) to unwrap it into raw underlying, held by this contract
 //! and ready for the issuer's native SAC `clawback` — no separate finalize step needed.
 //!
-//! # PT / YT: seizure only in this pass
+//! # PT / YT: seize now, finalize once mature
 //! `seize_pt` and `seize_yt` move the flagged account's balance to this contract, exactly like
-//! `seize_sy`'s first step. Unwinding a seized PT/YT position the way SY unwinds -- redeem
-//! through `PrincipalManager`, unwrap the resulting SY, and hold the raw underlying for
-//! clawback -- is **not implemented** here, because `PrincipalManager` does not yet call
-//! `PTToken`/`YTToken` at all (it still mints/burns against its own internal balance maps, per
-//! PROOF_OF_CONCEPT.md's Known Limitations). There is currently no function anywhere that burns
-//! a real `PTToken`/`YTToken` balance in exchange for underlying value except through that
-//! internal, disconnected path. Building a `finalize_pt`/`finalize_yt` against an assumed future
-//! interface would be guesswork; it belongs in the same Router-integration branch that wires
-//! `PrincipalManager` to the real token contracts.
+//! `seize_sy`'s first step. Unlike SY, PT/YT can't be unwound immediately -- they only have
+//! value at or after maturity, since that's what `PrincipalManager.redeem` requires. `finalize_pt`
+//! and `finalize_yt` complete the unwind once that's possible: they call
+//! `PrincipalManager.redeem(from=self, ...)` on this contract's own already-seized balance,
+//! which burns it (`PTToken`/`YTToken`'s minter-only `burn`, authorized by `PrincipalManager`'s
+//! own direct self-authorization) and pays the resulting underlying here via `SYWrapper.withdraw`
+//! (same mechanism `seize_sy` uses directly). `finalize_yt` additionally calls
+//! `env.authorize_as_current_contract` before invoking `redeem`: `YTToken.claim_yield(from=self)`
+//! is two call frames below this one (`RecoveryEscrow -> PrincipalManager -> YTToken`), and a
+//! contract's ordinary self-authorization only covers calls it makes *directly* -- reaching one
+//! frame further requires explicitly pre-declaring that specific sub-invocation. No separate
+//! deauthorization check is needed at finalize time: the target was already verified deauthorized
+//! at `seize_pt`/`seize_yt` time, and finalize only ever acts on this contract's own balance, not
+//! a third party's.
 
 #![no_std]
 
 use soroban_sdk::{
+    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error,
-    symbol_short, token, Address, Env,
+    symbol_short, token, vec, Address, Env, IntoVal, Symbol,
 };
 
 #[contractclient(name = "SYWrapperClient")]
@@ -67,6 +73,19 @@ pub trait YTTokenInterface {
     fn seize(env: Env, caller: Address, account: Address, amount: i128) -> i128;
 }
 
+#[contracttype]
+#[derive(Clone)]
+pub struct RedeemResult {
+    pub underlying_from_pt: i128,
+    pub underlying_from_yt: i128,
+}
+
+#[contractclient(name = "PrincipalManagerClient")]
+pub trait PrincipalManagerInterface {
+    fn underlying_address(env: Env) -> Address;
+    fn redeem(env: Env, from: Address, pt_amount: i128, yt_amount: i128) -> RedeemResult;
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(u32)]
@@ -85,6 +104,7 @@ pub enum DataKey {
     SYWrapper,
     PTToken,
     YTToken,
+    PrincipalManager,
 }
 
 #[contract]
@@ -98,6 +118,7 @@ impl RecoveryEscrowContract {
         sy_wrapper: Address,
         pt_token: Address,
         yt_token: Address,
+        principal_manager: Address,
     ) {
         if env.storage().instance().has(&DataKey::Underlying) {
             panic_with_error!(&env, Error::AlreadyInitialized);
@@ -108,6 +129,7 @@ impl RecoveryEscrowContract {
             &sy_wrapper,
             &pt_token,
             &yt_token,
+            &principal_manager,
         );
         env.storage()
             .instance()
@@ -117,6 +139,9 @@ impl RecoveryEscrowContract {
             .set(&DataKey::SYWrapper, &sy_wrapper);
         env.storage().instance().set(&DataKey::PTToken, &pt_token);
         env.storage().instance().set(&DataKey::YTToken, &yt_token);
+        env.storage()
+            .instance()
+            .set(&DataKey::PrincipalManager, &principal_manager);
     }
 
     /// Seize `shares` of `account`'s SY balance and immediately unwrap it into raw underlying,
@@ -179,6 +204,71 @@ impl RecoveryEscrowContract {
         seized
     }
 
+    /// Finalize a previously seized PT position: redeem `pt_amount` of this contract's own PT
+    /// balance through `PrincipalManager` (which burns it and pays the resulting underlying
+    /// here via `SYWrapper.withdraw`), leaving raw underlying ready for the issuer's native SAC
+    /// `clawback`. Only callable at or after maturity, since that's what `PrincipalManager.redeem`
+    /// itself requires -- there is no separate maturity check here.
+    pub fn finalize_pt(env: Env, caller: Address, pt_amount: i128) -> i128 {
+        Self::assert_issuer_admin(&env, &caller);
+        if pt_amount <= 0 {
+            panic_with_error!(&env, Error::ZeroAmount);
+        }
+
+        let principal_manager = Self::get(&env, &DataKey::PrincipalManager);
+        let self_addr = env.current_contract_address();
+        let result =
+            PrincipalManagerClient::new(&env, &principal_manager).redeem(&self_addr, &pt_amount, &0);
+
+        env.events().publish(
+            (symbol_short!("fin_pt"),),
+            (caller, pt_amount, result.underlying_from_pt),
+        );
+        result.underlying_from_pt
+    }
+
+    /// Finalize a previously seized YT position: redeem `yt_amount` of this contract's own YT
+    /// balance through `PrincipalManager`, which settles it against `YTToken`'s own accrual
+    /// index (see `PrincipalManager`'s module docs) and pays the resulting underlying here via
+    /// `SYWrapper.withdraw`.
+    ///
+    /// `PrincipalManager.redeem` calls `YTToken.claim_yield(from=self)` two frames below this
+    /// call (RecoveryEscrow -> PrincipalManager -> YTToken), and `claim_yield` requires `from`'s
+    /// own authorization. A contract's self-authorization only covers calls it makes directly;
+    /// authorizing a call two frames down requires explicitly pre-declaring it via
+    /// `authorize_as_current_contract` before making the outer call, which is what this does.
+    pub fn finalize_yt(env: Env, caller: Address, yt_amount: i128) -> i128 {
+        Self::assert_issuer_admin(&env, &caller);
+        if yt_amount <= 0 {
+            panic_with_error!(&env, Error::ZeroAmount);
+        }
+
+        let principal_manager = Self::get(&env, &DataKey::PrincipalManager);
+        let yt_token = Self::get(&env, &DataKey::YTToken);
+        let self_addr = env.current_contract_address();
+
+        env.authorize_as_current_contract(vec![
+            &env,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: yt_token,
+                    fn_name: Symbol::new(&env, "claim_yield"),
+                    args: vec![&env, self_addr.into_val(&env)],
+                },
+                sub_invocations: vec![&env],
+            }),
+        ]);
+
+        let result =
+            PrincipalManagerClient::new(&env, &principal_manager).redeem(&self_addr, &0, &yt_amount);
+
+        env.events().publish(
+            (symbol_short!("fin_yt"),),
+            (caller, yt_amount, result.underlying_from_yt),
+        );
+        result.underlying_from_yt
+    }
+
     // --- views ---
 
     pub fn underlying_address(env: Env) -> Address {
@@ -209,6 +299,11 @@ impl RecoveryEscrowContract {
                 .instance()
                 .get(&DataKey::YTToken)
                 .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized)),
+            DataKey::PrincipalManager => env
+                .storage()
+                .instance()
+                .get(&DataKey::PrincipalManager)
+                .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized)),
         }
     }
 
@@ -234,14 +329,17 @@ impl RecoveryEscrowContract {
         sy_wrapper: &Address,
         pt_token: &Address,
         yt_token: &Address,
+        principal_manager: &Address,
     ) {
         let sy_underlying = SYWrapperClient::new(env, sy_wrapper).underlying_address();
         let pt_underlying = PTTokenClient::new(env, pt_token).underlying_address();
         let yt_underlying = YTTokenClient::new(env, yt_token).underlying_address();
+        let pm_underlying = PrincipalManagerClient::new(env, principal_manager).underlying_address();
 
         if sy_underlying != *underlying
             || pt_underlying != *underlying
             || yt_underlying != *underlying
+            || pm_underlying != *underlying
         {
             panic_with_error!(env, Error::PositionUnderlyingMismatch);
         }
@@ -251,10 +349,11 @@ impl RecoveryEscrowContract {
 #[cfg(test)]
 mod test {
     use soroban_sdk::{
-        testutils::{Address as _, IssuerFlags},
+        testutils::{Address as _, IssuerFlags, Ledger as _},
         token, Address, Env, String,
     };
 
+    use principal_manager::{PrincipalManagerContract, PrincipalManagerContractClient};
     use principal_oracle_adapter::{OracleAdapterContract, OracleAdapterContractClient};
     use principal_permissioning::{PermissioningContract, PermissioningContractClient};
     use principal_pt_token::{PTTokenContract, PTTokenContractClient};
@@ -263,6 +362,9 @@ mod test {
 
     use super::{RecoveryEscrowContract, RecoveryEscrowContractClient};
 
+    const T0: u64 = 1_000;
+    const SCALE: i128 = 10_000_000;
+
     struct Fixture {
         env: Env,
         client: RecoveryEscrowContractClient<'static>,
@@ -270,17 +372,25 @@ mod test {
         underlying: Address,
         perm: PermissioningContractClient<'static>,
         perm_admin: Address,
+        oracle: OracleAdapterContractClient<'static>,
         sy: SYWrapperContractClient<'static>,
         pt: PTTokenContractClient<'static>,
         pt_id: Address,
         yt: YTTokenContractClient<'static>,
         yt_id: Address,
+        pm: PrincipalManagerContractClient<'static>,
+        pm_id: Address,
         escrow_id: Address,
     }
 
     fn setup() -> Fixture {
+        setup_with_maturity(u64::MAX)
+    }
+
+    fn setup_with_maturity(maturity: u64) -> Fixture {
         let env = Env::default();
         env.mock_all_auths();
+        env.ledger().with_mut(|li| li.timestamp = T0);
 
         let sac_admin = Address::generate(&env);
         let underlying_sac = env.register_stellar_asset_contract_v2(sac_admin.clone());
@@ -293,7 +403,9 @@ mod test {
         perm.initialize(&perm_admin);
 
         let oracle_id = env.register_contract(None, OracleAdapterContract);
-        OracleAdapterContractClient::new(&env, &oracle_id).initialize(&sac_admin);
+        let oracle = OracleAdapterContractClient::new(&env, &oracle_id);
+        oracle.initialize(&sac_admin);
+        oracle.set_reference_value(&sac_admin, &SCALE, &T0);
 
         let sy_id = env.register_contract(None, SYWrapperContract);
         let sy = SYWrapperContractClient::new(&env, &sy_id);
@@ -305,7 +417,7 @@ mod test {
             &sac_admin,
             &perm_id,
             &underlying,
-            &u64::MAX,
+            &maturity,
             &String::from_str(&env, "Principal Token USDY"),
             &String::from_str(&env, "PT-USDY"),
             &7,
@@ -318,15 +430,26 @@ mod test {
             &perm_id,
             &underlying,
             &oracle_id,
-            &u64::MAX,
+            &maturity,
             &String::from_str(&env, "Yield Token USDY"),
             &String::from_str(&env, "YT-USDY"),
             &7,
         );
 
+        let pm_id = env.register_contract(None, PrincipalManagerContract);
+        let pm = PrincipalManagerContractClient::new(&env, &pm_id);
+        pm.initialize(
+            &sac_admin, &sy_id, &pt_id, &yt_id, &oracle_id, &perm_id, &underlying, &maturity,
+        );
+        pt.set_minter(&sac_admin, &pm_id);
+        yt.set_minter(&sac_admin, &pm_id);
+        // PrincipalManager's own address is a genuine SY holder between mint and redemption.
+        perm.grant_account(&perm_admin, &pm_id);
+        token::StellarAssetClient::new(&env, &underlying).set_authorized(&pm_id, &true);
+
         let escrow_id = env.register_contract(None, RecoveryEscrowContract);
         let client = RecoveryEscrowContractClient::new(&env, &escrow_id);
-        client.initialize(&underlying, &sy_id, &pt_id, &yt_id);
+        client.initialize(&underlying, &sy_id, &pt_id, &yt_id, &pm_id);
 
         // Wire each contract's recovery escrow to this one, and pre-authorize the escrow
         // itself on both compliance layers, exactly as a real market setup would.
@@ -345,11 +468,14 @@ mod test {
             underlying,
             perm,
             perm_admin,
+            oracle,
             sy,
             pt,
             pt_id,
             yt,
             yt_id,
+            pm,
+            pm_id,
             escrow_id,
         }
     }
@@ -361,6 +487,15 @@ mod test {
 
     fn mint_underlying(f: &Fixture, to: &Address, amount: i128) {
         token::StellarAssetClient::new(&f.env, &f.underlying).mint(to, &amount);
+    }
+
+    /// Grants a user for a real PrincipalManager.mint() flow (both PT and YT per-asset grants,
+    /// SAC authorization, and enough underlying to deposit and mint with).
+    fn grant_and_fund(f: &Fixture, user: &Address, underlying_amount: i128) {
+        grant_sy(f, user);
+        f.perm.grant_asset(&f.perm_admin, user, &f.pt_id);
+        f.perm.grant_asset(&f.perm_admin, user, &f.yt_id);
+        mint_underlying(f, user, underlying_amount);
     }
 
     #[test]
@@ -438,43 +573,143 @@ mod test {
 
         let escrow_id = f.env.register_contract(None, RecoveryEscrowContract);
         let client = RecoveryEscrowContractClient::new(&f.env, &escrow_id);
-        client.initialize(&f.underlying, &f.sy.address, &mismatched_pt_id, &f.yt_id);
+        client.initialize(
+            &f.underlying,
+            &f.sy.address,
+            &mismatched_pt_id,
+            &f.yt_id,
+            &f.pm_id,
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn initialize_rejects_principal_manager_with_different_underlying() {
+        let f = setup();
+        let other_admin = Address::generate(&f.env);
+        let other_underlying = f
+            .env
+            .register_stellar_asset_contract_v2(other_admin.clone())
+            .address();
+        let other_oracle = f.env.register_contract(None, OracleAdapterContract);
+        OracleAdapterContractClient::new(&f.env, &other_oracle).initialize(&other_admin);
+
+        let mismatched_pm_id = f.env.register_contract(None, PrincipalManagerContract);
+        let mismatched_pm = PrincipalManagerContractClient::new(&f.env, &mismatched_pm_id);
+        mismatched_pm.initialize(
+            &other_admin,
+            &f.sy.address,
+            &f.pt_id,
+            &f.yt_id,
+            &other_oracle,
+            &f.perm.address,
+            &other_underlying,
+            &u64::MAX,
+        );
+
+        let escrow_id = f.env.register_contract(None, RecoveryEscrowContract);
+        let client = RecoveryEscrowContractClient::new(&f.env, &escrow_id);
+        client.initialize(
+            &f.underlying,
+            &f.sy.address,
+            &f.pt_id,
+            &f.yt_id,
+            &mismatched_pm_id,
+        );
     }
 
     #[test]
     fn seize_pt_moves_balance_to_escrow() {
         let f = setup();
-        // Mint PT directly for this test (PrincipalManager isn't wired to PTToken yet).
-        let minter = Address::generate(&f.env);
-        f.pt.set_minter(&f.sac_admin, &minter);
         let bad_actor = Address::generate(&f.env);
-        f.perm.grant_account(&f.perm_admin, &bad_actor);
-        f.perm.grant_asset(&f.perm_admin, &bad_actor, &f.pt_id);
-        token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&bad_actor, &true);
-        f.pt.mint(&bad_actor, &500);
+        grant_and_fund(&f, &bad_actor, 500_000_000);
+        let shares = f.sy.deposit(&bad_actor, &500_000_000);
+        let result = f.pm.mint(&bad_actor, &shares);
 
         token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&bad_actor, &false);
-        let seized = f.client.seize_pt(&f.sac_admin, &bad_actor, &500);
-        assert_eq!(seized, 500);
+        let seized = f.client.seize_pt(&f.sac_admin, &bad_actor, &result.pt_minted);
+        assert_eq!(seized, result.pt_minted);
         assert_eq!(f.pt.balance(&bad_actor), 0);
-        assert_eq!(f.pt.balance(&f.escrow_id), 500);
+        assert_eq!(f.pt.balance(&f.escrow_id), result.pt_minted);
     }
 
     #[test]
     fn seize_yt_moves_balance_to_escrow() {
         let f = setup();
-        let minter = Address::generate(&f.env);
-        f.yt.set_minter(&f.sac_admin, &minter);
         let bad_actor = Address::generate(&f.env);
-        f.perm.grant_account(&f.perm_admin, &bad_actor);
-        f.perm.grant_asset(&f.perm_admin, &bad_actor, &f.yt_id);
-        token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&bad_actor, &true);
-        f.yt.mint(&bad_actor, &500);
+        grant_and_fund(&f, &bad_actor, 500_000_000);
+        let shares = f.sy.deposit(&bad_actor, &500_000_000);
+        let result = f.pm.mint(&bad_actor, &shares);
 
         token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&bad_actor, &false);
-        let seized = f.client.seize_yt(&f.sac_admin, &bad_actor, &500);
-        assert_eq!(seized, 500);
+        let seized = f.client.seize_yt(&f.sac_admin, &bad_actor, &result.yt_minted);
+        assert_eq!(seized, result.yt_minted);
         assert_eq!(f.yt.balance(&bad_actor), 0);
-        assert_eq!(f.yt.balance(&f.escrow_id), 500);
+        assert_eq!(f.yt.balance(&f.escrow_id), result.yt_minted);
+    }
+
+    // --- finalize (post-maturity unwind of a seized PT/YT position) ---
+
+    #[test]
+    fn finalize_pt_redeems_seized_position_after_maturity() {
+        let maturity = T0 + 500;
+        let f = setup_with_maturity(maturity);
+        let bad_actor = Address::generate(&f.env);
+        grant_and_fund(&f, &bad_actor, 1_000_000_000);
+        let shares = f.sy.deposit(&bad_actor, &1_000_000_000);
+        let result = f.pm.mint(&bad_actor, &shares);
+
+        token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&bad_actor, &false);
+        let seized = f.client.seize_pt(&f.sac_admin, &bad_actor, &result.pt_minted);
+
+        f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
+        let released = f.client.finalize_pt(&f.sac_admin, &seized);
+
+        // Rate never moved (still SCALE), so PT redeems 1:1 for underlying.
+        assert_eq!(released, seized);
+        assert_eq!(f.pt.balance(&f.escrow_id), 0);
+        let underlying_client = token::Client::new(&f.env, &f.underlying);
+        assert_eq!(underlying_client.balance(&f.escrow_id), released);
+    }
+
+    #[test]
+    fn finalize_yt_redeems_seized_position_after_maturity() {
+        let maturity = T0 + 500;
+        let f = setup_with_maturity(maturity);
+        let bad_actor = Address::generate(&f.env);
+        grant_and_fund(&f, &bad_actor, 1_000_000_000);
+        let shares = f.sy.deposit(&bad_actor, &1_000_000_000);
+        let result = f.pm.mint(&bad_actor, &shares);
+
+        f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
+        f.oracle
+            .set_reference_value(&f.sac_admin, &10_300_000_i128, &(maturity + 1));
+
+        token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&bad_actor, &false);
+        let seized = f.client.seize_yt(&f.sac_admin, &bad_actor, &result.yt_minted);
+
+        let released = f.client.finalize_yt(&f.sac_admin, &seized);
+        assert!(released > 0);
+        assert_eq!(f.yt.balance(&f.escrow_id), 0);
+        let underlying_client = token::Client::new(&f.env, &f.underlying);
+        assert_eq!(underlying_client.balance(&f.escrow_id), released);
+    }
+
+    #[test]
+    #[should_panic]
+    fn finalize_pt_requires_real_issuer_admin() {
+        let maturity = T0 + 500;
+        let f = setup_with_maturity(maturity);
+        let bad_actor = Address::generate(&f.env);
+        let impostor = Address::generate(&f.env);
+        grant_and_fund(&f, &bad_actor, 500_000_000);
+        let shares = f.sy.deposit(&bad_actor, &500_000_000);
+        let result = f.pm.mint(&bad_actor, &shares);
+
+        token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&bad_actor, &false);
+        let seized = f.client.seize_pt(&f.sac_admin, &bad_actor, &result.pt_minted);
+
+        f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
+        f.client.finalize_pt(&impostor, &seized);
     }
 }
