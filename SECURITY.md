@@ -227,7 +227,7 @@ Compliance is enforced through **two layers**, checked independently on every af
 
 ## 9. Testing requirements
 
-Done, at the unit-test level (123 tests across eight contracts):
+Done, at the unit-test level (175 tests across eight contracts) plus a dedicated cross-contract integration suite (15 tests, 190 total):
 
 - [x] Unit tests for arithmetic edge cases (zero amounts, exact-limit deposits, insufficient balance/allowance).
 - [x] Oracle failure scenarios: stale price blocks redemption (`PrincipalManager`) and blocks yield-index advancement (`YTToken`).
@@ -245,9 +245,12 @@ Done, at the unit-test level (123 tests across eight contracts):
 - [x] `YTToken.claim_yield` minter-gating: a non-minter caller is rejected; `PrincipalManager.claim_yield` pays real underlying and a subsequent `redeem` doesn't double-pay.
 - [x] `PrincipalManager.initialize` topology validation: mismatched underlying, permissioning, maturity, and oracle each independently rejected.
 - [x] `OracleAdapter.set_reference_value` rejects a value decrease; an equal-value resubmission is still allowed.
+- [x] Full-stack view/getter and defensive-branch coverage: every admin-bearing contract's `transfer_admin`/`get_admin`, every token's `decimals`/`name`/`symbol`/`maturity`/`minter`/`recovery_escrow`/`underlying_address`/`permissioning_address`, and the zero-amount/insufficient-balance/expired-or-exceeded-allowance/double-initialize/non-admin-caller branches on every entrypoint that has one, are each exercised directly rather than only reachable incidentally through a happy-path flow.
+- [x] Cross-contract integration suite (`contracts/integration_tests`, `cargo test -p principal_integration_tests`): deploys all eight contracts together and drives full multi-step flows no single contract's own unit tests exercise end-to-end — deposit/mint/approve+transfer_from/mid-life claim/maturity redemption across two users; seize-and-finalize compliance recovery for SY, PT, and YT through the real `PrincipalManager`; and admin rotation across every admin-bearing contract followed by a real mint to prove the market still functions afterward.
+- [x] `RiskControl`'s pause/pauser/consumer/circuit-breaker lifecycle exercised from a registered consumer's perspective (`registered_consumer_check_deposit_trips_and_resets_circuit_breaker`), simulating the shape the future `SYWrapper`/`PrincipalManager` wiring will actually call — the cross-contract *wiring* itself remains outstanding (see below), only the receiving side is now covered.
 
 Still outstanding before mainnet deployment:
 
-- [ ] Cross-contract `RiskControl` wiring and associated integration tests.
+- [ ] Cross-contract `RiskControl` wiring into `SYWrapper.deposit`/`PrincipalManager.mint` themselves (the consumer-side behavior it will call is now tested; the calls don't exist yet).
 - [ ] `MarketPool` and `Router` test coverage once those contracts exist.
 - [ ] Third-party security audit with full access to source and test suite.

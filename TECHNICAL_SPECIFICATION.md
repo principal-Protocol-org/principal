@@ -1274,7 +1274,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for the full step-by-step guide for all contr
 - [x] `RecoveryEscrow` — no-admin-key issuer authentication and target-deauthorization checks for compliance recovery; `seize_sy` (full seize-and-unwrap); `seize_pt`/`seize_yt` plus `finalize_pt`/`finalize_yt` for post-maturity unwind of a seized PT/YT position through `PrincipalManager` (§6.3)
 - [x] `PrincipalManager` wired to `SYWrapper`/`PTToken`/`YTToken` — `mint` takes real SY custody and mints real PT/YT; `redeem` burns real PT/YT and releases real underlying, with `SYWrapper.transfer` added to support taking that custody
 - [x] Deterministic settlement formula with fixed-point arithmetic
-- [x] 123 unit tests across all eight implemented contracts
+- [x] 175 unit tests across all eight implemented contracts, plus a 15-test cross-contract integration suite (`contracts/integration_tests`, 190 total); 98.5% line coverage workspace-wide
 
 ### Not yet implemented
 

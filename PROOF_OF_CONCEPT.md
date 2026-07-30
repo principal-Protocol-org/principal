@@ -393,18 +393,19 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 
 ## Test Coverage
 
-123 unit tests across eight contracts, using `soroban_sdk::testutils`:
+175 unit tests across eight contracts, plus a 15-test cross-contract integration suite (190 total), using `soroban_sdk::testutils`. Line coverage is 98.5% workspace-wide (`cargo llvm-cov --workspace`); the remaining uncovered lines are `#[contracttype]`/`#[contracterror]` derive-macro artifacts and two `SYWrapper` rounding-edge branches that require an artificially inflated exchange rate to reach and are not exercisable through any real deposit sequence.
 
-**OracleAdapter** (12 tests)
+**OracleAdapter** (14 tests)
 - Initialization and double-init guard
 - Reference value update and retrieval
 - Monotonic timestamp enforcement (reject stale timestamps)
 - Monotonic value enforcement (reject a value decrease; an equal-value resubmission is still allowed)
-- Freshness check (`is_fresh` with varying staleness thresholds)
-- Unauthorized update attempt
+- Freshness check (`is_fresh` with varying staleness thresholds, and the case where the stored timestamp is somehow ahead of the ledger clock)
+- Unauthorized update attempt; unauthorized `transfer_admin` attempt
 - Admin transfer
 
-**Permissioning** (6 tests)
+**Permissioning** (7 tests)
+- Initialization and double-init guard
 - Account grant and revoke
 - Asset-level grant and revoke
 - Batch `grant_accounts`
@@ -412,31 +413,31 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 - Unauthorized grant attempt
 - Admin transfer
 
-**SYWrapper** (24 tests)
-- `initialize` rejects an admin that doesn't match the underlying SAC's real, live `admin()`
+**SYWrapper** (29 tests)
+- Initialization and double-init guard; rejects an admin that doesn't match the underlying SAC's real, live `admin()`
 - Deposit and share minting; rejected when the depositor isn't on the Permissioning allow-list or isn't `authorized()` on the underlying SAC
 - A deauthorized-on-SAC account cannot self-withdraw to front-run seizure
 - Withdrawal and underlying return; rejected when either the withdrawer or the recipient isn't permitted
 - Insufficient share balance rejection
-- Pause and unpause behavior
-- Exchange rate calculation at inception
+- Pause and unpause behavior; non-admin `set_paused` rejection
+- Exchange rate calculation at inception, and before any deposit has ever happened
 - Zero-deposit rejection; `balance_of` correctness
-- Admin transfer
+- Admin transfer; `get_admin`/`underlying_address`/`permissioning_address`/`recovery_escrow` getters
 - `transfer` moves shares between eligible accounts (used by `PrincipalManager.mint` to take custody)
 - `transfer` rejected for an unpermitted recipient, or for more than the sender's balance
 - `set_recovery_escrow` succeeds once, reverts on a second call
-- `seize()` moves the flagged account's balance to the configured escrow without the holder's authorization
+- `seize()` moves the flagged account's balance to the configured escrow without the holder's authorization; rejects a zero-share seizure
 - `seize()` requires the caller to be the configured escrow
 - `seize()` cannot exceed the target's balance
 - `seize()` works while the contract is paused
 - The escrow can unwrap seized SY via a normal `withdraw` call
 
-**PrincipalManager** (23 tests)
-- `initialize` rejects an admin that doesn't match the underlying SAC's real, live `admin()`
+**PrincipalManager** (27 tests)
+- Initialization and double-init guard; rejects an admin that doesn't match the underlying SAC's real, live `admin()`
 - `initialize` rejects mismatched underlying, permissioning, maturity, or oracle across `sy_wrapper`/`pt_token`/`yt_token`
-- Mint PT and YT from SY shares — real custody moves via `SYWrapper.transfer`, real balances credited via `PTToken.mint`/`YTToken.mint`; total supply tracking on mint and redeem
+- Mint PT and YT from SY shares — real custody moves via `SYWrapper.transfer`, real balances credited via `PTToken.mint`/`YTToken.mint`; total supply tracking on mint and redeem; rejects a zero-share mint
 - A second mint after a rate movement doesn't retroactively receive the first mint's prior yield
-- Redeem at maturity — PT and YT separately, including the zero-yield case; PT redemption releases the actual underlying to the caller
+- Redeem at maturity — PT and YT separately, including the zero-yield case; PT redemption releases the actual underlying to the caller; rejects a zero-amount redeem (both legs zero)
 - YT redemption's underlying amount matches `YTToken`'s own index-based `claim_yield` result, not an independently computed formula
 - `PrincipalManager.claim_yield` pays real underlying ahead of redemption, and a later `redeem()` doesn't pay the same yield again
 - Calling `YTToken.claim_yield` directly (not through `PrincipalManager`) is rejected
@@ -444,47 +445,53 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 - Oracle staleness rejection at both mint and redemption
 - Permission check rejection at mint (unpermissioned user) and at redeem (revoked user)
 - A deauthorized-on-SAC account cannot mint or redeem
-- Admin transfer
+- Admin transfer; a non-admin cannot call `transfer_admin`
 
-**PTToken** (15 tests)
-- `initialize` rejects an admin that doesn't match the underlying SAC's real, live `admin()`
-- Mint blocked until `set_minter` is called; `set_minter` cannot be called twice
-- Mint and balance tracking; mint rejected for an account not `authorized()` on the underlying SAC
-- Transfer between eligible accounts; rejected when the recipient lacks the per-token asset grant
+**PTToken** (29 tests)
+- Initialization and double-init guard; rejects an admin that doesn't match the underlying SAC's real, live `admin()`
+- Mint blocked until `set_minter` is called; `set_minter` cannot be called twice, and a non-admin caller is rejected
+- Mint and balance tracking; mint rejected for an account not `authorized()` on the underlying SAC, and for a zero amount
+- Transfer between eligible accounts; rejected when the recipient lacks the per-token asset grant, for a zero amount, or for more than the sender's balance
 - A revoked or deauthorized-on-SAC holder cannot transfer PT to a still-eligible party before seizure
-- Insufficient balance rejection
-- `approve` / `transfer_from` delegated transfer
-- Burn reduces total supply
-- `seize()` moves the flagged account's balance to the configured escrow without the holder's authorization
+- `approve` / `transfer_from` delegated transfer; rejected for a negative approval amount, a zero transfer amount, an exceeded or expired allowance, or insufficient underlying balance
+- Burn reduces total supply; rejected for a zero amount or insufficient balance
+- `seize()` moves the flagged account's balance to the configured escrow without the holder's authorization; rejects a zero amount or an amount exceeding the target's balance
 - `seize()` requires the caller to be the configured escrow
 - `set_recovery_escrow` cannot be called twice
+- `decimals`/`name`/`symbol`/`total_supply`/`maturity`/`minter`/`get_admin`/`recovery_escrow`/`underlying_address`/`permissioning_address` view getters
 
-**YTToken** (16 tests)
-- `initialize` rejects an admin that doesn't match the underlying SAC's real, live `admin()`
+**YTToken** (35 tests)
+- Initialization and double-init guard; rejects an admin that doesn't match the underlying SAC's real, live `admin()`
 - `initialize` reverts `OracleStale` when the oracle isn't fresh at market creation
 - A market created with the oracle already above `SCALE` doesn't overpay the first mint
-- Mint and balance tracking; mint rejected for an account not `authorized()` on the underlying SAC
+- Mint and balance tracking; mint rejected for an account not `authorized()` on the underlying SAC, for a zero amount, or for an account granted account-level but not per-asset Permissioning
+- `set_minter`/`set_recovery_escrow` each settable only once, and reject a non-admin caller
 - No yield accrual when the oracle rate hasn't increased
 - Yield accrues correctly after a rate increase, and is fully claimable
 - Yield is path-independent: many small oracle updates between mint and claim produce the same result (within ordinary floor-rounding dust) as one big jump straight to the final rate — the regression test for the multiplicative-index fix (see SECURITY.md)
 - A late buyer does not retroactively receive yield accrued before they held the position
-- A transfer settles both sides' pending yield before the balance moves
+- A transfer settles both sides' pending yield before the balance moves; rejected for a zero amount or insufficient balance
+- `approve` / `transfer_from` delegated transfer; rejected for a negative approval amount, a zero transfer amount, an exceeded or expired allowance, or insufficient underlying balance
 - A revoked or deauthorized-on-SAC holder cannot transfer YT to a still-eligible party before seizure
 - `update_yield_index` rejects a stale oracle
 - `claim_yield` rejects a non-minter caller
-- `seize()` settles both sides' pending yield before moving the balance
+- Burn reduces total supply; rejected for a zero amount or insufficient balance
+- `seize()` settles both sides' pending yield before moving the balance; rejects a zero amount or an amount exceeding the target's balance
 - `seize()` requires the caller to be the configured escrow
+- `decimals`/`name`/`symbol`/`maturity`/`minter`/`get_admin`/`recovery_escrow`/`underlying_address`/`permissioning_address`/`oracle_address`/`last_claimed_index`/`pending_claim` view getters
 
-**RecoveryEscrow** (10 tests)
-- `seize_sy` seizes and immediately unwraps to underlying in the same call
+**RecoveryEscrow** (16 tests)
+- Initialization and double-init guard
+- `seize_sy` seizes and immediately unwraps to underlying in the same call; rejects a zero-share seizure
 - `seize_sy` requires the caller to be the underlying SAC's real, live issuer admin
 - `seize_sy` requires the target account to already be deauthorized on the underlying SAC
 - `initialize` rejects a position contract, or a `PrincipalManager`, whose `underlying_address()` doesn't match the others
-- `seize_pt`/`seize_yt` move the flagged account's real PTToken/YTToken balance to the escrow (minted and deposited through a real `PrincipalManager.mint()` call, not a mock)
-- `finalize_pt`/`finalize_yt` redeem the escrow's own seized balance through a real `PrincipalManager` deployment at or after maturity, releasing real underlying to the escrow
+- `seize_pt`/`seize_yt` move the flagged account's real PTToken/YTToken balance to the escrow (minted and deposited through a real `PrincipalManager.mint()` call, not a mock); each rejects a zero-amount seizure
+- `finalize_pt`/`finalize_yt` redeem the escrow's own seized balance through a real `PrincipalManager` deployment at or after maturity, releasing real underlying to the escrow; each rejects a zero-amount finalize
 - `finalize_pt` requires the caller to be the underlying SAC's real, live issuer admin
 
-**RiskControl** (17 tests)
+**RiskControl** (18 tests)
+- Initialization and double-init guard
 - Pause and unpause
 - Pauser role add and remove
 - Non-pauser `pause` rejection
@@ -496,6 +503,25 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 - `check_deposit` rejects a zero or negative amount
 - `add_consumer` rejects a duplicate registration
 - Admin transfer
+
+### Integration Tests (`contracts/integration_tests`, `cargo test -p principal_integration_tests`)
+
+Unlike each contract's own unit tests -- which mostly deploy just the handful of dependencies needed to exercise that one contract's own logic -- this crate deploys the entire eight-contract stack together in `tests/common/mod.rs`'s `deploy_stack` helper and drives it through realistic, multi-step flows the way a real integrator would, split across three files:
+
+**`tests/full_lifecycle.rs`** (4 tests)
+- Deposit, split into PT + YT, an allowance-based `approve`/`transfer_from` of PT between two users, a mid-life `PrincipalManager.claim_yield` that pays real underlying, and maturity redemption for both users -- checking `PrincipalManager`'s own `pt_balance`/`yt_balance`/`total_pt`/`total_yt`/`maturity`/`is_mature`/`underlying_address` views at each step, not just the token contracts directly
+- A second mint after a rate movement doesn't dilute the first minter's already-accrued yield, verified at the `PrincipalManager.claim_yield` level
+- `PrincipalManager.set_paused` blocks mint; unpausing restores it
+
+**`tests/compliance_recovery.rs`** (4 tests)
+- `seize_sy` unwraps immediately for a flagged depositor, ready for the issuer's native SAC clawback
+- Full seize-then-finalize of both PT and YT positions after maturity, verifying the escrow ends up holding real underlying equal to what both `finalize_pt`/`finalize_yt` returned
+- Seizure requires the target already deauthorized, and requires the real issuer admin
+
+**`tests/admin_and_risk_control.rs`** (7 tests)
+- Admin rotation across every admin-bearing contract (`OracleAdapter`, `Permissioning`, `RiskControl`, `SYWrapper`, `PrincipalManager` -- `PTToken`/`YTToken` have no `transfer_admin`, only a one-time market-creation admin), followed by a real mint proving the market still functions under the new admin; the old admin key no longer works afterward
+- Pauser add/remove lifecycle, and that only the admin can unpause
+- `RiskControl`'s consumer-registration, circuit-breaker trip, and window-reset behavior exercised from a registered consumer's perspective (standing in for the not-yet-wired `SYWrapper`/`PrincipalManager` call sites)
 
 ---
 
