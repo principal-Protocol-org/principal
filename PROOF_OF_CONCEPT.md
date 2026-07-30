@@ -663,7 +663,95 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for the complete guide including network conf
 
 ---
 
-## Testnet Deployment
+## Current Testnet Deployment — Full Stack, PT/YT, and Compliance Recovery (30 July 2026)
+
+All eight contracts — including `PTToken`, `YTToken`, and `RecoveryEscrow`, none of which existed at the time of the historical deployment recorded further below — are live on **Stellar Testnet**, reflecting the current source after every fix described in this document and in SECURITY.md. This is a real deployment: every address below is a real contract, every transaction hash resolves on [stellar.expert](https://stellar.expert/explorer/testnet), and every balance was moved by the contracts' own logic, not asserted.
+
+Since Ondo's real USDY only exists on Stellar mainnet, testnet uses a purpose-issued classic Stellar asset, **STA**, standing in for it: `AUTH_REQUIRED` and `AUTH_REVOCABLE` are both set on the issuer (matching a real regulated asset), and it is wrapped as a Stellar Asset Contract (SAC) the same way USDY would be. Two independent participants hold STA — Alice and Bob — chosen to demonstrate the two things this protocol is actually for: ordinary continuous-yield tokenization, and issuer-initiated compliance recovery that touches only the flagged account.
+
+### Deployed Contract Addresses
+
+| Contract | Address |
+|---|---|
+| OracleAdapter | [`CDBIVWBLB6UEOBIWO5HAFYPM7LPMH3GKDRG4UMTVQDEAJRY3OIWJLPUO`](https://stellar.expert/explorer/testnet/contract/CDBIVWBLB6UEOBIWO5HAFYPM7LPMH3GKDRG4UMTVQDEAJRY3OIWJLPUO) |
+| Permissioning | [`CBTV5C3GSQKYTAMHOVET7RH25BKSFSAEENTP7SRZEEBD6LKHE24MLXIM`](https://stellar.expert/explorer/testnet/contract/CBTV5C3GSQKYTAMHOVET7RH25BKSFSAEENTP7SRZEEBD6LKHE24MLXIM) |
+| RiskControl | [`CCQXRR3SEP7UTSJORW43V2COD4D3HR6FCLZFJSPXBEH7W4WJWY7VTGC3`](https://stellar.expert/explorer/testnet/contract/CCQXRR3SEP7UTSJORW43V2COD4D3HR6FCLZFJSPXBEH7W4WJWY7VTGC3) |
+| STA (SAC, stand-in for USDY) | [`CCOUVA654JH2V6B7LNTKHJP5DF3QA553RS2IIWXSGPDFH2N3QILIVU5L`](https://stellar.expert/explorer/testnet/contract/CCOUVA654JH2V6B7LNTKHJP5DF3QA553RS2IIWXSGPDFH2N3QILIVU5L) |
+| SYWrapper | [`CA23M3FMEZJL5MHYTCDLSU7NG4MJ5UYAAKIT5QC4W2TO4SDZQ5EX3XMN`](https://stellar.expert/explorer/testnet/contract/CA23M3FMEZJL5MHYTCDLSU7NG4MJ5UYAAKIT5QC4W2TO4SDZQ5EX3XMN) |
+| PTToken | [`CDHAJVFKVHJ3NTSVUVPSXEEFZT6LKHLOOQ35KPU7T6Z64XQEEGEE76ML`](https://stellar.expert/explorer/testnet/contract/CDHAJVFKVHJ3NTSVUVPSXEEFZT6LKHLOOQ35KPU7T6Z64XQEEGEE76ML) |
+| YTToken | [`CALVCKLXBODNE6AD5KRJY2TWX2WNGQIVIGXUCBOS7AFXC3Q6M5XMA2L2`](https://stellar.expert/explorer/testnet/contract/CALVCKLXBODNE6AD5KRJY2TWX2WNGQIVIGXUCBOS7AFXC3Q6M5XMA2L2) |
+| PrincipalManager | [`CDKBWCBFPIAVHYGKT6PUGU6ALELWCWXFC23NM3TYFYH6XLETVVMF3LRP`](https://stellar.expert/explorer/testnet/contract/CDKBWCBFPIAVHYGKT6PUGU6ALELWCWXFC23NM3TYFYH6XLETVVMF3LRP) |
+| RecoveryEscrow | [`CCH4DZ6B64IMY7CNINWSFUI46PTL4B266RZ63EZZWHW5AGGAAN5WNSKW`](https://stellar.expert/explorer/testnet/contract/CCH4DZ6B64IMY7CNINWSFUI46PTL4B266RZ63EZZWHW5AGGAAN5WNSKW) |
+
+**Issuer / protocol admin:** `GCWFJKLE45TMVZS42TMIYKAORKGBWE74753YPOSCC5ESJR2G2UMBXBDB` — the STA issuer's own key, satisfying every contract's market-creation gate (`admin == underlying_SAC.admin()`).
+**Alice** (ordinary holder): `GAK3XILRBYBMBOCZMSLL2CLR6WPQLEIOC6ZCYYPTE4OIAX3PCFFO2YMU`
+**Bob** (later flagged and recovered): `GDXVIRLSBDKT7EZM2RM3FH26W3TPF77IJ7GZBA5IOA6ZJBTW26NNO3AV`
+**Market maturity:** `1785427014` (a short-dated testnet market, reached and redeemed within this same deployment run)
+
+### Setup
+
+| Step | Transaction |
+|---|---|
+| Issuer sets `AUTH_REQUIRED`+`AUTH_REVOCABLE` on the STA issuing account | [c8722cb3…](https://stellar.expert/explorer/testnet/tx/c8722cb32fbc84fd2398f7eeb85c537e971c0164d588384f226d1e99b63f3fe0) |
+| Bob establishes a classic trustline to STA | [ac9e3a7a…](https://stellar.expert/explorer/testnet/tx/ac9e3a7ac6f6d6f525c0b009ae71274dd6119b8e920f9297a3939839c824a5a4) |
+| Issuer authorizes Bob's trustline | [794d70a0…](https://stellar.expert/explorer/testnet/tx/794d70a03c4d127a3903234ebae02d6505013c934a93b5d0df1088892f57cc1d) |
+| Issuer pays 1,000 STA to Bob | [82dc30b3…](https://stellar.expert/explorer/testnet/tx/82dc30b304eed4b61502ff47aa26936d08fe56090eb2f2e6b0cb2ae0c1589c03) |
+| Issuer pays 1,000 STA to Alice | [66f60592…](https://stellar.expert/explorer/testnet/tx/66f60592c6dba8b7c4deddfa53b115fd7e45b70b870eda5d328fe62ce803f663) |
+| OracleAdapter.initialize + set_reference_value (genesis 1.00) | [5ef5655f…](https://stellar.expert/explorer/testnet/tx/5ef5655f9d3c465e05b4011a1624e8cf23a994775065e3bcb0827b4fd4b3e4fa), [2073b9d5…](https://stellar.expert/explorer/testnet/tx/2073b9d5dc2cf4a33e69a85012b9da2db6bc60a4729c355538641a811e2b4ba0) |
+| Permissioning.initialize | [45bbcbc7…](https://stellar.expert/explorer/testnet/tx/45bbcbc7ecf68f6d82ac35ff047fa0b79757f1efbb2a1f713a83c497f0ddca18) |
+| RiskControl.initialize | [a53cbe5a…](https://stellar.expert/explorer/testnet/tx/a53cbe5a9a001b7e03cd48e1cdf6b9216c3d2f8e860bf0694f1e83368211ace4) |
+| SYWrapper.initialize | [173d434d…](https://stellar.expert/explorer/testnet/tx/173d434d4f7ae3fcee0f06a67200e06a2aa4b4f4578c4a1c7eb7f991b999e977) |
+| PTToken / YTToken / PrincipalManager.initialize, `set_minter` × 2, RecoveryEscrow.initialize, `set_recovery_escrow` × 2 | market-creation and wiring transactions, all under the issuer's key, per [DEPLOYMENT.md](DEPLOYMENT.md)'s order |
+| SYWrapper, PrincipalManager, and RecoveryEscrow's own contract addresses each granted `Permissioning.grant_account` and `underlying.set_authorized(id, true)` | required because they custody real STA on users' behalf — a Soroban contract address has no classic trustline, so the SAC's own `set_authorized` (not `set-trustline-flags`, which only accepts classic accounts) is what authorizes it |
+| Alice and Bob each granted `grant_account` + `grant_asset` for PT and YT | per-asset eligibility, mirroring PTToken/YTToken's independent-policy design |
+
+One real-world wrinkle worth recording: the first PT/YT/PrincipalManager instances were deployed with a maturity 240 seconds out, and the wiring transactions above alone took longer than that on real testnet (each one is a real ledger close, not a simulated instant test). `PrincipalManager.mint` correctly reverted `AlreadyMature` rather than let a deposit past its own maturity — exactly the check `mint_after_maturity_panics` exercises in the unit tests — so PT, YT, PrincipalManager, and RecoveryEscrow were redeployed with a 900-second maturity and rewired; the addresses above are that corrected deployment. SYWrapper and Alice's SY shares were unaffected and reused as-is, since SYWrapper carries no maturity of its own.
+
+### Thread 1 — Alice: continuous yield accrual, claimed without redeeming
+
+| Step | Transaction | Result |
+|---|---|---|
+| `SYWrapper.deposit(from=Alice, amount=500 STA)` | [5728686d…](https://stellar.expert/explorer/testnet/tx/5728686d24cca4e4b5c40493b4c40d5a8ee1d21e92696ae0cca9ffaa38e3dd7e) | 5,000,000,000 SY shares (1:1 at inception) |
+| `PrincipalManager.mint(from=Alice, sy_shares=5,000,000,000)` | [36860d63…](https://stellar.expert/explorer/testnet/tx/36860d63c31344a7e6ea6035c506a0906b3bf98c8d2a9a30c8f488e0d0795930) | 500 PT + 500 YT minted |
+| Oracle rate moves 1.00 → 1.08 (simulated NAV appreciation) | [21e30297…](https://stellar.expert/explorer/testnet/tx/21e30297bf72240beb2e2472cd8f992a21e051d1e0fc6cf8d4064e2fec7f615f) | — |
+| **`PrincipalManager.claim_yield(from=Alice)`** — mid-life, no PT/YT burned | [cbacf10c…](https://stellar.expert/explorer/testnet/tx/cbacf10c43ce153a95383d15b27136e7b839a4e922b8d5b632c597d3b7bde8d7) | **37.03705 STA paid to Alice's wallet in real underlying**, verified by her balance moving from 500.5 → 537.53705 STA; her PT and YT balances stayed at 500/500 |
+| Oracle rate moves 1.08 → 1.10; maturity reached | [f537ddca…](https://stellar.expert/explorer/testnet/tx/f537ddca936369445bbf83af20bbded9a7a7b1d0a70e03fd816c72b6c53d61b7) | — |
+| `PrincipalManager.redeem(from=Alice, pt_amount=500, yt_amount=500)` | [9ae67f42…](https://stellar.expert/explorer/testnet/tx/9ae67f429e2fda7978ae76c72fc5ae02f893dcddc42a8e23415db5de0627f957) | 454.5454545 STA (principal) + 9.0909542 STA (yield accrued since the mid-life claim) |
+
+Alice's final wallet balance: **1,001.1734587 STA** — every unit accounted for across two claims and one redemption, exactly matching `500 (unspent) + 37.03705 (mid-life claim) + 454.5454545 (PT principal) + 9.0909542 (remaining YT yield)`. Her PT and YT balances end at zero; `PrincipalManager.total_pt()`/`total_yt()` both read `0` once every position in the market has been settled.
+
+### Thread 2 — Bob: issuer-initiated compliance recovery, isolated to one account
+
+| Step | Transaction | Result |
+|---|---|---|
+| `SYWrapper.deposit(from=Bob, amount=300 STA)` | [6a6c1cda…](https://stellar.expert/explorer/testnet/tx/6a6c1cda02b2fdb150fc6868ba9e250c3fdd41520c558783b8d6ffb1e1885ad0) | 3,000,000,000 SY shares |
+| `PrincipalManager.mint(from=Bob, sy_shares=3,000,000,000)` | [f7eb96df…](https://stellar.expert/explorer/testnet/tx/f7eb96dff11049b0b16d0cd514fafd86ca21e69ba683ec11005cd65a8bb20ad1) | 300 PT + 300 YT minted |
+| Issuer clears Bob's trustline authorization on the classic STA asset (a regulator-style AML/compliance flag — the exact mechanism `underlying_SAC.authorized()` reads live) | [6d78b157…](https://stellar.expert/explorer/testnet/tx/6d78b157f535d84f76b95938210db0ca26decdc31b42bbb96e5f6077acb75f90) | `authorized(Bob)` now reads `false` |
+| `RecoveryEscrow.seize_pt(caller=issuer, account=Bob, amount=300)` | [669fa812…](https://stellar.expert/explorer/testnet/tx/669fa812cd038a34e394d23e7857f296e68b243c2ca166b2ae39368d4675a913) | Bob's 300 PT moved to the escrow; reverts unless the caller is the SAC's real, live admin *and* the target is already deauthorized |
+| `RecoveryEscrow.seize_yt(caller=issuer, account=Bob, amount=300)` | [474042a5…](https://stellar.expert/explorer/testnet/tx/474042a5fbb7d265b78471b4a21c77882bbfa20bb9d007ff50e7de2c4bbda629) | Bob's 300 YT moved to the escrow |
+| `RecoveryEscrow.finalize_pt(caller=issuer, pt_amount=300)` — post-maturity | [fb62bc54…](https://stellar.expert/explorer/testnet/tx/fb62bc549a4e2f3648f7d0d5e12924ad320dfd33c9a829cffc65fdf4f2f04a2f) | Escrow's seized PT redeemed through the real `PrincipalManager`: 272.7272727 STA released to the escrow |
+| `RecoveryEscrow.finalize_yt(caller=issuer, yt_amount=300)` | [04293656…](https://stellar.expert/explorer/testnet/tx/04293656f604d50802ec3ed416d25d5231f7d57c2e991768da8caa705fa7aed6) | Escrow's seized YT redeemed the same way: 5.4545725 STA released to the escrow |
+
+The escrow ends the run holding **278.1818452 STA** — real, spendable underlying recovered from a single flagged account — ready for the issuer's native SAC `clawback`, without a native clawback ever touching Bob's own wallet (his un-deposited 700 STA was never involved) and *without pausing or otherwise affecting Alice's market*, which redeemed normally in parallel. This is the property no plain PT/YT-splitting protocol has: a regulator-style action against one holder's position is fully containable to that holder, with the rest of the market provably unaffected — verified here by Alice's redemption succeeding for its full, correct amount in the same deployment where Bob's position was independently seized.
+
+### What This Deployment Proves
+
+| Claim | Evidence |
+|---|---|
+| All eight contracts deploy and wire together on a real network, not only in the in-process test harness | Every address above resolves on stellar.expert; `PrincipalManager.initialize`'s topology validation (M-01) accepted the real addresses, meaning they do share one underlying/permissioning/maturity/oracle |
+| Continuous yield accrual pays real underlying without burning the position | Alice's `claim_yield` transaction shows an actual STA transfer, and her PT/YT balances are unchanged immediately after |
+| YT yield already claimed doesn't get paid again at redemption | Alice's redemption's YT leg (9.0909542 STA) reflects only the 1.08→1.10 move *after* her claim, not the full 1.00→1.10 move |
+| Compliance recovery reaches only the flagged position | Bob's 700 STA of un-deposited wallet balance was never touched; only his 300-STA PT/YT position was seized and unwound |
+| Compliance recovery doesn't require pausing the market | Alice's mint, claim, and redemption all happened in the same deployment as Bob's deauthorization and seizure, with no `set_paused` call anywhere in this run |
+| Mint is correctly blocked once a market matures | The first PT/YT/PrincipalManager deployment's `mint` call reverted `AlreadyMature` in real conditions, not just in a test with a manipulated ledger clock |
+
+See [TESTNET_DEPLOYMENT_EVIDENCE.md](TESTNET_DEPLOYMENT_EVIDENCE.md) for the complete, unabridged transaction log — every setup, wiring, and demo call in this deployment, including the superseded first attempt.
+
+---
+
+## Historical Testnet Deployment (superseded)
+
+The deployment below is a historical record from an earlier development stage and is superseded by the full-stack deployment documented above. It predates `PTToken`, `YTToken`, `RecoveryEscrow`, and every compliance fix described elsewhere in this document; it is kept for reference only.
 
 All five originally-implemented contracts have been deployed and initialised on **Stellar Testnet** (June 2026). The deployment demonstrates the infrastructure and tokenization layer of the protocol executing real on-chain transactions.
 
