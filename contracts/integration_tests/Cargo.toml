@@ -1,0 +1,21 @@
+[package]
+name = "principal_integration_tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+doctest = false
+
+[dependencies]
+
+[dev-dependencies]
+soroban-sdk = { version = "26.0.1", features = ["testutils"] }
+principal_oracle_adapter = { path = "../oracle_adapter", features = ["testutils"] }
+principal_permissioning = { path = "../permissioning", features = ["testutils"] }
+principal_risk_control = { path = "../risk_control", features = ["testutils"] }
+principal_sy_wrapper = { path = "../sy_wrapper", features = ["testutils"] }
+principal_pt_token = { path = "../pt_token", features = ["testutils"] }
+principal_yt_token = { path = "../yt_token", features = ["testutils"] }
+principal_manager = { path = "../principal_manager", features = ["testutils"] }
+principal_recovery_escrow = { path = "../recovery_escrow", features = ["testutils"] }

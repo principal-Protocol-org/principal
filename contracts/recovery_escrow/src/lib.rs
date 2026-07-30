@@ -695,4 +695,70 @@ mod test {
         f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
         f.client.finalize_pt(&impostor, &seized);
     }
+
+    #[test]
+    #[should_panic]
+    fn double_initialize_panics() {
+        let f = setup();
+        f.client.initialize(
+            &f.underlying,
+            &f.sy.address,
+            &f.pt_id,
+            &f.yt_id,
+            &f.pm_id,
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn seize_sy_rejects_zero_shares() {
+        let f = setup();
+        let bad_actor = Address::generate(&f.env);
+        grant_and_fund(&f, &bad_actor, 500_000_000);
+        f.sy.deposit(&bad_actor, &500_000_000);
+        token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&bad_actor, &false);
+        f.client.seize_sy(&f.sac_admin, &bad_actor, &0_i128);
+    }
+
+    #[test]
+    #[should_panic]
+    fn seize_pt_rejects_zero_amount() {
+        let f = setup();
+        let bad_actor = Address::generate(&f.env);
+        grant_and_fund(&f, &bad_actor, 500_000_000);
+        let shares = f.sy.deposit(&bad_actor, &500_000_000);
+        f.pm.mint(&bad_actor, &shares);
+        token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&bad_actor, &false);
+        f.client.seize_pt(&f.sac_admin, &bad_actor, &0_i128);
+    }
+
+    #[test]
+    #[should_panic]
+    fn seize_yt_rejects_zero_amount() {
+        let f = setup();
+        let bad_actor = Address::generate(&f.env);
+        grant_and_fund(&f, &bad_actor, 500_000_000);
+        let shares = f.sy.deposit(&bad_actor, &500_000_000);
+        f.pm.mint(&bad_actor, &shares);
+        token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&bad_actor, &false);
+        f.client.seize_yt(&f.sac_admin, &bad_actor, &0_i128);
+    }
+
+    #[test]
+    #[should_panic]
+    fn finalize_pt_rejects_zero_amount() {
+        let maturity = T0 + 500;
+        let f = setup_with_maturity(maturity);
+        f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
+        f.client.finalize_pt(&f.sac_admin, &0_i128);
+    }
+
+    #[test]
+    #[should_panic]
+    fn finalize_yt_rejects_zero_amount() {
+        let maturity = T0 + 500;
+        let f = setup_with_maturity(maturity);
+        f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
+        f.client.finalize_yt(&f.sac_admin, &0_i128);
+    }
 }

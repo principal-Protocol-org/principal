@@ -910,4 +910,53 @@ mod test {
         let underlying_client = token::Client::new(&f.env, &f.underlying);
         assert_eq!(underlying_client.balance(&escrow), 500_000_000);
     }
+
+    #[test]
+    #[should_panic]
+    fn double_initialize_panics() {
+        let f = setup();
+        f.client.initialize(&f.admin, &f.underlying, &f.perm.address);
+    }
+
+    #[test]
+    #[should_panic]
+    fn seize_rejects_zero_shares() {
+        let f = setup();
+        let escrow = Address::generate(&f.env);
+        f.client.set_recovery_escrow(&f.admin, &escrow);
+        let bad_actor = Address::generate(&f.env);
+        grant(&f, &bad_actor);
+        f.client.seize(&escrow, &bad_actor, &0_i128);
+    }
+
+    #[test]
+    fn exchange_rate_before_any_deposit_is_rate_scale() {
+        let f = setup();
+        assert_eq!(f.client.exchange_rate(), RATE_SCALE);
+        assert_eq!(f.client.total_underlying(), 0);
+        assert_eq!(f.client.total_shares(), 0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn non_admin_cannot_set_paused() {
+        let f = setup();
+        let impostor = Address::generate(&f.env);
+        f.client.set_paused(&impostor, &true);
+    }
+
+    #[test]
+    fn admin_transfer_and_getters() {
+        let f = setup();
+        let escrow = Address::generate(&f.env);
+        f.client.set_recovery_escrow(&f.admin, &escrow);
+        assert_eq!(f.client.get_admin(), f.admin);
+        assert_eq!(f.client.underlying_address(), f.underlying);
+        assert_eq!(f.client.permissioning_address(), f.perm.address);
+        assert_eq!(f.client.recovery_escrow(), escrow);
+
+        let new_admin = Address::generate(&f.env);
+        f.client.transfer_admin(&f.admin, &new_admin);
+        assert_eq!(f.client.get_admin(), new_admin);
+    }
 }

@@ -1058,6 +1058,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "principal_integration_tests"
+version = "0.1.0"
+dependencies = [
+ "principal_manager",
+ "principal_oracle_adapter",
+ "principal_permissioning",
+ "principal_pt_token",
+ "principal_recovery_escrow",
+ "principal_risk_control",
+ "principal_sy_wrapper",
+ "principal_yt_token",
+ "soroban-sdk",
+]
+
+[[package]]
 name = "principal_manager"
 version = "0.1.0"
 dependencies = [

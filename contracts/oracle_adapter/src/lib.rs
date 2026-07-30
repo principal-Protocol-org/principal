@@ -227,6 +227,15 @@ mod test {
     }
 
     #[test]
+    #[should_panic]
+    fn unauthorized_transfer_admin_panics() {
+        let (env, client, _admin) = setup();
+        let impostor = Address::generate(&env);
+        let new_admin = Address::generate(&env);
+        client.transfer_admin(&impostor, &new_admin);
+    }
+
+    #[test]
     fn is_fresh_within_staleness_window() {
         let (env, client, admin) = setup();
         // Ledger at t=1000; oracle set at t=900 → diff=100 ≤ 3600 → fresh.
@@ -260,5 +269,17 @@ mod test {
         client.set_reference_value(&admin, &10_000_000_i128, &600_u64); // diff = 400
         assert!(client.is_fresh(&400_u64)); // 400 ≤ 400 → fresh
         assert!(!client.is_fresh(&399_u64)); // 400 > 399 → stale
+    }
+
+    #[test]
+    fn is_fresh_false_when_stored_timestamp_is_ahead_of_ledger_clock() {
+        // set_reference_value only checks the new timestamp against the previously *stored*
+        // one, not against the ledger clock -- so a future-dated submission (by mistake or
+        // otherwise) is possible. is_fresh must not treat that as fresh via an underflowed
+        // subtraction; it should explicitly return false instead.
+        let (env, client, admin) = setup();
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+        client.set_reference_value(&admin, &10_000_000_i128, &5_000_u64);
+        assert!(!client.is_fresh(&3_600_u64));
     }
 }

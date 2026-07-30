@@ -1193,4 +1193,296 @@ mod test {
         let impostor = Address::generate(&f.env);
         f.client.claim_yield(&impostor, &user);
     }
+
+    #[test]
+    #[should_panic]
+    fn double_initialize_panics() {
+        let f = setup();
+        f.client.initialize(
+            &f.admin,
+            &f.perm.address,
+            &f.underlying,
+            &f.oracle.address,
+            &u64::MAX,
+            &String::from_str(&f.env, "Yield Token USDY"),
+            &String::from_str(&f.env, "YT-USDY"),
+            &7,
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn set_minter_twice_panics() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        f.client.set_minter(&f.admin, &minter);
+    }
+
+    #[test]
+    #[should_panic]
+    fn set_recovery_escrow_twice_panics() {
+        let f = setup();
+        let escrow = Address::generate(&f.env);
+        f.client.set_recovery_escrow(&f.admin, &escrow);
+        f.client.set_recovery_escrow(&f.admin, &escrow);
+    }
+
+    #[test]
+    #[should_panic]
+    fn transfer_zero_amount_panics() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        let alice = Address::generate(&f.env);
+        let bob = Address::generate(&f.env);
+        grant(&f, &alice);
+        grant(&f, &bob);
+        f.client.mint(&alice, &(100 * SCALE));
+        f.client.transfer(&alice, &bob, &0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn transfer_insufficient_balance_panics() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        let alice = Address::generate(&f.env);
+        let bob = Address::generate(&f.env);
+        grant(&f, &alice);
+        grant(&f, &bob);
+        f.client.mint(&alice, &(100 * SCALE));
+        f.client.transfer(&alice, &bob, &(200 * SCALE));
+    }
+
+    #[test]
+    fn approve_and_transfer_from() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        let alice = Address::generate(&f.env);
+        let bob = Address::generate(&f.env);
+        let spender = Address::generate(&f.env);
+        grant(&f, &alice);
+        grant(&f, &bob);
+
+        f.client.mint(&alice, &(500 * SCALE));
+        f.client
+            .approve(&alice, &spender, &(300 * SCALE), &(f.env.ledger().sequence() + 100));
+        assert_eq!(f.client.allowance(&alice, &spender), 300 * SCALE);
+
+        f.client.transfer_from(&spender, &alice, &bob, &(200 * SCALE));
+        assert_eq!(f.client.balance(&alice), 300 * SCALE);
+        assert_eq!(f.client.balance(&bob), 200 * SCALE);
+        assert_eq!(f.client.allowance(&alice, &spender), 100 * SCALE);
+    }
+
+    #[test]
+    #[should_panic]
+    fn transfer_from_exceeding_allowance_panics() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        let alice = Address::generate(&f.env);
+        let bob = Address::generate(&f.env);
+        let spender = Address::generate(&f.env);
+        grant(&f, &alice);
+        grant(&f, &bob);
+
+        f.client.mint(&alice, &(500 * SCALE));
+        f.client
+            .approve(&alice, &spender, &(100 * SCALE), &(f.env.ledger().sequence() + 100));
+        f.client.transfer_from(&spender, &alice, &bob, &(200 * SCALE));
+    }
+
+    #[test]
+    #[should_panic]
+    fn transfer_from_expired_allowance_panics() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        let alice = Address::generate(&f.env);
+        let bob = Address::generate(&f.env);
+        let spender = Address::generate(&f.env);
+        grant(&f, &alice);
+        grant(&f, &bob);
+
+        f.client.mint(&alice, &(500 * SCALE));
+        let expiration = f.env.ledger().sequence() + 5;
+        f.client
+            .approve(&alice, &spender, &(200 * SCALE), &expiration);
+        f.env
+            .ledger()
+            .with_mut(|li| li.sequence_number = expiration + 1);
+        f.client.transfer_from(&spender, &alice, &bob, &(200 * SCALE));
+    }
+
+    #[test]
+    fn views_and_getters() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        let escrow = Address::generate(&f.env);
+        f.client.set_recovery_escrow(&f.admin, &escrow);
+
+        assert_eq!(f.client.decimals(), 7);
+        assert_eq!(
+            f.client.name(),
+            String::from_str(&f.env, "Yield Token USDY")
+        );
+        assert_eq!(f.client.symbol(), String::from_str(&f.env, "YT-USDY"));
+        assert_eq!(f.client.total_supply(), 0);
+        assert_eq!(f.client.maturity(), u64::MAX);
+        assert_eq!(f.client.minter(), minter);
+        assert_eq!(f.client.get_admin(), f.admin);
+        assert_eq!(f.client.recovery_escrow(), escrow);
+        assert_eq!(f.client.underlying_address(), f.underlying);
+        assert_eq!(f.client.permissioning_address(), f.perm.address);
+        assert_eq!(f.client.oracle_address(), f.oracle.address);
+
+        let user = Address::generate(&f.env);
+        grant(&f, &user);
+        f.client.mint(&user, &(10 * SCALE));
+        assert_eq!(f.client.last_claimed_index(&user), SCALE);
+        assert_eq!(f.client.pending_claim(&user), 0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn set_minter_by_non_admin_panics() {
+        let f = setup();
+        let impostor = Address::generate(&f.env);
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&impostor, &minter);
+    }
+
+    #[test]
+    #[should_panic]
+    fn mint_to_account_granted_but_not_per_asset_panics() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        let user = Address::generate(&f.env);
+        // Account-level grant only -- never granted for this specific YT asset.
+        f.perm.grant_account(&f.perm_admin, &user);
+        token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&user, &true);
+        f.client.mint(&user, &(10 * SCALE));
+    }
+
+    #[test]
+    #[should_panic]
+    fn mint_zero_amount_panics() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        let user = Address::generate(&f.env);
+        grant(&f, &user);
+        f.client.mint(&user, &0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn burn_zero_amount_panics() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        let user = Address::generate(&f.env);
+        grant(&f, &user);
+        f.client.mint(&user, &(10 * SCALE));
+        f.client.burn(&user, &0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn burn_insufficient_balance_panics() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        let user = Address::generate(&f.env);
+        grant(&f, &user);
+        f.client.mint(&user, &(10 * SCALE));
+        f.client.burn(&user, &(20 * SCALE));
+    }
+
+    #[test]
+    #[should_panic]
+    fn seize_rejects_zero_amount() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        let escrow = Address::generate(&f.env);
+        f.client.set_recovery_escrow(&f.admin, &escrow);
+        let bad_actor = Address::generate(&f.env);
+        grant(&f, &bad_actor);
+        f.client.mint(&bad_actor, &(10 * SCALE));
+        f.client.seize(&escrow, &bad_actor, &0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn seize_cannot_exceed_target_balance() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        let escrow = Address::generate(&f.env);
+        f.client.set_recovery_escrow(&f.admin, &escrow);
+        let bad_actor = Address::generate(&f.env);
+        grant(&f, &bad_actor);
+        f.client.mint(&bad_actor, &(10 * SCALE));
+        f.client.seize(&escrow, &bad_actor, &(20 * SCALE));
+    }
+
+    #[test]
+    #[should_panic]
+    fn transfer_from_zero_amount_panics() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        let alice = Address::generate(&f.env);
+        let bob = Address::generate(&f.env);
+        let spender = Address::generate(&f.env);
+        grant(&f, &alice);
+        grant(&f, &bob);
+        f.client.mint(&alice, &(500 * SCALE));
+        f.client.approve(
+            &alice,
+            &spender,
+            &(300 * SCALE),
+            &(f.env.ledger().sequence() + 100),
+        );
+        f.client.transfer_from(&spender, &alice, &bob, &0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn transfer_from_insufficient_balance_panics() {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        let alice = Address::generate(&f.env);
+        let bob = Address::generate(&f.env);
+        let spender = Address::generate(&f.env);
+        grant(&f, &alice);
+        grant(&f, &bob);
+        f.client.mint(&alice, &(10 * SCALE));
+        f.client.approve(
+            &alice,
+            &spender,
+            &(500 * SCALE),
+            &(f.env.ledger().sequence() + 100),
+        );
+        f.client.transfer_from(&spender, &alice, &bob, &(20 * SCALE));
+    }
+
+    #[test]
+    #[should_panic]
+    fn approve_negative_amount_panics() {
+        let f = setup();
+        let alice = Address::generate(&f.env);
+        let spender = Address::generate(&f.env);
+        grant(&f, &alice);
+        f.client
+            .approve(&alice, &spender, &-1, &(f.env.ledger().sequence() + 100));
+    }
 }

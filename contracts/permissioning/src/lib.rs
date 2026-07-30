@@ -225,4 +225,11 @@ mod test {
         client.transfer_admin(&admin, &new_admin);
         assert_eq!(client.get_admin(), new_admin);
     }
+
+    #[test]
+    #[should_panic]
+    fn double_initialize_panics() {
+        let (_env, client, admin) = setup();
+        client.initialize(&admin);
+    }
 }

@@ -1372,4 +1372,52 @@ mod test {
         f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
         f.client.redeem(&user, &result.pt_minted, &0_i128);
     }
+
+    #[test]
+    #[should_panic]
+    fn double_initialize_panics() {
+        let f = setup(u64::MAX);
+        f.client.initialize(
+            &f.pm_admin,
+            &f.sy.address,
+            &f.pt.address,
+            &f.yt.address,
+            &f.oracle.address,
+            &f.perm.address,
+            &f.underlying,
+            &u64::MAX,
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn mint_zero_shares_panics() {
+        let f = setup(u64::MAX);
+        let user = Address::generate(&f.env);
+        grant_user(&f, &user);
+        f.client.mint(&user, &0_i128);
+    }
+
+    #[test]
+    #[should_panic]
+    fn redeem_zero_amounts_panics() {
+        let maturity = T0 + 500;
+        let f = setup(maturity);
+        let user = Address::generate(&f.env);
+        grant_user(&f, &user);
+        let shares = deposit_sy(&f, &user, 10_i128 * SCALE);
+        f.client.mint(&user, &shares);
+
+        f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
+        f.client.redeem(&user, &0_i128, &0_i128);
+    }
+
+    #[test]
+    #[should_panic]
+    fn non_admin_cannot_transfer_admin() {
+        let f = setup(u64::MAX);
+        let impostor = Address::generate(&f.env);
+        let new_admin = Address::generate(&f.env);
+        f.client.transfer_admin(&impostor, &new_admin);
+    }
 }
