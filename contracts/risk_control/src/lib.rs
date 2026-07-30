@@ -43,6 +43,7 @@ pub enum Error {
     AlreadyPauser = 7,
     NotConsumer = 8,
     AlreadyConsumer = 9,
+    ZeroAmount = 10,
 }
 
 #[contracttype]
@@ -219,6 +220,10 @@ impl RiskControlContract {
             panic_with_error!(&env, Error::Paused);
         }
 
+        if amount <= 0 {
+            panic_with_error!(&env, Error::ZeroAmount);
+        }
+
         let limit: i128 = env.storage().instance().get(&DataKey::CbLimit).unwrap_or(0);
         if limit == 0 {
             return; // circuit breaker disabled
@@ -375,6 +380,22 @@ mod test {
         let (_env, client, _admin, consumer) = setup(0);
         // Should not trip even for a huge deposit.
         client.check_deposit(&consumer, &(i128::MAX / 2));
+    }
+
+    #[test]
+    #[should_panic]
+    fn check_deposit_rejects_zero_amount() {
+        // A registered consumer passing amount <= 0 could otherwise reduce or no-op the
+        // recorded circuit-breaker volume without moving any real value.
+        let (_env, client, _admin, consumer) = setup(1_000_000);
+        client.check_deposit(&consumer, &0_i128);
+    }
+
+    #[test]
+    #[should_panic]
+    fn check_deposit_rejects_negative_amount() {
+        let (_env, client, _admin, consumer) = setup(1_000_000);
+        client.check_deposit(&consumer, &(-1_i128));
     }
 
     #[test]

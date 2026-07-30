@@ -515,14 +515,13 @@
         }
       ]
     ],
-    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAXI7N",
         {
           "function": {
             "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON",
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVAX5",
               "function_name": "claim_yield",
               "args": [
                 {
@@ -535,6 +534,7 @@
         }
       ]
     ],
+    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAXI7N",
@@ -556,22 +556,7 @@
               ]
             }
           },
-          "sub_invocations": [
-            {
-              "function": {
-                "contract_fn": {
-                  "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON",
-                  "function_name": "claim_yield",
-                  "args": [
-                    {
-                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAXI7N"
-                    }
-                  ]
-                }
-              },
-              "sub_invocations": []
-            }
-          ]
+          "sub_invocations": []
         }
       ]
     ]
@@ -1156,7 +1141,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "1000000000"
+                "i128": "970873700"
               }
             }
           },
@@ -1251,7 +1236,7 @@
                         ]
                       },
                       "val": {
-                        "i128": "1000000000"
+                        "i128": "970873700"
                       }
                     },
                     {
@@ -1263,7 +1248,7 @@
                         ]
                       },
                       "val": {
-                        "i128": "1000000000"
+                        "i128": "970873700"
                       }
                     },
                     {
@@ -1932,7 +1917,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "1000000000"
+                      "i128": "970873700"
                     }
                   },
                   {
@@ -2036,7 +2021,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "0"
+                      "i128": "29126300"
                     }
                   },
                   {

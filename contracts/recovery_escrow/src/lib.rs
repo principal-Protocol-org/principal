@@ -37,21 +37,15 @@
 //! `PrincipalManager.redeem(from=self, ...)` on this contract's own already-seized balance,
 //! which burns it (`PTToken`/`YTToken`'s minter-only `burn`, authorized by `PrincipalManager`'s
 //! own direct self-authorization) and pays the resulting underlying here via `SYWrapper.withdraw`
-//! (same mechanism `seize_sy` uses directly). `finalize_yt` additionally calls
-//! `env.authorize_as_current_contract` before invoking `redeem`: `YTToken.claim_yield(from=self)`
-//! is two call frames below this one (`RecoveryEscrow -> PrincipalManager -> YTToken`), and a
-//! contract's ordinary self-authorization only covers calls it makes *directly* -- reaching one
-//! frame further requires explicitly pre-declaring that specific sub-invocation. No separate
-//! deauthorization check is needed at finalize time: the target was already verified deauthorized
-//! at `seize_pt`/`seize_yt` time, and finalize only ever acts on this contract's own balance, not
-//! a third party's.
+//! (same mechanism `seize_sy` uses directly). No separate deauthorization check is needed at
+//! finalize time: the target was already verified deauthorized at `seize_pt`/`seize_yt` time, and
+//! finalize only ever acts on this contract's own balance, not a third party's.
 
 #![no_std]
 
 use soroban_sdk::{
-    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error,
-    symbol_short, token, vec, Address, Env, IntoVal, Symbol,
+    symbol_short, token, Address, Env,
 };
 
 #[contractclient(name = "SYWrapperClient")]
@@ -232,11 +226,13 @@ impl RecoveryEscrowContract {
     /// index (see `PrincipalManager`'s module docs) and pays the resulting underlying here via
     /// `SYWrapper.withdraw`.
     ///
-    /// `PrincipalManager.redeem` calls `YTToken.claim_yield(from=self)` two frames below this
-    /// call (RecoveryEscrow -> PrincipalManager -> YTToken), and `claim_yield` requires `from`'s
-    /// own authorization. A contract's self-authorization only covers calls it makes directly;
-    /// authorizing a call two frames down requires explicitly pre-declaring it via
-    /// `authorize_as_current_contract` before making the outer call, which is what this does.
+    /// `PrincipalManager.redeem` calls `YTToken.claim_yield` two frames below this call
+    /// (RecoveryEscrow -> PrincipalManager -> YTToken). `claim_yield` used to require `from`'s
+    /// own authorization, which meant this contract had to explicitly pre-declare that
+    /// sub-invocation via `authorize_as_current_contract` (a contract's ordinary
+    /// self-authorization only covers calls it makes directly, one frame). Since `claim_yield`
+    /// is now minter-gated instead (H-03) -- authorized on `PrincipalManager`'s own address, the
+    /// contract that actually calls it directly -- that workaround is no longer needed here.
     pub fn finalize_yt(env: Env, caller: Address, yt_amount: i128) -> i128 {
         Self::assert_issuer_admin(&env, &caller);
         if yt_amount <= 0 {
@@ -244,20 +240,7 @@ impl RecoveryEscrowContract {
         }
 
         let principal_manager = Self::get(&env, &DataKey::PrincipalManager);
-        let yt_token = Self::get(&env, &DataKey::YTToken);
         let self_addr = env.current_contract_address();
-
-        env.authorize_as_current_contract(vec![
-            &env,
-            InvokerContractAuthEntry::Contract(SubContractInvocation {
-                context: ContractContext {
-                    contract: yt_token,
-                    fn_name: Symbol::new(&env, "claim_yield"),
-                    args: vec![&env, self_addr.into_val(&env)],
-                },
-                sub_invocations: vec![&env],
-            }),
-        ]);
 
         let result =
             PrincipalManagerClient::new(&env, &principal_manager).redeem(&self_addr, &0, &yt_amount);

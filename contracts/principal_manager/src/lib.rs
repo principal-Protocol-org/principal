@@ -20,18 +20,25 @@
 //! # Why YT redemption delegates to YTToken instead of computing its own formula
 //! An earlier version of this contract computed YT's payout itself, from a per-user rate
 //! recorded at mint time: `yt_amount * max(0, R_final - R_initial) / R_final`. That formula is
-//! numerically correct for a single, unbroken holding period -- but `YTToken.claim_yield` is a
-//! separate, publicly callable entrypoint (`from.require_auth()` only, no permissioning around
-//! *when* it can be called) backed by its own continuously-compounding index
-//! (`update_yield_index`/`settle`, see YTToken's module docs). If this contract paid out its own
-//! independently-computed amount at redemption *and* a holder could also call
-//! `YTToken.claim_yield` directly at any point beforehand, the two paths could both pay out for
-//! the same accrued yield. Rather than have two payers for one claim, redemption calls
-//! `YTToken.update_yield_index` then `claim_yield` and treats its return value as authoritative --
-//! it is already expressed in underlying units (verified: for a single price movement it is
-//! numerically identical to the formula above; for multiple intermediate oracle updates it
-//! compounds per-step, which is the standard, defensible approach and the one actually reachable
-//! by any YT holder today).
+//! numerically correct for a single, unbroken holding period -- but `YTToken.claim_yield` is
+//! backed by its own continuously-compounding index (`update_yield_index`/`settle`, see YTToken's
+//! module docs), independent of anything tracked here. If this contract paid out its own
+//! independently-computed amount at redemption *and* a holder could also claim through YTToken
+//! directly at any point beforehand, the two paths could both pay out for the same accrued
+//! yield. Rather than have two payers for one claim, redemption calls `YTToken.update_yield_index`
+//! then `claim_yield` and treats its return value as authoritative -- it is already expressed in
+//! underlying units (verified: for a single price movement it is numerically identical to the
+//! formula above; for multiple intermediate oracle updates it compounds per-step, which is the
+//! standard, defensible approach and the one actually reachable by any YT holder today).
+//!
+//! # `claim_yield` — accrual without redemption
+//! `YTToken.claim_yield` is minter-gated (only `PrincipalManager` can call it), specifically so
+//! that this contract can be the sole place that turns a settled claim into a real payment. This
+//! contract's own `claim_yield` lets a holder collect accrued yield without burning their YT or
+//! waiting for maturity: it brings the index current, claims through YTToken as the registered
+//! minter, and pays the result out via `SYWrapper.withdraw` in the same call -- unlike the
+//! now-removed direct path, there is no way to settle a claim without also being paid for it.
+//! Found during audit review (H-03).
 //!
 //! # Compliance — authorization inheritance and market creation
 //! `mint` and `redeem` check both `underlying_SAC.authorized(from)` (the mandatory floor,
@@ -90,6 +97,8 @@ pub trait SYWrapperInterface {
     fn transfer(env: Env, from: Address, to: Address, amount: i128) -> i128;
     fn withdraw(env: Env, from: Address, shares: i128, to: Address) -> i128;
     fn exchange_rate(env: Env) -> i128;
+    fn underlying_address(env: Env) -> Address;
+    fn permissioning_address(env: Env) -> Address;
 }
 
 /// Minimum interface required from PTToken.
@@ -99,6 +108,9 @@ pub trait PTTokenInterface {
     fn burn(env: Env, from: Address, amount: i128);
     fn balance(env: Env, account: Address) -> i128;
     fn total_supply(env: Env) -> i128;
+    fn underlying_address(env: Env) -> Address;
+    fn permissioning_address(env: Env) -> Address;
+    fn maturity(env: Env) -> u64;
 }
 
 /// Minimum interface required from YTToken.
@@ -107,9 +119,13 @@ pub trait YTTokenInterface {
     fn mint(env: Env, to: Address, amount: i128);
     fn burn(env: Env, from: Address, amount: i128);
     fn update_yield_index(env: Env);
-    fn claim_yield(env: Env, from: Address) -> i128;
+    fn claim_yield(env: Env, caller: Address, from: Address) -> i128;
     fn balance(env: Env, account: Address) -> i128;
     fn total_supply(env: Env) -> i128;
+    fn underlying_address(env: Env) -> Address;
+    fn permissioning_address(env: Env) -> Address;
+    fn oracle_address(env: Env) -> Address;
+    fn maturity(env: Env) -> u64;
 }
 
 // ---------------------------------------------------------------------------
@@ -131,6 +147,7 @@ pub enum Error {
     PermissionDenied = 10,
     NotAuthorizedOnSac = 11,
     IssuerMismatch = 12,
+    TopologyMismatch = 13,
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +227,16 @@ impl PrincipalManagerContract {
         if admin != sac_admin {
             panic_with_error!(&env, Error::IssuerMismatch);
         }
+        Self::assert_topology_matches(
+            &env,
+            &sy_wrapper,
+            &pt_token,
+            &yt_token,
+            &oracle,
+            &permissioning,
+            &underlying,
+            maturity,
+        );
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -237,6 +264,7 @@ impl PrincipalManagerContract {
         from.require_auth();
         Self::assert_not_paused(&env);
         Self::assert_not_mature(&env);
+        Self::assert_oracle_fresh(&env);
         if sy_shares <= 0 {
             panic_with_error!(&env, Error::ZeroAmount);
         }
@@ -264,8 +292,18 @@ impl PrincipalManagerContract {
         // registered minter on both (set via `set_minter` after this contract is deployed).
         let pt_token = Self::get_pt_token(&env);
         let yt_token = Self::get_yt_token(&env);
+        let yt_client = YTTokenClient::new(&env, &yt_token);
+        // Bring the global yield factor current BEFORE crediting the new balance. YTToken's
+        // settle() bases pending yield on the account's OWN balance, which is zero until this
+        // mint -- so a fresh mint can never retroactively earn a PRIOR factor movement, as long
+        // as that movement is folded in here first. Skipping this call would let any gap since
+        // the last update_yield_index() (a stale genesis, or simply time since the last mint)
+        // get credited as yield to this brand-new position once someone eventually calls
+        // update_yield_index() later, double-counting the same oracle move that already priced
+        // this mint's notional above. Found during audit review (H-01).
+        yt_client.update_yield_index();
         PTTokenClient::new(&env, &pt_token).mint(&from, &notional);
-        YTTokenClient::new(&env, &yt_token).mint(&from, &notional);
+        yt_client.mint(&from, &notional);
 
         env.events()
             .publish((symbol_short!("mint"),), (from, sy_shares, notional));
@@ -324,7 +362,7 @@ impl PrincipalManagerContract {
             // accrual/claim mechanism instead of computing a second, independent payout here.
             yt_client.update_yield_index();
             yt_client.burn(&from, &yt_amount);
-            let desired_underlying = yt_client.claim_yield(&from);
+            let desired_underlying = yt_client.claim_yield(&this_contract, &from);
             if desired_underlying > 0 {
                 let shares =
                     Self::underlying_to_shares(sy_client.exchange_rate(), desired_underlying);
@@ -341,6 +379,38 @@ impl PrincipalManagerContract {
             underlying_from_pt: from_pt,
             underlying_from_yt: from_yt,
         }
+    }
+
+    /// Claim accrued YT yield without redeeming (burning) the underlying YT position. Available
+    /// before maturity -- continuous accrual is the point of holding YT ahead of redemption --
+    /// unlike `redeem`, this does not require the market to have matured. See this module's doc
+    /// comment for why `YTToken.claim_yield` is minter-gated and why this is now the only path
+    /// that turns a settled claim into an actual payment (H-03).
+    pub fn claim_yield(env: Env, from: Address) -> i128 {
+        from.require_auth();
+        Self::assert_not_paused(&env);
+        Self::assert_oracle_fresh(&env);
+        Self::assert_sac_authorized(&env, &from);
+        Self::assert_permitted(&env, &from);
+
+        let yt_token = Self::get_yt_token(&env);
+        let yt_client = YTTokenClient::new(&env, &yt_token);
+        let this_contract = env.current_contract_address();
+
+        yt_client.update_yield_index();
+        let desired_underlying = yt_client.claim_yield(&this_contract, &from);
+
+        let mut paid = 0_i128;
+        if desired_underlying > 0 {
+            let sy_wrapper = Self::get_sy_wrapper(&env);
+            let sy_client = SYWrapperClient::new(&env, &sy_wrapper);
+            let shares = Self::underlying_to_shares(sy_client.exchange_rate(), desired_underlying);
+            paid = sy_client.withdraw(&this_contract, &shares, &from);
+        }
+
+        env.events()
+            .publish((symbol_short!("yt_claim"),), (from, paid));
+        paid
     }
 
     // --- views ---
@@ -408,6 +478,51 @@ impl PrincipalManagerContract {
     }
 
     // --- internal helpers ---
+
+    /// Verifies the configured SY/PT/YT contracts actually belong together before this market
+    /// ever accepts a deposit: same underlying SAC, same permissioning contract, PT/YT maturity
+    /// matching this market's own, and YTToken's oracle matching this market's own. Without this,
+    /// a deployment mistake could pair PT/YT from one market with SY custody or oracle
+    /// assumptions from another -- a high-blast-radius configuration risk even if adversarially
+    /// unreachable under a tightly controlled deployment process. Mirrors
+    /// `RecoveryEscrow.assert_position_underlying_matches`'s existing precedent for the
+    /// underlying-consistency check. Found during audit review (M-01).
+    fn assert_topology_matches(
+        env: &Env,
+        sy_wrapper: &Address,
+        pt_token: &Address,
+        yt_token: &Address,
+        oracle: &Address,
+        permissioning: &Address,
+        underlying: &Address,
+        maturity: u64,
+    ) {
+        let sy_client = SYWrapperClient::new(env, sy_wrapper);
+        let pt_client = PTTokenClient::new(env, pt_token);
+        let yt_client = YTTokenClient::new(env, yt_token);
+
+        if sy_client.underlying_address() != *underlying
+            || pt_client.underlying_address() != *underlying
+            || yt_client.underlying_address() != *underlying
+        {
+            panic_with_error!(env, Error::TopologyMismatch);
+        }
+
+        if sy_client.permissioning_address() != *permissioning
+            || pt_client.permissioning_address() != *permissioning
+            || yt_client.permissioning_address() != *permissioning
+        {
+            panic_with_error!(env, Error::TopologyMismatch);
+        }
+
+        if pt_client.maturity() != maturity || yt_client.maturity() != maturity {
+            panic_with_error!(env, Error::TopologyMismatch);
+        }
+
+        if yt_client.oracle_address() != *oracle {
+            panic_with_error!(env, Error::TopologyMismatch);
+        }
+    }
 
     fn get_oracle_rate(env: &Env) -> i128 {
         let oracle_addr: Address = env
@@ -817,11 +932,11 @@ mod test {
     }
 
     #[test]
-    fn redeem_yt_does_not_double_pay_yield_already_claimed_directly() {
-        // YTToken.claim_yield is independently, publicly callable by any holder. If a user
-        // claims yield directly and then redeems through PrincipalManager, redeem() must not
-        // pay out that same accrued amount a second time -- both paths settle against the same
-        // index, so whichever runs second sees nothing left pending.
+    fn redeem_yt_does_not_double_pay_yield_already_claimed_via_claim_yield() {
+        // PrincipalManager.claim_yield lets a holder collect accrued yield ahead of redemption,
+        // paying real underlying (H-03). If a user claims this way and then redeems, redeem()
+        // must not pay out that same accrued amount a second time -- both paths settle against
+        // the same YTToken index, so whichever runs second sees nothing left pending.
         let maturity = T0 + 500;
         let f = setup(maturity);
         let user = Address::generate(&f.env);
@@ -834,14 +949,38 @@ mod test {
         f.oracle
             .set_reference_value(&f.oracle_admin, &10_300_000_i128, &(maturity + 1));
 
-        // User claims directly, out-of-band from PrincipalManager, before redeeming.
-        f.yt.update_yield_index();
-        let direct_claim = f.yt.claim_yield(&user);
+        // User claims ahead of redemption; this must actually pay out real underlying.
+        let direct_claim = f.client.claim_yield(&user);
         assert!(direct_claim > 0);
+        assert_eq!(
+            token::Client::new(&f.env, &f.underlying).balance(&user),
+            direct_claim
+        );
 
         // Redemption must not pay the same yield again.
         let r = f.client.redeem(&user, &0_i128, &yt);
         assert_eq!(r.underlying_from_yt, 0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn claim_yield_cannot_be_called_directly_on_yt_token() {
+        // H-03 regression: the old direct-claim footgun the audit flagged must be closed --
+        // YTToken.claim_yield is now minter-gated, so a user (not PrincipalManager) calling it
+        // directly must fail, not silently zero their pending claim with no payment.
+        let maturity = T0 + 500;
+        let f = setup(maturity);
+        let user = Address::generate(&f.env);
+        grant_user(&f, &user);
+        let shares = deposit_sy(&f, &user, 100_i128 * SCALE);
+        f.client.mint(&user, &shares);
+
+        f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
+        f.oracle
+            .set_reference_value(&f.oracle_admin, &10_300_000_i128, &(maturity + 1));
+
+        f.yt.update_yield_index();
+        f.yt.claim_yield(&user, &user);
     }
 
     #[test]
@@ -878,6 +1017,50 @@ mod test {
             .ledger()
             .with_mut(|li| li.timestamp = T0 + MAX_ORACLE_STALENESS_SECS + 1);
         f.client.redeem(&user, &(10_i128 * SCALE), &0_i128);
+    }
+
+    #[test]
+    #[should_panic]
+    fn oracle_stale_blocks_mint() {
+        // H-02 regression: mint() must enforce the same freshness gate redeem() already has.
+        let f = setup(u64::MAX);
+        let user = Address::generate(&f.env);
+        grant_user(&f, &user);
+        let shares = deposit_sy(&f, &user, 10_i128 * SCALE);
+
+        f.env
+            .ledger()
+            .with_mut(|li| li.timestamp = T0 + MAX_ORACLE_STALENESS_SECS + 1);
+        f.client.mint(&user, &shares);
+    }
+
+    #[test]
+    fn late_minter_does_not_receive_prior_yield() {
+        // H-01 regression (PrincipalManager side): mint() must bring the YT yield index
+        // current BEFORE crediting a new mint's balance. Otherwise a rate movement that
+        // happened before a user's mint would sit unrealized in the global factor and get
+        // credited to that user as soon as anyone eventually calls update_yield_index(),
+        // double-counting the same oracle move already priced into their notional at mint.
+        let f = setup(u64::MAX);
+
+        let early_user = Address::generate(&f.env);
+        grant_user(&f, &early_user);
+        let early_shares = deposit_sy(&f, &early_user, 10_i128 * SCALE);
+        f.client.mint(&early_user, &early_shares);
+
+        // Rate moves up before the second user ever mints.
+        f.env.ledger().with_mut(|li| li.timestamp = T0 + 100);
+        f.oracle
+            .set_reference_value(&f.oracle_admin, &(SCALE * 11 / 10), &(T0 + 100));
+
+        let late_user = Address::generate(&f.env);
+        grant_user(&f, &late_user);
+        let late_shares = deposit_sy(&f, &late_user, 10_i128 * SCALE);
+        f.client.mint(&late_user, &late_shares);
+
+        // The late minter must not be able to claim any of the yield generated by the rate
+        // movement that happened before they ever held YT.
+        assert_eq!(f.client.claim_yield(&late_user), 0);
     }
 
     #[test]
@@ -953,6 +1136,211 @@ mod test {
             &perm_id,
             &underlying,
             &u64::MAX,
+        );
+    }
+
+    /// Deploys oracle + permissioning + an underlying SAC (admined by a freshly generated
+    /// address) shared by every test in the M-01 topology-mismatch group below, so each test
+    /// only needs to construct the one deliberately-mismatched piece itself.
+    struct TopologyBase {
+        env: Env,
+        admin: Address,
+        underlying: Address,
+        oracle_id: Address,
+        perm_id: Address,
+    }
+
+    fn topology_base() -> TopologyBase {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|li| li.timestamp = T0);
+
+        let oracle_id = env.register_contract(None, OracleAdapterContract);
+        let oracle = OracleAdapterContractClient::new(&env, &oracle_id);
+        let admin = Address::generate(&env);
+        oracle.initialize(&admin);
+        oracle.set_reference_value(&admin, &SCALE, &T0);
+
+        let perm_id = env.register_contract(None, PermissioningContract);
+        PermissioningContractClient::new(&env, &perm_id).initialize(&admin);
+
+        let underlying = env
+            .register_stellar_asset_contract_v2(admin.clone())
+            .address();
+
+        TopologyBase {
+            env,
+            admin,
+            underlying,
+            oracle_id,
+            perm_id,
+        }
+    }
+
+    #[test]
+    #[should_panic]
+    fn initialize_rejects_mismatched_underlying() {
+        // M-01 regression: PTToken deployed against a different underlying SAC than the one
+        // this market's PrincipalManager is configured with.
+        let b = topology_base();
+        let other_underlying = b
+            .env
+            .register_stellar_asset_contract_v2(b.admin.clone())
+            .address();
+
+        let sy_id = b.env.register_contract(None, SYWrapperContract);
+        SYWrapperContractClient::new(&b.env, &sy_id).initialize(&b.admin, &b.underlying, &b.perm_id);
+
+        let pt_id = b.env.register_contract(None, PTTokenContract);
+        PTTokenContractClient::new(&b.env, &pt_id).initialize(
+            &b.admin,
+            &b.perm_id,
+            &other_underlying, // mismatched
+            &u64::MAX,
+            &String::from_str(&b.env, "Principal Token USDY"),
+            &String::from_str(&b.env, "PT-USDY"),
+            &7,
+        );
+
+        let yt_id = b.env.register_contract(None, YTTokenContract);
+        YTTokenContractClient::new(&b.env, &yt_id).initialize(
+            &b.admin,
+            &b.perm_id,
+            &b.underlying,
+            &b.oracle_id,
+            &u64::MAX,
+            &String::from_str(&b.env, "Yield Token USDY"),
+            &String::from_str(&b.env, "YT-USDY"),
+            &7,
+        );
+
+        let pm_id = b.env.register_contract(None, PrincipalManagerContract);
+        PrincipalManagerContractClient::new(&b.env, &pm_id).initialize(
+            &b.admin, &sy_id, &pt_id, &yt_id, &b.oracle_id, &b.perm_id, &b.underlying, &u64::MAX,
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn initialize_rejects_mismatched_permissioning() {
+        // M-01 regression: YTToken deployed against a different permissioning contract than
+        // the one this market's PrincipalManager is configured with.
+        let b = topology_base();
+        let other_perm_id = b.env.register_contract(None, PermissioningContract);
+        PermissioningContractClient::new(&b.env, &other_perm_id).initialize(&b.admin);
+
+        let sy_id = b.env.register_contract(None, SYWrapperContract);
+        SYWrapperContractClient::new(&b.env, &sy_id).initialize(&b.admin, &b.underlying, &b.perm_id);
+
+        let pt_id = b.env.register_contract(None, PTTokenContract);
+        PTTokenContractClient::new(&b.env, &pt_id).initialize(
+            &b.admin,
+            &b.perm_id,
+            &b.underlying,
+            &u64::MAX,
+            &String::from_str(&b.env, "Principal Token USDY"),
+            &String::from_str(&b.env, "PT-USDY"),
+            &7,
+        );
+
+        let yt_id = b.env.register_contract(None, YTTokenContract);
+        YTTokenContractClient::new(&b.env, &yt_id).initialize(
+            &b.admin,
+            &other_perm_id, // mismatched
+            &b.underlying,
+            &b.oracle_id,
+            &u64::MAX,
+            &String::from_str(&b.env, "Yield Token USDY"),
+            &String::from_str(&b.env, "YT-USDY"),
+            &7,
+        );
+
+        let pm_id = b.env.register_contract(None, PrincipalManagerContract);
+        PrincipalManagerContractClient::new(&b.env, &pm_id).initialize(
+            &b.admin, &sy_id, &pt_id, &yt_id, &b.oracle_id, &b.perm_id, &b.underlying, &u64::MAX,
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn initialize_rejects_mismatched_maturity() {
+        // M-01 regression: YTToken deployed with a different maturity than the one passed to
+        // PrincipalManager.initialize (PTToken's maturity matches; YTToken's doesn't).
+        let b = topology_base();
+        let maturity = T0 + 500;
+
+        let sy_id = b.env.register_contract(None, SYWrapperContract);
+        SYWrapperContractClient::new(&b.env, &sy_id).initialize(&b.admin, &b.underlying, &b.perm_id);
+
+        let pt_id = b.env.register_contract(None, PTTokenContract);
+        PTTokenContractClient::new(&b.env, &pt_id).initialize(
+            &b.admin,
+            &b.perm_id,
+            &b.underlying,
+            &maturity,
+            &String::from_str(&b.env, "Principal Token USDY"),
+            &String::from_str(&b.env, "PT-USDY"),
+            &7,
+        );
+
+        let yt_id = b.env.register_contract(None, YTTokenContract);
+        YTTokenContractClient::new(&b.env, &yt_id).initialize(
+            &b.admin,
+            &b.perm_id,
+            &b.underlying,
+            &b.oracle_id,
+            &(maturity + 1), // mismatched
+            &String::from_str(&b.env, "Yield Token USDY"),
+            &String::from_str(&b.env, "YT-USDY"),
+            &7,
+        );
+
+        let pm_id = b.env.register_contract(None, PrincipalManagerContract);
+        PrincipalManagerContractClient::new(&b.env, &pm_id).initialize(
+            &b.admin, &sy_id, &pt_id, &yt_id, &b.oracle_id, &b.perm_id, &b.underlying, &maturity,
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn initialize_rejects_mismatched_oracle() {
+        // M-01 regression: YTToken deployed against a different oracle than the one passed to
+        // PrincipalManager.initialize.
+        let b = topology_base();
+        let other_oracle_id = b.env.register_contract(None, OracleAdapterContract);
+        let other_oracle = OracleAdapterContractClient::new(&b.env, &other_oracle_id);
+        other_oracle.initialize(&b.admin);
+        other_oracle.set_reference_value(&b.admin, &SCALE, &T0);
+
+        let sy_id = b.env.register_contract(None, SYWrapperContract);
+        SYWrapperContractClient::new(&b.env, &sy_id).initialize(&b.admin, &b.underlying, &b.perm_id);
+
+        let pt_id = b.env.register_contract(None, PTTokenContract);
+        PTTokenContractClient::new(&b.env, &pt_id).initialize(
+            &b.admin,
+            &b.perm_id,
+            &b.underlying,
+            &u64::MAX,
+            &String::from_str(&b.env, "Principal Token USDY"),
+            &String::from_str(&b.env, "PT-USDY"),
+            &7,
+        );
+
+        let yt_id = b.env.register_contract(None, YTTokenContract);
+        YTTokenContractClient::new(&b.env, &yt_id).initialize(
+            &b.admin,
+            &b.perm_id,
+            &b.underlying,
+            &other_oracle_id, // mismatched
+            &u64::MAX,
+            &String::from_str(&b.env, "Yield Token USDY"),
+            &String::from_str(&b.env, "YT-USDY"),
+            &7,
+        );
+
+        let pm_id = b.env.register_contract(None, PrincipalManagerContract);
+        PrincipalManagerContractClient::new(&b.env, &pm_id).initialize(
+            &b.admin, &sy_id, &pt_id, &yt_id, &b.oracle_id, &b.perm_id, &b.underlying, &u64::MAX,
         );
     }
 

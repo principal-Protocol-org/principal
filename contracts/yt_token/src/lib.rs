@@ -45,6 +45,16 @@
 //! # Market creation
 //! `initialize` requires `admin` to equal the underlying SAC's actual `admin()` (read live),
 //! matching `SYWrapper`'s market-creation gate — see its module docs for the full rationale.
+//!
+//! # `claim_yield` is minter-gated, not holder-gated
+//! `claim_yield` used to authorize on `from` (the holder), making it a public, directly
+//! callable entrypoint that settles and zeroes a holder's pending claim without ever paying any
+//! underlying — `PrincipalManager` is the only place that turns the returned amount into a real
+//! payment. A holder calling it directly (bypassing `PrincipalManager`) would permanently
+//! consume their claim for nothing. It is now gated the same way `mint`/`burn` already are: only
+//! the registered minter (`PrincipalManager`) can call it, which pairs the settle-and-zero step
+//! with `PrincipalManager.claim_yield`'s corresponding `SYWrapper.withdraw` payment in the same
+//! call. Found during audit review (H-03).
 
 #![no_std]
 
@@ -167,6 +177,20 @@ impl YTTokenContract {
         if admin != sac_admin {
             panic_with_error!(&env, Error::IssuerMismatch);
         }
+
+        // Genesis rate: read live from the oracle, not hardcoded to SCALE. If the market is
+        // created when the real rate is already above SCALE (e.g. onboarding an
+        // already-appreciated asset, or simply redeploying later in an asset's life), hardcoding
+        // SCALE here would make the very first `update_yield_index` call treat the gap between
+        // SCALE and the real rate as yield accrued since genesis -- overpaying whoever holds YT
+        // at that moment for appreciation that happened before their position ever existed.
+        // Requiring freshness here too catches deploying a market against a stale feed.
+        let oracle_client = OracleClient::new(&env, &oracle);
+        if !oracle_client.is_fresh(&MAX_ORACLE_STALENESS_SECS) {
+            panic_with_error!(&env, Error::OracleStale);
+        }
+        let genesis_rate = oracle_client.get_reference_value();
+
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -180,11 +204,12 @@ impl YTTokenContract {
         env.storage().instance().set(&DataKey::Symbol, &symbol);
         env.storage().instance().set(&DataKey::Decimals, &decimals);
         env.storage().instance().set(&DataKey::TotalSupply, &0_i128);
-        // Genesis factor: SCALE, decreasing monotonically thereafter (see module docs).
+        // Genesis factor is always exactly SCALE (representing "zero elapsed appreciation from
+        // this contract's own genesis_rate"); what changes is the baseline it's measured against.
         env.storage().instance().set(&DataKey::YieldIndex, &SCALE);
         env.storage()
             .instance()
-            .set(&DataKey::LastOracleRate, &SCALE);
+            .set(&DataKey::LastOracleRate, &genesis_rate);
     }
 
     pub fn set_minter(env: Env, admin: Address, minter: Address) {
@@ -450,11 +475,16 @@ impl YTTokenContract {
         }
     }
 
-    /// Settles the caller's pending yield up to the current index, then pays it out
-    /// (in this POC: computed, zeroed, and returned — actual underlying transfer is a
-    /// Router-integration milestone, matching PrincipalManager.redeem's existing convention).
-    pub fn claim_yield(env: Env, from: Address) -> i128 {
-        from.require_auth();
+    /// Settles `from`'s pending yield up to the current index, then zeroes and returns it.
+    /// Callable only by the registered minter (`PrincipalManager`), which is responsible for
+    /// converting the returned amount into a real underlying payment via `SYWrapper.withdraw`
+    /// in the same call -- see this module's doc comment (H-03).
+    pub fn claim_yield(env: Env, caller: Address, from: Address) -> i128 {
+        caller.require_auth();
+        let minter = Self::require_minter(&env);
+        if caller != minter {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
         Self::settle(&env, &from);
         let key = DataKey::PendingClaim(from.clone());
         let amount: i128 = env.storage().persistent().get(&key).unwrap_or(0);
@@ -520,6 +550,20 @@ impl YTTokenContract {
         env.storage()
             .instance()
             .get(&DataKey::Underlying)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized))
+    }
+
+    pub fn permissioning_address(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Permissioning)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized))
+    }
+
+    pub fn oracle_address(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Oracle)
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized))
     }
 
@@ -785,6 +829,95 @@ mod test {
     }
 
     #[test]
+    #[should_panic]
+    fn initialize_rejects_stale_oracle() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|li| li.timestamp = T0 + 3_601);
+
+        let perm_id = env.register_contract(None, PermissioningContract);
+        let admin = Address::generate(&env);
+        PermissioningContractClient::new(&env, &perm_id).initialize(&admin);
+
+        let oracle_id = env.register_contract(None, OracleAdapterContract);
+        let oracle = OracleAdapterContractClient::new(&env, &oracle_id);
+        oracle.initialize(&admin);
+        oracle.set_reference_value(&admin, &SCALE, &T0); // stale by the time we initialize below
+
+        let underlying = env.register_stellar_asset_contract_v2(admin.clone()).address();
+
+        let yt_id = env.register_contract(None, YTTokenContract);
+        YTTokenContractClient::new(&env, &yt_id).initialize(
+            &admin,
+            &perm_id,
+            &underlying,
+            &oracle_id,
+            &u64::MAX,
+            &String::from_str(&env, "Yield Token USDY"),
+            &String::from_str(&env, "YT-USDY"),
+            &7,
+        );
+    }
+
+    #[test]
+    fn genesis_above_scale_does_not_overpay_first_mint() {
+        // H-01 regression: if a market is created when the real oracle rate is already above
+        // SCALE (e.g. onboarding an asset that has already appreciated, or simply redeploying
+        // later in its life), the very first mint must not receive credit for the gap between
+        // SCALE and the real genesis rate -- that "yield" was never earned by anyone holding
+        // this specific YT.
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|li| li.timestamp = T0);
+
+        let perm_id = env.register_contract(None, PermissioningContract);
+        let perm = PermissioningContractClient::new(&env, &perm_id);
+        let perm_admin = Address::generate(&env);
+        perm.initialize(&perm_admin);
+
+        let oracle_id = env.register_contract(None, OracleAdapterContract);
+        let oracle = OracleAdapterContractClient::new(&env, &oracle_id);
+        let admin = Address::generate(&env);
+        oracle.initialize(&admin);
+        // Real rate is already 1.05 at market genesis -- not SCALE.
+        oracle.set_reference_value(&admin, &10_500_000_i128, &T0);
+
+        let underlying_sac = env.register_stellar_asset_contract_v2(admin.clone());
+        underlying_sac.issuer().set_flag(IssuerFlags::RevocableFlag);
+        let underlying = underlying_sac.address();
+
+        let yt_id = env.register_contract(None, YTTokenContract);
+        let client = YTTokenContractClient::new(&env, &yt_id);
+        client.initialize(
+            &admin,
+            &perm_id,
+            &underlying,
+            &oracle_id,
+            &u64::MAX,
+            &String::from_str(&env, "Yield Token USDY"),
+            &String::from_str(&env, "YT-USDY"),
+            &7,
+        );
+
+        let minter = Address::generate(&env);
+        client.set_minter(&admin, &minter);
+        let user = Address::generate(&env);
+        perm.grant_account(&perm_admin, &user);
+        perm.grant_asset(&perm_admin, &user, &yt_id);
+        token::StellarAssetClient::new(&env, &underlying).set_authorized(&user, &true);
+
+        client.mint(&user, &(1_000 * SCALE));
+
+        // No update_yield_index has run yet, and the rate hasn't moved since genesis --
+        // the first mint must not be able to claim anything.
+        assert_eq!(client.claim_yield(&minter, &user), 0);
+
+        client.update_yield_index();
+        assert_eq!(client.accrued_yield_index(), SCALE); // factor untouched: rate never moved
+        assert_eq!(client.claim_yield(&minter, &user), 0);
+    }
+
+    #[test]
     fn mint_and_balance() {
         let f = setup();
         let minter = Address::generate(&f.env);
@@ -822,7 +955,7 @@ mod test {
 
         f.client.update_yield_index(); // rate unchanged since inception
         assert_eq!(f.client.accrued_yield_index(), SCALE); // factor untouched at genesis value
-        assert_eq!(f.client.claim_yield(&user), 0);
+        assert_eq!(f.client.claim_yield(&minter, &user), 0);
     }
 
     #[test]
@@ -846,7 +979,7 @@ mod test {
 
         // pending = bal * (last - factor) / last, with this user's `last` == SCALE (settled at
         // mint, before the index ever moved) -- reduces to bal * (SCALE - factor) / SCALE.
-        let claimed = f.client.claim_yield(&user);
+        let claimed = f.client.claim_yield(&minter, &user);
         let expected_claim = (1_000 * SCALE) * (SCALE - expected_factor) / SCALE;
         assert_eq!(claimed, expected_claim);
         // Exact match to the economically-correct single-shot formula: notional * (final_rate -
@@ -855,7 +988,7 @@ mod test {
         assert_eq!(claimed / SCALE, exact);
 
         // Claiming again immediately yields nothing further.
-        assert_eq!(f.client.claim_yield(&user), 0);
+        assert_eq!(f.client.claim_yield(&minter, &user), 0);
     }
 
     #[test]
@@ -884,7 +1017,7 @@ mod test {
             f.client.update_yield_index();
         }
 
-        let many_step_claim = f.client.claim_yield(&user);
+        let many_step_claim = f.client.claim_yield(&minter, &user);
 
         // What a single jump straight from SCALE to final_rate would have produced for the
         // same notional -- the exact, path-independent formula PT redemption also uses.
@@ -924,10 +1057,10 @@ mod test {
         // Bob's settled snapshot should already equal the current index, so he has
         // nothing pending despite the global index being nonzero.
         assert_eq!(f.client.pending_claim(&bob), 0);
-        assert_eq!(f.client.claim_yield(&bob), 0);
+        assert_eq!(f.client.claim_yield(&minter, &bob), 0);
 
         // Alice still gets her full accrued share.
-        assert!(f.client.claim_yield(&alice) > 0);
+        assert!(f.client.claim_yield(&minter, &alice) > 0);
     }
 
     #[test]
@@ -950,9 +1083,9 @@ mod test {
         // remain hers (settled before the balance moves), not follow the tokens to Bob.
         f.client.transfer(&alice, &bob, &(1_000 * SCALE));
 
-        let alice_claim = f.client.claim_yield(&alice);
+        let alice_claim = f.client.claim_yield(&minter, &alice);
         assert!(alice_claim > 0);
-        assert_eq!(f.client.claim_yield(&bob), 0); // Bob owned nothing while the index moved
+        assert_eq!(f.client.claim_yield(&minter, &bob), 0); // Bob owned nothing while the index moved
     }
 
     #[test]
@@ -1024,8 +1157,8 @@ mod test {
         assert_eq!(f.client.balance(&escrow), 1_000 * SCALE);
 
         // Yield accrued before seizure stays with the original holder, not the escrow.
-        assert!(f.client.claim_yield(&bad_actor) > 0);
-        assert_eq!(f.client.claim_yield(&escrow), 0);
+        assert!(f.client.claim_yield(&minter, &bad_actor) > 0);
+        assert_eq!(f.client.claim_yield(&minter, &escrow), 0);
     }
 
     #[test]
@@ -1043,5 +1176,21 @@ mod test {
         f.client.mint(&bad_actor, &(500 * SCALE));
 
         f.client.seize(&impostor, &bad_actor, &(500 * SCALE));
+    }
+
+    #[test]
+    #[should_panic]
+    fn claim_yield_rejects_non_minter_caller() {
+        // H-03 regression: claim_yield must reject a caller that isn't the registered minter,
+        // even though the passed `from` address is a real, legitimately-minted holder.
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        let user = Address::generate(&f.env);
+        grant(&f, &user);
+        f.client.mint(&user, &(1_000 * SCALE));
+
+        let impostor = Address::generate(&f.env);
+        f.client.claim_yield(&impostor, &user);
     }
 }

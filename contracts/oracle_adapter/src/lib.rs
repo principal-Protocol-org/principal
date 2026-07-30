@@ -1,3 +1,19 @@
+//! OracleAdapter — admin-submitted reference value feed with monotonic timestamps.
+//!
+//! # Why the reference value is monotonically non-decreasing
+//! The entire PT/YT settlement model is built on the assumption that the reference rate only
+//! goes up: `YTToken.update_yield_index` is a no-op unless `now_rate > last_rate` ("YT never
+//! accrues negative yield"), and `PrincipalManager`'s PT formula (`pt_amount * SCALE /
+//! final_rate`) implicitly assumes `final_rate` is at or above the rate at issuance -- if
+//! `final_rate` could fall below it, that formula would release *more* underlying than was
+//! ever deposited for that PT, a real insolvency path, not just a pricing inaccuracy. This
+//! matches the reference asset this protocol targets first (Ondo's USDY, a Treasury-backed,
+//! NAV-appreciating token whose per-unit redemption value does not decrease in normal
+//! operation) but does not hold for every conceivable "reference value" an oracle could feed
+//! in (a genuine market price, which can fall). Given the settlement math above already,
+//! silently, assumes non-decreasing, this contract enforces it explicitly rather than leaving
+//! it as an unenforced deployment assumption -- found during an audit review.
+
 #![no_std]
 
 use soroban_sdk::{
@@ -14,6 +30,7 @@ pub enum Error {
     InvalidValue = 3,
     TimestampTooOld = 4,
     NotInitialized = 5,
+    ValueDecreased = 6,
 }
 
 #[contracttype]
@@ -44,6 +61,10 @@ impl OracleAdapterContract {
         }
         if value <= 0 {
             panic_with_error!(&env, Error::InvalidValue);
+        }
+        let current_price: i128 = env.storage().instance().get(&DataKey::Price).unwrap_or(0);
+        if value < current_price {
+            panic_with_error!(&env, Error::ValueDecreased);
         }
         let current_ts: u64 = env
             .storage()
@@ -143,6 +164,27 @@ mod test {
         client.set_reference_value(&admin, &103_00000000_i128, &1_700_000_000_u64);
         assert_eq!(client.get_reference_value(), 103_00000000_i128);
         assert_eq!(client.get_reference_timestamp(), 1_700_000_000_u64);
+    }
+
+    #[test]
+    #[should_panic]
+    fn value_decrease_rejected() {
+        // The entire PT/YT settlement model assumes the reference rate never falls -- see
+        // this module's doc comment for why a decrease must be rejected outright, not just
+        // priced in.
+        let (_env, client, admin) = setup();
+        client.set_reference_value(&admin, &10_300_000_i128, &1_700_000_000_u64);
+        client.set_reference_value(&admin, &10_200_000_i128, &1_700_001_000_u64);
+    }
+
+    #[test]
+    fn value_may_stay_equal() {
+        // A resubmission at the same price (e.g. a heartbeat refresh with no real price move)
+        // must not be treated as a decrease.
+        let (_env, client, admin) = setup();
+        client.set_reference_value(&admin, &10_300_000_i128, &1_700_000_000_u64);
+        client.set_reference_value(&admin, &10_300_000_i128, &1_700_001_000_u64);
+        assert_eq!(client.get_reference_value(), 10_300_000_i128);
     }
 
     #[test]

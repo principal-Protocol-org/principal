@@ -315,6 +315,13 @@ impl SYWrapperContract {
         Self::require_escrow(&env)
     }
 
+    pub fn permissioning_address(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Permissioning)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized))
+    }
+
     // --- admin ---
 
     pub fn set_paused(env: Env, caller: Address, paused: bool) {

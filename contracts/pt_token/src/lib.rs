@@ -387,6 +387,13 @@ impl PTTokenContract {
             .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized))
     }
 
+    pub fn permissioning_address(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::Permissioning)
+            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized))
+    }
+
     // --- internal helpers ---
 
     fn assert_permitted(env: &Env, account: &Address) {
