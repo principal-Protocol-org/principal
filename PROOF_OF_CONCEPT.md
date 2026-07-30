@@ -57,7 +57,7 @@ Every contract checks two independent layers on every affected account: `underly
 
 ### 8. Continuous yield accrual
 
-`YTToken` implements a global yield index, advanced by the permissionless `update_yield_index()` (gated on oracle freshness) and claimed via `claim_yield()`. Every balance-changing operation — mint, burn, transfer in, transfer out — settles the affected account's pending yield against its balance *before* the change, so a buyer cannot retroactively receive yield accrued before they held the position, and a seller cannot lose yield already earned by transferring out.
+`YTToken` implements a global yield index, advanced by the permissionless `update_yield_index()` (gated on oracle freshness) and settled via the minter-gated `claim_yield()` — reachable only through `PrincipalManager.claim_yield()`, which pays the result out in real underlying. Every balance-changing operation — mint, burn, transfer in, transfer out — settles the affected account's pending yield against its balance *before* the change, so a buyer cannot retroactively receive yield accrued before they held the position, and a seller cannot lose yield already earned by transferring out. `PrincipalManager.mint` itself calls `update_yield_index()` before crediting a new YT balance, so a fresh mint's own snapshot always starts current, closing the same gap from the other direction.
 
 ### 9. Compliance recovery without collateral damage
 
@@ -184,15 +184,17 @@ fn seize(env: Env, caller: Address, account: Address, amount: i128) -> i128
 
 // Yield accrual
 fn update_yield_index(env: Env)                       // permissionless; requires fresh oracle
-fn claim_yield(env: Env, from: Address) -> i128
+fn claim_yield(env: Env, caller: Address, from: Address) -> i128  // caller must be the registered minter
 fn accrued_yield_index(env: Env) -> i128
 fn last_claimed_index(env: Env, account: Address) -> i128
 fn pending_claim(env: Env, account: Address) -> i128
 fn recovery_escrow(env: Env) -> Address
 fn underlying_address(env: Env) -> Address
+fn permissioning_address(env: Env) -> Address
+fn oracle_address(env: Env) -> Address
 ```
 
-`update_yield_index` reverts with `OracleStale` if the oracle hasn't been refreshed within `MAX_ORACLE_STALENESS_SECS` — matching the same freshness discipline `PrincipalManager` already applies at mint and redeem.
+`update_yield_index` reverts with `OracleStale` if the oracle hasn't been refreshed within `MAX_ORACLE_STALENESS_SECS` — matching the same freshness discipline `PrincipalManager` already applies at mint and redeem. `initialize` reads its genesis yield-index baseline live from the oracle (also requiring freshness) rather than hardcoding it to `SCALE`, so a market created when the real rate is already above `SCALE` doesn't baseline against a value the rate never actually was. `claim_yield` is minter-gated the same way `mint`/`burn` already are — see `PrincipalManager.claim_yield` below for the entrypoint that actually reaches it and pays out real underlying.
 
 ### RecoveryEscrow
 
@@ -211,8 +213,8 @@ fn finalize_pt(env: Env, caller: Address, pt_amount: i128) -> i128
               // caller must equal underlying.admin() (read live); redeems this contract's own
               // already-seized PT balance via PrincipalManager.redeem(from=self, pt_amount, 0)
 fn finalize_yt(env: Env, caller: Address, yt_amount: i128) -> i128
-              // same, for YT; also calls env.authorize_as_current_contract before redeem, since
-              // YTToken.claim_yield(from=self) sits two call frames below this one
+              // same, for YT; redeems this contract's own already-seized YT balance via
+              // PrincipalManager.redeem(from=self, 0, yt_amount)
 fn underlying_address(env: Env) -> Address
 ```
 
@@ -224,8 +226,14 @@ fn underlying_address(env: Env) -> Address
 fn initialize(env: Env, admin: Address, sy_wrapper: Address, pt_token: Address, yt_token: Address,
               oracle: Address, permissioning: Address, underlying: Address, maturity: u64)
               // admin must equal underlying.admin() (read live) and must authorize this call
+              // also validates sy_wrapper/pt_token/yt_token share underlying, permissioning,
+              // maturity, and oracle -- reverts TopologyMismatch otherwise
 fn mint(env: Env, from: Address, sy_shares: i128) -> MintResult
+              // reverts OracleStale if the oracle isn't fresh (same check redeem already has)
 fn redeem(env: Env, from: Address, pt_amount: i128, yt_amount: i128) -> RedeemResult
+fn claim_yield(env: Env, from: Address) -> i128
+              // claims accrued YT yield without redeeming/burning YT or waiting for maturity;
+              // pays real underlying via SYWrapper.withdraw
 fn pt_balance(env: Env, account: Address) -> i128
 fn yt_balance(env: Env, account: Address) -> i128
 fn total_pt(env: Env) -> i128
@@ -242,7 +250,7 @@ struct MintResult   { pt_minted: i128, yt_minted: i128 }
 struct RedeemResult { underlying_from_pt: i128, underlying_from_yt: i128 }
 ```
 
-`mint` and `redeem` both check `underlying.authorized(from)` and `Permissioning.is_allowed(from)`. `mint` moves the caller's real SY shares into this contract's own custody via `SYWrapper.transfer`, then mints real balances via `PTToken.mint`/`YTToken.mint` (this contract must already be the registered minter on both). `redeem` burns those real balances (`PTToken.burn`/`YTToken.burn`) and releases real underlying via `SYWrapper.withdraw`, self-authorizing as its own contract address the same way `RecoveryEscrow` does when unwrapping a seizure — which means this contract's own address must itself be SAC-authorized and Permissioning-granted (see DEPLOYMENT.md). PT redemption uses this contract's own `pt_amount * SCALE / final_rate` formula; YT redemption instead calls `YTToken.update_yield_index`/`burn`/`claim_yield` and pays out whatever that settles to, rather than computing an independent amount — `claim_yield` is separately, publicly callable by any holder, so having two independent payers for the same accrued yield would risk a double payment (see `redeem_yt_does_not_double_pay_yield_already_claimed_directly` in the test suite).
+`mint` and `redeem` both check `underlying.authorized(from)` and `Permissioning.is_allowed(from)`. `mint` calls `YTToken.update_yield_index()` before crediting the new YT balance (so a fresh mint's own yield snapshot always starts at the just-updated factor, never retroactively earning a rate movement that happened before it existed), then moves the caller's real SY shares into this contract's own custody via `SYWrapper.transfer`, then mints real balances via `PTToken.mint`/`YTToken.mint` (this contract must already be the registered minter on both). `redeem` burns those real balances (`PTToken.burn`/`YTToken.burn`) and releases real underlying via `SYWrapper.withdraw`, self-authorizing as its own contract address the same way `RecoveryEscrow` does when unwrapping a seizure — which means this contract's own address must itself be SAC-authorized and Permissioning-granted (see DEPLOYMENT.md). PT redemption uses this contract's own `pt_amount * SCALE / final_rate` formula; YT redemption instead calls `YTToken.update_yield_index`/`burn`/`claim_yield` and pays out whatever that settles to, rather than computing an independent amount — `claim_yield` is minter-gated, so `PrincipalManager` is the only caller that can ever reach it, closing the double-payment surface a separately-callable public entrypoint would otherwise create (see `redeem_yt_does_not_double_pay_yield_already_claimed_via_claim_yield` in the test suite). `PrincipalManager.claim_yield` provides the same settle-and-pay mechanism without burning YT or requiring maturity, for holders who just want their accrued yield mid-life.
 
 ### RiskControl
 
@@ -316,6 +324,7 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 | OracleAdapter | 3 | `InvalidValue` | value ≤ 0 |
 | OracleAdapter | 4 | `TimestampTooOld` | new timestamp ≤ stored |
 | OracleAdapter | 5 | `NotInitialized` | read before initialize |
+| OracleAdapter | 6 | `ValueDecreased` | new value < currently stored value (equal values still allowed) |
 | Permissioning | 1 | `AlreadyInitialized` | initialize called twice |
 | Permissioning | 2 | `Unauthorized` | caller ≠ admin |
 | Permissioning | 3 | `NotInitialized` | read before initialize |
@@ -343,6 +352,7 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 | PrincipalManager | 10 | `PermissionDenied` | user not in allow-list (mint and redeem) |
 | PrincipalManager | 11 | `NotAuthorizedOnSac` | account fails `underlying.authorized()` (mint and redeem) |
 | PrincipalManager | 12 | `IssuerMismatch` | `initialize` called with `admin` ≠ `underlying.admin()` |
+| PrincipalManager | 13 | `TopologyMismatch` | `sy_wrapper`/`pt_token`/`yt_token` don't share `underlying`, `permissioning`, `maturity`, or (for YT) `oracle` at initialize |
 | PTToken | 1 | `AlreadyInitialized` | initialize called twice |
 | PTToken | 2 | `Unauthorized` | caller ≠ admin |
 | PTToken | 3 | `NotInitialized` | read before initialize |
@@ -377,17 +387,19 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 | RiskControl | 7 | `AlreadyPauser` | add_pauser for existing pauser |
 | RiskControl | 8 | `NotConsumer` | check_deposit called by an unregistered caller |
 | RiskControl | 9 | `AlreadyConsumer` | add_consumer for an already-registered consumer |
+| RiskControl | 10 | `ZeroAmount` | `check_deposit` amount ≤ 0 |
 
 ---
 
 ## Test Coverage
 
-109 unit tests across eight contracts, using `soroban_sdk::testutils`:
+123 unit tests across eight contracts, using `soroban_sdk::testutils`:
 
-**OracleAdapter** (10 tests)
+**OracleAdapter** (12 tests)
 - Initialization and double-init guard
 - Reference value update and retrieval
 - Monotonic timestamp enforcement (reject stale timestamps)
+- Monotonic value enforcement (reject a value decrease; an equal-value resubmission is still allowed)
 - Freshness check (`is_fresh` with varying staleness thresholds)
 - Unauthorized update attempt
 - Admin transfer
@@ -419,14 +431,17 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 - `seize()` works while the contract is paused
 - The escrow can unwrap seized SY via a normal `withdraw` call
 
-**PrincipalManager** (16 tests)
+**PrincipalManager** (23 tests)
 - `initialize` rejects an admin that doesn't match the underlying SAC's real, live `admin()`
+- `initialize` rejects mismatched underlying, permissioning, maturity, or oracle across `sy_wrapper`/`pt_token`/`yt_token`
 - Mint PT and YT from SY shares — real custody moves via `SYWrapper.transfer`, real balances credited via `PTToken.mint`/`YTToken.mint`; total supply tracking on mint and redeem
+- A second mint after a rate movement doesn't retroactively receive the first mint's prior yield
 - Redeem at maturity — PT and YT separately, including the zero-yield case; PT redemption releases the actual underlying to the caller
 - YT redemption's underlying amount matches `YTToken`'s own index-based `claim_yield` result, not an independently computed formula
-- A holder who calls `YTToken.claim_yield` directly before redeeming is not paid the same yield again by `redeem()`
+- `PrincipalManager.claim_yield` pays real underlying ahead of redemption, and a later `redeem()` doesn't pay the same yield again
+- Calling `YTToken.claim_yield` directly (not through `PrincipalManager`) is rejected
 - Redeem before maturity rejection (`NotMature`); mint after maturity rejection (`AlreadyMature`)
-- Oracle staleness rejection at redemption
+- Oracle staleness rejection at both mint and redemption
 - Permission check rejection at mint (unpermissioned user) and at redeem (revoked user)
 - A deauthorized-on-SAC account cannot mint or redeem
 - Admin transfer
@@ -444,8 +459,10 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 - `seize()` requires the caller to be the configured escrow
 - `set_recovery_escrow` cannot be called twice
 
-**YTToken** (13 tests)
+**YTToken** (16 tests)
 - `initialize` rejects an admin that doesn't match the underlying SAC's real, live `admin()`
+- `initialize` reverts `OracleStale` when the oracle isn't fresh at market creation
+- A market created with the oracle already above `SCALE` doesn't overpay the first mint
 - Mint and balance tracking; mint rejected for an account not `authorized()` on the underlying SAC
 - No yield accrual when the oracle rate hasn't increased
 - Yield accrues correctly after a rate increase, and is fully claimable
@@ -454,6 +471,7 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 - A transfer settles both sides' pending yield before the balance moves
 - A revoked or deauthorized-on-SAC holder cannot transfer YT to a still-eligible party before seizure
 - `update_yield_index` rejects a stale oracle
+- `claim_yield` rejects a non-minter caller
 - `seize()` settles both sides' pending yield before moving the balance
 - `seize()` requires the caller to be the configured escrow
 
@@ -466,7 +484,7 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 - `finalize_pt`/`finalize_yt` redeem the escrow's own seized balance through a real `PrincipalManager` deployment at or after maturity, releasing real underlying to the escrow
 - `finalize_pt` requires the caller to be the underlying SAC's real, live issuer admin
 
-**RiskControl** (15 tests)
+**RiskControl** (17 tests)
 - Pause and unpause
 - Pauser role add and remove
 - Non-pauser `pause` rejection
@@ -475,6 +493,7 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 - Circuit breaker window reset after 24 hours
 - Disabled circuit breaker (cb_limit = 0)
 - `check_deposit` rejects an unregistered caller, and stops working for a caller whose consumer registration was removed
+- `check_deposit` rejects a zero or negative amount
 - `add_consumer` rejects a duplicate registration
 - Admin transfer
 
@@ -868,7 +887,7 @@ The following are the current, honest scope boundaries — each is either genuin
 
 2. **No Router.** Users interact with each contract individually. Single-transaction flows (wrap + mint, swap, recombine) require a `Router` contract that doesn't exist yet.
 
-3. **Standalone `claim_yield()` doesn't dispatch a real transfer on its own.** Calling `YTToken.claim_yield()` directly (without redeeming through `PrincipalManager`) settles and zeroes the caller's pending claim and returns the amount, but doesn't itself move any underlying — only `PrincipalManager.redeem()` (which burns the corresponding YT and forwards the claimed amount through `SYWrapper.withdraw`) results in a real payout today. `RecoveryEscrow.finalize_yt` also goes through this same `redeem()` path, so it doesn't have this limitation. There is still no way for an ordinary YT holder to claim accrued yield in underlying *without* redeeming (burning) the position before maturity.
+3. ~~Standalone `claim_yield()` doesn't dispatch a real transfer on its own.~~ **Fixed.** `YTToken.claim_yield` is now minter-gated (only `PrincipalManager` can call it, the same way `mint`/`burn` already were), and `PrincipalManager.claim_yield(from)` is the sole path that reaches it: it brings the index current, settles through `YTToken`, and pays the result out via `SYWrapper.withdraw` in the same call — so a YT holder can now claim accrued yield in underlying *without* redeeming (burning) the position or waiting for maturity, and a settled claim can never go unpaid. `redeem()` and `RecoveryEscrow.finalize_yt` are unaffected, since both already went through `PrincipalManager`.
 
 4. **No recombination.** PT + YT → SY recombination before maturity is not implemented.
 

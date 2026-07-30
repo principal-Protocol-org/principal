@@ -48,7 +48,7 @@ The protocol is **asset-agnostic**. Any Stellar yield-bearing asset represented 
 
 | Contract | Deployment scope | Role |
 |---|---|---|
-| `OracleAdapter` | One per underlying asset | Reference value feed for the underlying asset, with monotonic timestamps and freshness controls |
+| `OracleAdapter` | One per underlying asset | Reference value feed for the underlying asset, with monotonic timestamps, monotonic values, and freshness controls |
 | `Permissioning` | One per underlying asset or issuer policy | Account and per-asset eligibility registry — an *optional*, Principal-specific layer on top of the underlying SAC's own authorization (see §2.3) |
 | `RiskControl` | One per underlying asset or protocol risk domain | Global pause, pauser roles, and rolling deposit circuit breaker |
 | `SYWrapper` | One per underlying asset | Standardized yield wrapper; accepts a SAC-compatible yield-bearing asset and issues SY shares. Deposit, withdraw, and transfer check both the underlying SAC's live `authorized()` and `Permissioning`, on both sides. `transfer` lets `PrincipalManager` take custody of a caller's shares at mint. `seize()` lets the configured `RecoveryEscrow` forcibly move a deauthorized account's balance without their signature. |
@@ -176,8 +176,11 @@ sequenceDiagram
     UND-->>PM: true or revert NotAuthorizedOnSac
     PM->>PERM: is_allowed(user)
     PERM-->>PM: true or revert PermissionDenied
+    PM->>OA: is_fresh(MAX_ORACLE_STALENESS_SECS)
+    OA-->>PM: true or revert OracleStale
     PM->>OA: get_reference_value()
     OA-->>PM: oracle_rate
+    PM->>YT: update_yield_index()
     PM->>SYW: transfer(from=user, to=PrincipalManager, sy_shares)
     SYW-->>PM: shares moved into PrincipalManager's own custody
     PM->>PT: mint(to=user, amount=notional)
@@ -186,7 +189,7 @@ sequenceDiagram
     RT-->>U: MintResult
 ```
 
-`SYWrapper.transfer` is what lets `PrincipalManager` take real custody of the caller's shares — it is checked the same both-sides, both-layer way as `deposit`/`withdraw` (§8.1), which is why `PrincipalManager`'s own contract address must itself be SAC-authorized and Permissioning-granted at deployment time (§9.1, Step 8.5).
+`SYWrapper.transfer` is what lets `PrincipalManager` take real custody of the caller's shares — it is checked the same both-sides, both-layer way as `deposit`/`withdraw` (§8.1), which is why `PrincipalManager`'s own contract address must itself be SAC-authorized and Permissioning-granted at deployment time (§9.1, Step 8.5). `update_yield_index()` runs before `YTToken.mint` credits the new balance, so a fresh mint's own yield snapshot always starts at the just-updated factor and can never retroactively earn a rate movement that happened before it existed.
 
 `SYWrapper` and `PrincipalManager` each check both compliance layers independently — neither relies on `Router` (or any other caller) to have checked on its behalf, so calling either contract directly, bypassing `Router` entirely, is exactly as gated as going through it. The SAC's `authorized()` is the mandatory floor, checked first; `Permissioning` is Principal's own optional additional layer.
 
@@ -268,7 +271,7 @@ sequenceDiagram
     Note over PM,YT: YT path -- delegated to YTToken's own index, not computed here
     PM->>YT: update_yield_index()
     PM->>YT: burn(from=user, amount=yt_amount)
-    PM->>YT: claim_yield(from=user)
+    PM->>YT: claim_yield(caller=PrincipalManager, from=user)
     YT-->>PM: underlying_yt (settled against YTToken's own accrual index)
     PM->>SYW: exchange_rate()
     SYW-->>PM: sy_rate
@@ -277,7 +280,7 @@ sequenceDiagram
     RT-->>U: underlying asset delivered
 ```
 
-Eligibility is checked at redemption now, not only at mint — closing a gap where a revoked account could previously still redeem PT/YT for the underlying asset. `PrincipalManager` self-authorizes as its own contract address on both `SYWrapper.withdraw` calls (a Soroban contract can `require_auth()` as itself when it is the invoking contract), the same pattern `RecoveryEscrow` uses to unwrap a seizure. YT redemption is deliberately **not** computed independently by `PrincipalManager` — `YTToken.claim_yield` is a separate, publicly callable entrypoint, so `PrincipalManager` treats its return value as authoritative rather than risk paying the same accrued yield twice through two different paths.
+Eligibility is checked at redemption now, not only at mint — closing a gap where a revoked account could previously still redeem PT/YT for the underlying asset. `PrincipalManager` self-authorizes as its own contract address on both `SYWrapper.withdraw` calls (a Soroban contract can `require_auth()` as itself when it is the invoking contract), the same pattern `RecoveryEscrow` uses to unwrap a seizure. YT redemption is deliberately **not** computed independently by `PrincipalManager` — `YTToken.claim_yield` is minter-gated (only `PrincipalManager` can call it, the same way `mint`/`burn` already are), so `PrincipalManager` treats its return value as authoritative with no independent second payer to conflict with. `PrincipalManager.claim_yield` provides the same settle-and-pay mechanism ahead of redemption, without burning YT or requiring maturity.
 
 #### Pre-maturity recombination
 
@@ -1009,6 +1012,7 @@ OracleAdapter contract (on-chain)
 |---|---|
 | Source integrity | Each asset has an explicit source policy: issuer feed, institutional feed, or multi-relayer quorum |
 | Timestamp monotonicity | On-chain adapter rejects updates whose timestamp is not newer than the stored timestamp |
+| Value monotonicity | On-chain adapter rejects a value below the currently stored one (`ValueDecreased`; equal values still allowed) — the PT/YT settlement math already, silently, assumes a non-decreasing rate |
 | Staleness threshold | `PrincipalManager`, `MarketPool`, and backend health checks use the same configured maximum staleness |
 | Deviation checks | Relay rejects updates whose rate movement exceeds the configured basis-point threshold |
 | Key management | Oracle update authority is held by HSM, threshold signer, multisig, or a dedicated governance account |

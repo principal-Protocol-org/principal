@@ -63,7 +63,17 @@ stellar contract deploy \
 stellar contract invoke --id oracle_adapter \
   --source admin --network testnet \
   -- initialize --admin $(stellar keys address admin)
+
+# Submit an initial reference value now -- YTToken.initialize (step 5) reads this live as its
+# yield-index genesis rate and requires it to be fresh, and PrincipalManager.mint (step 6)
+# requires freshness too. Replace 10_000_000 (1.00) and the timestamp with the real current
+# rate and Unix time.
+stellar contract invoke --id oracle_adapter --source admin --network testnet \
+  -- set_reference_value --caller $(stellar keys address admin) \
+     --value 10000000 --timestamp $(date +%s)
 ```
+
+Note: once a value is submitted, every later submission must be `>=` the currently stored value (`set_reference_value` reverts `ValueDecreased` otherwise) — USDY's per-unit value is expected to only appreciate, and the PT/YT settlement math depends on that.
 
 ### 2. Permissioning
 
@@ -112,7 +122,7 @@ stellar contract invoke --id sy_wrapper \
 
 ### 5. PTToken and YTToken
 
-Replace `<MATURITY_UNIX_TS>` with the desired maturity Unix timestamp (e.g. `1767225600` for 2026-01-01 00:00 UTC). These must be deployed *before* `PrincipalManager`, which now requires both addresses at initialization. Same issuer-admin requirement as step 4.
+Replace `<MATURITY_UNIX_TS>` with the desired maturity Unix timestamp (e.g. `1767225600` for 2026-01-01 00:00 UTC). These must be deployed *before* `PrincipalManager`, which now requires both addresses at initialization. Same issuer-admin requirement as step 4. `YTToken.initialize` additionally requires the oracle (step 1) to already have a fresh reference value set — it reads that value live as its yield-index genesis rate rather than hardcoding it, and reverts `OracleStale` if the oracle isn't fresh at this moment.
 
 ```bash
 stellar contract deploy \
@@ -148,7 +158,7 @@ stellar contract invoke --id yt_token \
 
 ### 6. PrincipalManager
 
-Same issuer-admin requirement as step 4. `mint`/`redeem` call the real `SYWrapper`, `PTToken`, and `YTToken` contracts, so after deploying it must be registered as the minter on both tokens, and its own contract address needs both compliance layers granted.
+Same issuer-admin requirement as step 4. `mint`/`redeem` call the real `SYWrapper`, `PTToken`, and `YTToken` contracts, so after deploying it must be registered as the minter on both tokens, and its own contract address needs both compliance layers granted. `initialize` also cross-checks that `sy_wrapper`/`pt_token`/`yt_token` all report the same `underlying_address()` and `permissioning_address()`, that `pt_token`/`yt_token`'s `maturity()` matches `--maturity`, and that `yt_token.oracle_address()` matches `--oracle` — it reverts `TopologyMismatch` if steps 4–5 used inconsistent values for any of these.
 
 ```bash
 stellar contract deploy \
