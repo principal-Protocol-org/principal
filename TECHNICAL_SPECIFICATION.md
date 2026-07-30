@@ -684,11 +684,10 @@ fn revoke_asset(env, caller, account, asset)
 fn is_allowed(env, account) -> bool
 fn is_allowed_for_asset(env, account, asset) -> bool
 
-// Two-step admin transfer
-fn transfer_admin(env, current_admin, new_admin)         // stores PendingAdmin
-fn accept_admin(env, pending_admin)                      // promotes PendingAdmin → Admin
+// Single-step admin transfer -- current admin authorizes and immediately names a new admin,
+// matching every other contract's transfer_admin in this codebase. No pending/acceptance step.
+fn transfer_admin(env, current_admin, new_admin)
 fn get_admin(env) -> Address
-fn get_pending_admin(env) -> Option<Address>
 ```
 
 ### 10.3 Storage
@@ -696,20 +695,10 @@ fn get_pending_admin(env) -> Option<Address>
 | Key | Type | Tier | TTL |
 |---|---|---|---|
 | `Admin` | `Address` | instance | With instance |
-| `PendingAdmin` | `Address` | instance | With instance |
 | `AccountAllowed(addr)` | `bool` | persistent | `ELIGIBILITY_TTL_LEDGERS` = 518,400 (~30 days at 5 s/ledger) |
 | `AssetAllowed(addr, asset)` | `bool` | persistent | `ELIGIBILITY_TTL_LEDGERS` |
 
 Entries in persistent storage auto-expire after ~30 days. Operators must refresh eligibility for active participants.
-
-### 10.4 Two-step admin transfer
-
-```
-transfer_admin(current_admin, new_admin) → stores PendingAdmin
-accept_admin(pending_admin)              → promotes PendingAdmin to Admin
-```
-
-Prevents irreversible admin loss from a single erroneous transaction.
 
 ---
 
@@ -721,6 +710,8 @@ Prevents irreversible admin loss from a single erroneous transaction.
 
 **Circuit breaker** — a rolling 24-hour deposit volume limit. If cumulative deposit notional in the current 24-hour window exceeds `cb_limit`, `check_deposit` reverts with `CircuitBreakerTripped`. The window resets automatically after 24 hours.
 
+**Consumer registration** — `check_deposit` requires `caller` to be a registered consumer (e.g. `SYWrapper`, `PrincipalManager`), set via `add_consumer`/`remove_consumer` (admin-gated, mirroring `add_pauser`). Without this, anyone could call `check_deposit` directly with an arbitrary amount to exhaust a day's circuit-breaker budget and block every legitimate depositor, at zero cost beyond a transaction fee — found during a post-implementation audit, before this contract was ever wired into a real deposit path.
+
 ### 11.2 Interface
 
 ```rust
@@ -730,7 +721,10 @@ fn unpause(env, caller)
 fn is_paused(env) -> bool
 fn add_pauser(env, caller, pauser)
 fn remove_pauser(env, caller, pauser)
-fn check_deposit(env, amount: i128)    // reverts if paused or CB tripped
+fn add_consumer(env, caller, consumer)          // admin-gated, reverts AlreadyConsumer if set
+fn remove_consumer(env, caller, consumer)       // admin-gated
+fn is_consumer(env, account) -> bool
+fn check_deposit(env, caller, amount: i128)     // reverts NotConsumer, Paused, or CircuitBreakerTripped
 fn set_cb_limit(env, caller, new_limit: i128)
 fn get_cb_limit(env) -> i128
 fn get_cb_volume(env) -> i128
@@ -928,6 +922,8 @@ All contracts define `#[contracterror]` enums with stable numeric codes.
 | 5 | `CircuitBreakerTripped` | deposit exceeds rolling 24h limit |
 | 6 | `NotPauser` | `pause` called by non-registered pauser |
 | 7 | `AlreadyPauser` | `add_pauser` for existing pauser |
+| 8 | `NotConsumer` | `check_deposit` called by an address that isn't a registered consumer |
+| 9 | `AlreadyConsumer` | `add_consumer` for an already-registered consumer |
 
 ### SYWrapper
 
@@ -1116,6 +1112,7 @@ All arithmetic uses `checked_mul` / `checked_div` with explicit overflow handlin
 | Deauthorized SAC holder retains a position | `underlying_SAC.authorized(account)` checked on both sides of every deposit/withdraw/mint/redeem/transfer, inherited live from the issuer with no separate registry to fall out of sync (§6.4) |
 | Market stood up over an issuer's objection | `initialize` on `SYWrapper`/`PrincipalManager`/`PTToken`/`YTToken` reverts `IssuerMismatch` unless `admin == underlying_SAC.admin()` (read live) and `admin.require_auth()` |
 | Flash deposit spike | Rolling 24h `check_deposit` circuit breaker in `RiskControl` — logic implemented and tested, not yet cross-contract wired into `SYWrapper`/`PrincipalManager` (see PROOF_OF_CONCEPT.md's Known Limitations) |
+| Griefing the circuit breaker directly | Anyone calling `RiskControl.check_deposit` for an arbitrary amount to exhaust the day's budget and block real depositors, once this contract is wired in | `check_deposit` requires `caller` to be a registered consumer (`add_consumer`/`remove_consumer`, admin-gated) — found and fixed during a post-implementation audit, before any real deposit path called this contract |
 | Admin key compromise | Single-step `transfer_admin`, callable only by the current admin; multisig recommended for production. `seize()` on `SYWrapper`/`PTToken`/`YTToken` is restricted to the one configured `RecoveryEscrow` address, so a compromised token-contract admin key alone cannot seize a balance |
 | MEV / sandwich attack | `min_out` slippage guard on all Router swaps; reverts `SlippageExceeded` |
 | Pool manipulation | Built-in time-weighted implied-rate accumulator in `MarketPool` |
@@ -1255,13 +1252,13 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for the full step-by-step guide for all contr
 - [x] Permissioning — account and asset eligibility, batch grant, TTL
 - [x] SYWrapper — deposit, withdraw, rolling exchange rate, pause, market-creation gating on the underlying SAC's real admin, both-sides authorization inheritance + Permissioning gating, `seize()` compliance recovery
 - [x] PrincipalManager — mint PT/YT through the real `SYWrapper`/`PTToken`/`YTToken` contracts, redeem at maturity releasing real underlying, market-creation gating, both-sides authorization inheritance + Permissioning + oracle integration at mint and redeem
-- [x] RiskControl — pause, pauser roles, rolling 24h circuit breaker
+- [x] RiskControl — pause, pauser roles, rolling 24h circuit breaker, `check_deposit` gated to registered consumers
 - [x] Standalone `PTToken` — SEP-41 with market-creation gating, both-sides authorization inheritance + dual-layer (account + per-asset) Permissioning gating, `seize()`
 - [x] Standalone `YTToken` — SEP-41 with continuous yield accrual, pre-transfer settlement, claiming, and the same gating and `seize()` as `PTToken`
 - [x] `RecoveryEscrow` — no-admin-key issuer authentication and target-deauthorization checks for compliance recovery; `seize_sy` (full seize-and-unwrap); `seize_pt`/`seize_yt` plus `finalize_pt`/`finalize_yt` for post-maturity unwind of a seized PT/YT position through `PrincipalManager` (§6.3)
 - [x] `PrincipalManager` wired to `SYWrapper`/`PTToken`/`YTToken` — `mint` takes real SY custody and mints real PT/YT; `redeem` burns real PT/YT and releases real underlying, with `SYWrapper.transfer` added to support taking that custody
 - [x] Deterministic settlement formula with fixed-point arithmetic
-- [x] 106 unit tests across all eight implemented contracts
+- [x] 109 unit tests across all eight implemented contracts
 
 ### Not yet implemented
 

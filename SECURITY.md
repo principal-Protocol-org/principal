@@ -17,6 +17,7 @@
 | Reentrancy | State corruption | Checks-effects-interactions in `SYWrapper`: internal state is updated before the external `token::Client::transfer` call, on both `deposit` and `withdraw` |
 | Integer overflow | Incorrect accounting | Soroban `i128` arithmetic; `overflow-checks = true` in release profile |
 | YT yield-index path-dependence | Aggregate PT + YT redemptions exceed the underlying actually held, once `PrincipalManager.redeem` began treating `YTToken.claim_yield` as authoritative | `YTToken`'s accrual factor is multiplicative (`F = F * last_rate / now_rate`, telescoping exactly to `SCALE * rate_genesis / rate_now`), not additive — found and fixed during a post-implementation audit; the earlier additive formula overstated yield, unboundedly, with every extra `update_yield_index` call. See COMPLIANT_SETTLEMENT_DESIGN.md §1.3 |
+| Circuit-breaker griefing | Anyone calling `RiskControl.check_deposit` directly for an arbitrary amount, exhausting the day's budget and blocking real depositors, once this contract is wired into a real deposit path | `check_deposit` requires `caller` to be a registered consumer — found and fixed during the same audit, before any real deposit path called this contract |
 
 ## 2. Per-contract security properties
 
@@ -80,6 +81,7 @@
 - Pausers can pause but **cannot** unpause. Unpause requires the admin. This prevents a compromised pauser from cycling the pause to allow specific transactions.
 - The circuit breaker window resets automatically after `CB_WINDOW_SECS` (86400 s = 24 hours). The limit is set at initialization; changes require admin auth and emit an event.
 - Setting `cb_limit = 0` disables the circuit breaker. This must only be done intentionally — document the reason in the admin governance log.
+- `check_deposit` requires `caller` to be a registered consumer (`add_consumer`/`remove_consumer`, admin-gated, same one-time-per-call-site pattern as `add_pauser`). Without this, anyone could call `check_deposit` directly with an arbitrary amount to exhaust a day's circuit-breaker budget and block every legitimate depositor at zero cost beyond a transaction fee — found and fixed during a post-implementation audit, before this contract was ever wired into a real deposit path.
 
 ## 3. Oracle security
 
@@ -107,7 +109,7 @@ stellar contract invoke --id risk_control \
   -- pause --caller <pauser_address>
 ```
 
-Effect: all `check_deposit` calls revert. SYWrapper and PrincipalManager must call `check_deposit` before processing operations.
+Effect: all `check_deposit` calls revert. Once wired in, `SYWrapper` and `PrincipalManager` will each need to be registered as a consumer (`add_consumer`) and must call `check_deposit(caller=self, amount)` before processing operations.
 
 ### Unpause
 
@@ -217,7 +219,7 @@ Compliance is enforced through **two layers**, checked independently on every af
 
 ## 9. Testing requirements
 
-Done, at the unit-test level (106 tests across eight contracts):
+Done, at the unit-test level (109 tests across eight contracts):
 
 - [x] Unit tests for arithmetic edge cases (zero amounts, exact-limit deposits, insufficient balance/allowance).
 - [x] Oracle failure scenarios: stale price blocks redemption (`PrincipalManager`) and blocks yield-index advancement (`YTToken`).

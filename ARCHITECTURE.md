@@ -162,8 +162,8 @@ sequenceDiagram
     participant YT as YTToken
 
     U->>RT: wrap_and_mint(asset_amount, maturity_id)
-    RT->>RC: check_deposit(asset_amount)
-    RC-->>RT: ok or revert Paused/CircuitBreakerTripped
+    RT->>RC: check_deposit(caller=RT, asset_amount)
+    RC-->>RT: ok or revert NotConsumer/Paused/CircuitBreakerTripped
     RT->>SYW: deposit(from=user, amount=asset_amount)
     SYW->>UND: authorized(user)
     UND-->>SYW: true or revert NotAuthorizedOnSac

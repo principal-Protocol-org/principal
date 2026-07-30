@@ -253,13 +253,18 @@ fn unpause(env: Env, caller: Address)
 fn is_paused(env: Env) -> bool
 fn add_pauser(env: Env, caller: Address, pauser: Address)
 fn remove_pauser(env: Env, caller: Address, pauser: Address)
-fn check_deposit(env: Env, amount: i128)
+fn add_consumer(env: Env, caller: Address, consumer: Address)      // admin-gated
+fn remove_consumer(env: Env, caller: Address, consumer: Address)   // admin-gated
+fn is_consumer(env: Env, account: Address) -> bool
+fn check_deposit(env: Env, caller: Address, amount: i128)   // caller must be a registered consumer
 fn set_cb_limit(env: Env, caller: Address, new_limit: i128)
 fn get_cb_limit(env: Env) -> i128
 fn get_cb_volume(env: Env) -> i128
 fn transfer_admin(env: Env, current_admin: Address, new_admin: Address)
 fn get_admin(env: Env) -> Address
 ```
+
+`check_deposit` requires `caller` to be a registered consumer (`add_consumer`, admin-gated, mirroring `add_pauser`) — without this, anyone could call it directly with an arbitrary amount to exhaust a day's circuit-breaker budget and block every legitimate depositor. Found and fixed during a post-implementation audit, before this contract was ever wired into a real deposit path.
 
 ---
 
@@ -370,12 +375,14 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 | RiskControl | 5 | `CircuitBreakerTripped` | deposit exceeds rolling limit |
 | RiskControl | 6 | `NotPauser` | pause called by non-pauser |
 | RiskControl | 7 | `AlreadyPauser` | add_pauser for existing pauser |
+| RiskControl | 8 | `NotConsumer` | check_deposit called by an unregistered caller |
+| RiskControl | 9 | `AlreadyConsumer` | add_consumer for an already-registered consumer |
 
 ---
 
 ## Test Coverage
 
-106 unit tests across eight contracts, using `soroban_sdk::testutils`:
+109 unit tests across eight contracts, using `soroban_sdk::testutils`:
 
 **OracleAdapter** (10 tests)
 - Initialization and double-init guard
@@ -459,7 +466,7 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 - `finalize_pt`/`finalize_yt` redeem the escrow's own seized balance through a real `PrincipalManager` deployment at or after maturity, releasing real underlying to the escrow
 - `finalize_pt` requires the caller to be the underlying SAC's real, live issuer admin
 
-**RiskControl** (12 tests)
+**RiskControl** (15 tests)
 - Pause and unpause
 - Pauser role add and remove
 - Non-pauser `pause` rejection
@@ -467,6 +474,8 @@ Using `initial_rate` (not `SCALE`) in `yield_delta` ensures YT captures only yie
 - Circuit breaker trip on volume excess
 - Circuit breaker window reset after 24 hours
 - Disabled circuit breaker (cb_limit = 0)
+- `check_deposit` rejects an unregistered caller, and stops working for a caller whose consumer registration was removed
+- `add_consumer` rejects a duplicate registration
 - Admin transfer
 
 ---
@@ -613,7 +622,7 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for the complete guide including network conf
 
 All five originally-implemented contracts have been deployed and initialised on **Stellar Testnet** (June 2026). The deployment demonstrates the infrastructure and tokenization layer of the protocol executing real on-chain transactions.
 
-**This deployment predates `PTToken`, `YTToken`, `RecoveryEscrow`, the wiring that lets `PrincipalManager` actually call them, and every compliance fix described elsewhere in this document — including the original Permissioning integration, and the later authorization-inheritance / market-creation-gating / seize redesign.** Specifically: the deployed `SYWrapper` was initialized without a `permissioning` parameter (that argument didn't exist yet) and with no `underlying`-admin gate on `initialize` and no concept of `underlying_SAC.authorized()` at all, so its deposit/withdraw calls on testnet are not gated the way the current source code requires; and the deployed `PrincipalManager`'s `redeem()` predates both the permissioning check and the SAC-authorization check added since. The deployed WASM reflects the source as it existed at deployment time — it does not update itself when the repository changes. Treat the addresses and transactions below as a historical record of that earlier version, not as a live demonstration of the current contract set. A redeployment reflecting the current source, including `PTToken`, `YTToken`, and `RecoveryEscrow`, has not yet been done.
+**This deployment predates `PTToken`, `YTToken`, `RecoveryEscrow`, the wiring that lets `PrincipalManager` actually call them, and every compliance fix described elsewhere in this document — including the original Permissioning integration, and the later authorization-inheritance / market-creation-gating / seize redesign.** Specifically: the deployed `SYWrapper` was initialized without a `permissioning` parameter (that argument didn't exist yet) and with no `underlying`-admin gate on `initialize` and no concept of `underlying_SAC.authorized()` at all, so its deposit/withdraw calls on testnet are not gated the way the current source code requires; and the deployed `PrincipalManager`'s `redeem()` predates both the permissioning check and the SAC-authorization check added since. It also predates `RiskControl.check_deposit`'s consumer-registration requirement (TX-11 below calls the old, unrestricted signature) and `YTToken`'s multiplicative yield index (a different bug entirely, fixed after this deployment). The deployed WASM reflects the source as it existed at deployment time — it does not update itself when the repository changes. Treat the addresses and transactions below as a historical record of that earlier version, not as a live demonstration of the current contract set. A redeployment reflecting the current source, including `PTToken`, `YTToken`, and `RecoveryEscrow`, has not yet been done.
 
 ### Deployed Contract Addresses
 
@@ -865,4 +874,4 @@ The following are the current, honest scope boundaries — each is either genuin
 
 5. **Single oracle submitter.** A single admin-controlled oracle is implemented. Multi-source aggregation and quorum oracle are not.
 
-6. **`RiskControl` is not cross-contract-wired.** `RiskControl.check_deposit` is invoked directly by the caller (e.g. a test harness or admin script) rather than being called automatically by `SYWrapper` and `PrincipalManager`. The risk control logic and interface are fully implemented and tested in isolation; wiring it into the deposit and mint call paths so no user can bypass the circuit breaker by calling `SYWrapper` directly remains outstanding.
+6. **`RiskControl` is not cross-contract-wired.** `RiskControl.check_deposit` is invoked directly by a registered consumer (e.g. a test harness or admin script standing in for `SYWrapper`/`PrincipalManager` today) rather than being called automatically by those contracts. The risk control logic and interface are fully implemented and tested in isolation, including the consumer-registration gate (`add_consumer`/`remove_consumer`) that prevents an arbitrary caller from griefing the circuit breaker directly; wiring `check_deposit` into the actual deposit and mint call paths, and registering `SYWrapper`/`PrincipalManager` as consumers at deployment time, remains outstanding.

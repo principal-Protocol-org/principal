@@ -230,6 +230,7 @@ Finally, give the escrow standing to actually hold seized value: grant it author
 - [ ] Grant admin key to a multisig or hardware key before mainnet.
 - [ ] Set a non-zero `cb_limit` on RiskControl appropriate for initial TVL.
 - [ ] Register at least one pauser with `risk_control invoke -- add_pauser`.
+- [ ] Once `SYWrapper`/`PrincipalManager` actually call `RiskControl.check_deposit` (not yet wired -- see PROOF_OF_CONCEPT.md's Known Limitations), register each as a consumer with `risk_control invoke -- add_consumer`; `check_deposit` reverts `NotConsumer` for any caller that isn't registered.
 - [ ] Set the initial USDY reference value on OracleAdapter.
 - [ ] Grant at least one test account in Permissioning and confirm `is_allowed` returns `true`.
 - [ ] Run a full deposit → mint → redeem cycle on testnet before mainnet.
