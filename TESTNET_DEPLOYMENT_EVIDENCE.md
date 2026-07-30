@@ -181,3 +181,10 @@ transaction result events above.
 
 Every balance above was read directly from the deployed contracts via
 `stellar contract invoke ... --send=no`, not computed or asserted independently of them.
+
+## 8. Follow-up: multi-user stress test
+
+See [TESTNET_STRESS_TEST_EVIDENCE.md](TESTNET_STRESS_TEST_EVIDENCE.md) for a subsequent run
+against a second, independent market: 5 additional wallets (7 participants total), 200+ real
+transactions covering varied-size deposits/mints, direct and delegated PT/YT transfers,
+repeated mid-life yield claims, and circuit-breaker volume tracking under load.
