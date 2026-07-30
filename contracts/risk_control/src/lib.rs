@@ -1,8 +1,12 @@
 //! RiskControl — protocol-level pause and circuit-breaker contract.
 //!
 //! # Roles
-//! * **Admin** — can add/remove pausers, set circuit-breaker limits, upgrade configuration.
+//! * **Admin** — can add/remove pausers, add/remove consumers, set circuit-breaker limits.
 //! * **Pauser** — can call `pause()` unilaterally; cannot unpause (requires admin).
+//! * **Consumer** — a registered contract address (e.g. `SYWrapper`, `PrincipalManager`)
+//!   authorized to call `check_deposit`. Set via `add_consumer`/`remove_consumer`, mirroring
+//!   the `set_minter` pattern used on `PTToken`/`YTToken` -- except this contract is meant to
+//!   be shared across multiple callers, so it's an allow-list rather than a single address.
 //!
 //! # Circuit breaker
 //! A deposit circuit breaker tracks the cumulative underlying deposited within a rolling
@@ -11,6 +15,10 @@
 //!
 //! External contracts (SYWrapper, PrincipalManager) call `check_deposit` before processing
 //! each deposit. This contract is the single source of truth for protocol-level risk state.
+//! `check_deposit` requires the caller to be a registered consumer -- without this, anyone
+//! could call it directly for an arbitrary amount to exhaust a day's circuit-breaker budget
+//! and block every legitimate depositor, at zero cost beyond a transaction fee. Found during a
+//! post-implementation audit, before this contract was ever wired into a real deposit path.
 
 #![no_std]
 
@@ -33,6 +41,8 @@ pub enum Error {
     CircuitBreakerTripped = 5,
     NotPauser = 6,
     AlreadyPauser = 7,
+    NotConsumer = 8,
+    AlreadyConsumer = 9,
 }
 
 #[contracttype]
@@ -40,6 +50,8 @@ pub enum DataKey {
     Admin,
     Paused,
     Pauser(Address),
+    /// Registered caller authorized to invoke `check_deposit` (e.g. SYWrapper, PrincipalManager).
+    Consumer(Address),
     /// Circuit breaker: max cumulative deposit in one window (underlying units, 0 = disabled).
     CbLimit,
     /// Cumulative deposit volume in the current window.
@@ -139,12 +151,65 @@ impl RiskControlContract {
             .unwrap_or(false)
     }
 
+    // --- consumer registration (who may call check_deposit) ---
+
+    /// Register `consumer` (e.g. SYWrapper, PrincipalManager) as authorized to call
+    /// `check_deposit`. Same shape as `add_pauser`: reverts if already registered, catching
+    /// accidental double-registration.
+    pub fn add_consumer(env: Env, caller: Address, consumer: Address) {
+        Self::assert_admin(&env, &caller);
+        if env
+            .storage()
+            .instance()
+            .get(&DataKey::Consumer(consumer.clone()))
+            .unwrap_or(false)
+        {
+            panic_with_error!(&env, Error::AlreadyConsumer);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::Consumer(consumer.clone()), &true);
+        env.events()
+            .publish((symbol_short!("add_cons"),), (caller, consumer));
+    }
+
+    pub fn remove_consumer(env: Env, caller: Address, consumer: Address) {
+        Self::assert_admin(&env, &caller);
+        env.storage()
+            .instance()
+            .set(&DataKey::Consumer(consumer.clone()), &false);
+        env.events()
+            .publish((symbol_short!("rm_cons"),), (caller, consumer));
+    }
+
+    pub fn is_consumer(env: Env, account: Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Consumer(account))
+            .unwrap_or(false)
+    }
+
     // --- circuit breaker ---
 
-    /// Called by SYWrapper/PrincipalManager before processing a deposit.
-    /// Reverts if paused or if the circuit breaker limit would be exceeded.
-    /// Records the deposit volume against the current window.
-    pub fn check_deposit(env: Env, amount: i128) {
+    /// Called by a registered consumer (SYWrapper/PrincipalManager) before processing a
+    /// deposit. Reverts if the caller isn't registered, if paused, or if the circuit breaker
+    /// limit would be exceeded. Records the deposit volume against the current window.
+    ///
+    /// `caller` must be a registered consumer, not just any authenticated address -- without
+    /// this, anyone could call this directly with an arbitrary amount to exhaust the day's
+    /// circuit-breaker budget and block every legitimate depositor, at zero cost beyond a
+    /// transaction fee.
+    pub fn check_deposit(env: Env, caller: Address, amount: i128) {
+        caller.require_auth();
+        if !env
+            .storage()
+            .instance()
+            .get(&DataKey::Consumer(caller))
+            .unwrap_or(false)
+        {
+            panic_with_error!(&env, Error::NotConsumer);
+        }
+
         if env
             .storage()
             .instance()
@@ -247,19 +312,23 @@ mod test {
 
     use super::{RiskControlContract, RiskControlContractClient, CB_WINDOW_SECS};
 
-    fn setup(cb_limit: i128) -> (Env, RiskControlContractClient<'static>, Address) {
+    /// Returns (env, client, admin, consumer) with `consumer` already registered, since almost
+    /// every `check_deposit` test needs one.
+    fn setup(cb_limit: i128) -> (Env, RiskControlContractClient<'static>, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
         let id = env.register_contract(None, RiskControlContract);
         let client = RiskControlContractClient::new(&env, &id);
         let admin = Address::generate(&env);
         client.initialize(&admin, &cb_limit);
-        (env, client, admin)
+        let consumer = Address::generate(&env);
+        client.add_consumer(&admin, &consumer);
+        (env, client, admin, consumer)
     }
 
     #[test]
     fn pause_and_unpause() {
-        let (env, client, admin) = setup(0);
+        let (_env, client, admin, _consumer) = setup(0);
         assert!(!client.is_paused());
         client.pause(&admin);
         assert!(client.is_paused());
@@ -269,7 +338,7 @@ mod test {
 
     #[test]
     fn pauser_can_pause_but_not_unpause() {
-        let (env, client, admin) = setup(0);
+        let (env, client, admin, _consumer) = setup(0);
         let pauser = Address::generate(&env);
         client.add_pauser(&admin, &pauser);
         client.pause(&pauser);
@@ -279,16 +348,16 @@ mod test {
     #[test]
     #[should_panic]
     fn non_pauser_cannot_pause() {
-        let (env, client, _admin) = setup(0);
+        let (env, client, _admin, _consumer) = setup(0);
         let rando = Address::generate(&env);
         client.pause(&rando);
     }
 
     #[test]
     fn circuit_breaker_blocks_over_limit() {
-        let (_env, client, _admin) = setup(1_000_000);
-        client.check_deposit(&500_000_i128); // ok: 500k
-        client.check_deposit(&499_999_i128); // ok: 999_999k
+        let (_env, client, _admin, consumer) = setup(1_000_000);
+        client.check_deposit(&consumer, &500_000_i128); // ok: 500k
+        client.check_deposit(&consumer, &499_999_i128); // ok: 999_999k
                                              // next deposit would exceed the 1M limit
                                              // (panics)
     }
@@ -296,30 +365,57 @@ mod test {
     #[test]
     #[should_panic]
     fn circuit_breaker_trips_on_excess() {
-        let (_env, client, _admin) = setup(1_000_000);
-        client.check_deposit(&500_000_i128);
-        client.check_deposit(&600_000_i128); // trips
+        let (_env, client, _admin, consumer) = setup(1_000_000);
+        client.check_deposit(&consumer, &500_000_i128);
+        client.check_deposit(&consumer, &600_000_i128); // trips
     }
 
     #[test]
     fn circuit_breaker_disabled_when_limit_zero() {
-        let (_env, client, _admin) = setup(0);
+        let (_env, client, _admin, consumer) = setup(0);
         // Should not trip even for a huge deposit.
-        client.check_deposit(&(i128::MAX / 2));
+        client.check_deposit(&consumer, &(i128::MAX / 2));
     }
 
     #[test]
     #[should_panic]
     fn check_deposit_fails_when_paused() {
-        let (_env, client, admin) = setup(0);
+        let (_env, client, admin, consumer) = setup(0);
         client.pause(&admin);
-        client.check_deposit(&1_i128);
+        client.check_deposit(&consumer, &1_i128);
+    }
+
+    #[test]
+    #[should_panic]
+    fn check_deposit_requires_registered_consumer() {
+        // The audit finding this closes: without this check, anyone could call check_deposit
+        // directly to exhaust the circuit breaker budget and block real depositors.
+        let (env, client, _admin, _consumer) = setup(1_000_000);
+        let rando = Address::generate(&env);
+        client.check_deposit(&rando, &1_i128);
+    }
+
+    #[test]
+    #[should_panic]
+    fn removed_consumer_loses_check_deposit_access() {
+        let (_env, client, admin, consumer) = setup(1_000_000);
+        client.remove_consumer(&admin, &consumer);
+        client.check_deposit(&consumer, &1_i128);
+    }
+
+    #[test]
+    #[should_panic]
+    fn add_duplicate_consumer_panics() {
+        let (env, client, admin, _consumer) = setup(0);
+        let other = Address::generate(&env);
+        client.add_consumer(&admin, &other);
+        client.add_consumer(&admin, &other); // AlreadyConsumer
     }
 
     #[test]
     #[should_panic]
     fn non_admin_cannot_unpause() {
-        let (env, client, admin) = setup(0);
+        let (env, client, admin, _consumer) = setup(0);
         client.pause(&admin);
         let rando = Address::generate(&env);
         client.unpause(&rando); // only admin may unpause
@@ -327,9 +423,9 @@ mod test {
 
     #[test]
     fn circuit_breaker_window_resets_after_24h() {
-        let (env, client, _admin) = setup(1_000_000);
+        let (env, client, _admin, consumer) = setup(1_000_000);
         // Consume 900k in the first window.
-        client.check_deposit(&900_000_i128);
+        client.check_deposit(&consumer, &900_000_i128);
         assert_eq!(client.get_cb_volume(), 900_000);
 
         // Advance past the 24-hour window; volume should reset.
@@ -337,14 +433,14 @@ mod test {
             .with_mut(|li| li.timestamp = li.timestamp + CB_WINDOW_SECS + 1);
 
         // A fresh 900k deposit should be accepted (new window, volume = 0).
-        client.check_deposit(&900_000_i128);
+        client.check_deposit(&consumer, &900_000_i128);
         assert_eq!(client.get_cb_volume(), 900_000); // restarted at 900k, not 1_800_000
     }
 
     #[test]
     #[should_panic]
     fn remove_pauser_revokes_pause_permission() {
-        let (env, client, admin) = setup(0);
+        let (env, client, admin, _consumer) = setup(0);
         let pauser = Address::generate(&env);
         client.add_pauser(&admin, &pauser);
         // After removal the address is no longer a pauser — pause must panic.
@@ -355,7 +451,7 @@ mod test {
     #[test]
     #[should_panic]
     fn add_duplicate_pauser_panics() {
-        let (env, client, admin) = setup(0);
+        let (env, client, admin, _consumer) = setup(0);
         let pauser = Address::generate(&env);
         client.add_pauser(&admin, &pauser);
         client.add_pauser(&admin, &pauser); // AlreadyPauser
@@ -363,7 +459,7 @@ mod test {
 
     #[test]
     fn admin_transfer() {
-        let (env, client, admin) = setup(0);
+        let (env, client, admin, _consumer) = setup(0);
         let new_admin = Address::generate(&env);
         client.transfer_admin(&admin, &new_admin);
         assert_eq!(client.get_admin(), new_admin);
