@@ -56,8 +56,8 @@ The protocol is **asset-agnostic**. Any Stellar yield-bearing asset represented 
 | `RecoveryEscrow` | One per underlying asset | Authenticates the underlying SAC's real `admin()` (read live, no separate key of its own) and orchestrates `seize` across `SYWrapper`/`PTToken`/`YTToken` when the issuer needs to recover a deauthorized account's position — see §2.3. |
 | `PTToken` | One per maturity | SEP-41 Principal Token representing the fixed principal claim. Transfers check both sender and recipient against the SAC authorization floor and a per-token Permissioning layer. `seize()` for compliance recovery. |
 | `YTToken` | One per maturity | SEP-41 Yield Token representing the future yield claim, with continuous yield accrual and claiming. Gated the same way as PTToken; `update_yield_index` requires a fresh oracle. `seize()` for compliance recovery. |
-| `MarketPool` | One per maturity | Yield-curve AMM for PT ↔ SY trading — not yet implemented |
-| `Router` | Shared across registered markets | Single-transaction orchestration for wrapping, minting, swapping, recombining, redeeming, and liquidity operations — not yet implemented |
+| `MarketPool` | One per maturity | Yield-curve AMM for PT ↔ SY trading |
+| `Router` | Shared across registered markets | Single-transaction orchestration for wrapping, minting, swapping, recombining, redeeming, and liquidity operations |
 
 `PTToken` and `YTToken` carry independent eligibility policies by design: each checks `Permissioning.is_allowed_for_asset(account, own_contract_address)` in addition to the shared account-level `is_allowed()` gate, so an admin can grant an account access to PT without granting YT, or vice versa, using allow-list infrastructure shared with every other contract rather than a new mechanism per token. This is layered *on top of* the mandatory SAC-authorization floor every contract also checks — Permissioning can narrow eligibility, never loosen it.
 
@@ -1233,7 +1233,7 @@ Grant-review expectation: all user positions, LP balances, eligibility records, 
 | RecoveryEscrow | `seize_yt` | `(caller, account, amount)` |
 | PrincipalManager | `mint` | `(from, sy_shares, notional)` — `notional` is both `pt_minted` and `yt_minted` |
 | PrincipalManager | `redeem` | `(from, pt_amount, yt_amount, underlying_from_pt, underlying_from_yt)` |
-| PrincipalManager | `recombine` | not implemented — see TECHNICAL_SPECIFICATION.md §5.3 |
+| PrincipalManager | `recombine` | `(from: Address, pt_amount: i128, yt_amount: i128, sy_returned: i128)` |
 | PTToken / YTToken | `transfer` | `(from, to, amount)` |
 | PTToken / YTToken | `mint` | `(to, amount)` |
 | PTToken / YTToken | `burn` | `(from, amount)` |

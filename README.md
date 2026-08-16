@@ -53,9 +53,9 @@ At maturity:
 
 ## Protocol Architecture
 
-The protocol is composed of ten Soroban contracts organized in four layers. Eight are implemented and unit-tested today; `MarketPool` and `Router` are specified but not yet built (see [TECHNICAL_SPECIFICATION.md](TECHNICAL_SPECIFICATION.md)).
+The protocol is composed of ten Soroban contracts organized in four layers (see [TECHNICAL_SPECIFICATION.md](TECHNICAL_SPECIFICATION.md) for the full spec).
 
-### Infrastructure layer (shared across all markets) — implemented
+### Infrastructure layer (shared across all markets)
 
 | Contract | Role |
 |---|---|
@@ -63,7 +63,7 @@ The protocol is composed of ten Soroban contracts organized in four layers. Eigh
 | `Permissioning` | Account and asset eligibility registry — an optional layer on top of SAC authorization (see below) |
 | `RiskControl` | Global pause, multi-pauser roles, rolling 24h circuit breaker |
 
-### Tokenization layer (per underlying asset) — implemented
+### Tokenization layer (per underlying asset)
 
 | Contract | Role |
 |---|---|
@@ -71,16 +71,16 @@ The protocol is composed of ten Soroban contracts organized in four layers. Eigh
 | `PrincipalManager` | Mints real PT + YT from a user's real SY shares (taking custody via `SYWrapper.transfer`); redeems both at maturity by burning them and releasing real underlying via `SYWrapper.withdraw`. Mint and redeem are gated the same two-layer way. |
 | `RecoveryEscrow` | Authenticates the underlying SAC's real admin (read live) and orchestrates `seize` across `SYWrapper`/`PTToken`/`YTToken` — see [Compliance below](#compliance-inheritance-not-a-shadow-registry). |
 
-### Market layer (per maturity date) — mixed
+### Market layer (per maturity date)
 
-| Contract | Status | Role |
-|---|---|---|
-| `PTToken` | Implemented | Standalone SEP-41 Principal Token. Transfers check both sender and recipient, at both the SAC-authorization and per-token Permissioning level — PT and YT can carry independent eligibility policies. |
-| `YTToken` | Implemented | Standalone SEP-41 Yield Token with continuous yield accrual and claiming, gated the same way as PTToken. |
-| `MarketPool` | Not yet implemented | Yield-curve AMM for PT ↔ SY trading (time-aware, no LP impermanent loss from time decay) |
-| `Router` | Not yet implemented | Single-transaction orchestration: wrap, mint, swap, recombine, redeem |
+| Contract | Role |
+|---|---|
+| `PTToken` | Standalone SEP-41 Principal Token. Transfers check both sender and recipient, at both the SAC-authorization and per-token Permissioning level — PT and YT can carry independent eligibility policies. |
+| `YTToken` | Standalone SEP-41 Yield Token with continuous yield accrual and claiming, gated the same way as PTToken. |
+| `MarketPool` | Yield-curve AMM for PT ↔ SY trading (time-aware, no LP impermanent loss from time decay) |
+| `Router` | Single-transaction orchestration: wrap, mint, swap, recombine, redeem |
 
-`PrincipalManager` mints and burns through the real `PTToken`/`YTToken` contracts — PT and YT are genuine SEP-41 balances, holdable in any wallet, not tracked in `PrincipalManager`'s own storage. What's still `Router`-integration scope is the AMM and single-transaction orchestration above (`MarketPool`, `Router`); compliance recovery is fully implemented end to end, including `RecoveryEscrow.finalize_pt`/`finalize_yt`.
+`PrincipalManager` mints and burns through the real `PTToken`/`YTToken` contracts — PT and YT are genuine SEP-41 balances, holdable in any wallet, not tracked in `PrincipalManager`'s own storage. Compliance recovery covers all three position types end to end, including `RecoveryEscrow.finalize_pt`/`finalize_yt`.
 
 ---
 
@@ -104,27 +104,25 @@ The protocol is composed of ten Soroban contracts organized in four layers. Eigh
 
 ## User Flows
 
-The flows below describe the target end-to-end product. Deposit, split, and redeem work today through direct contract calls (`SYWrapper.deposit`, `PrincipalManager.mint`/`redeem`); everything that depends on `MarketPool` or `Router` — buying PT/YT without already holding the underlying, single-transaction flows, liquidity provision, pre-maturity exit — is not yet usable, since those two contracts aren't built.
-
-### Buy PT (fixed income) — requires MarketPool
+### Buy PT (fixed income)
 ```
 USDY → SYWrapper → SY shares → MarketPool (swap SY for PT)
 Redeem at maturity: PT → principal value in USDY
 ```
 
-### Buy YT (yield exposure) — requires Router
+### Buy YT (yield exposure)
 ```
 USDY → Router (flash-mint) → YT-USDY
 Claim yield incrementally or redeem all at maturity
 ```
 
-### Provide liquidity — requires MarketPool
+### Provide liquidity
 ```
 PT + SY → MarketPool → LP tokens
 Earn swap fees; no time-decay impermanent loss
 ```
 
-### Full exit before maturity — requires PrincipalManager.recombine(), not yet implemented
+### Full exit before maturity
 ```
 PT + YT (equal amounts) → PrincipalManager.recombine() → SY → USDY
 ```
@@ -201,21 +199,6 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for testnet and mainnet deployment.
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Step-by-step Stellar CLI deployment for testnet and mainnet |
 | [AUDIT_REVIEW.md](AUDIT_REVIEW.md) | Security findings, status tracking, open items |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Development workflow, code style, PR checklist |
-
----
-
-## Development Status
-
-### Implemented and tested
-Eight of ten contracts, unit-tested on Soroban: `OracleAdapter`, `Permissioning`, `RiskControl`, `SYWrapper`, `PrincipalManager`, `PTToken`, `YTToken`, `RecoveryEscrow`. Compliance is enforced at every deposit, withdrawal, mint, redeem, and PT/YT transfer via two layers — the underlying SAC's own live `authorized()` (mandatory) and `Permissioning` (optional, e.g. asymmetric PT/YT policy) — and market creation itself requires the underlying SAC's real `admin()` to authorize it. `PrincipalManager.mint`/`redeem` call the real `SYWrapper`, `PTToken`, and `YTToken` contracts, so PT and YT are genuine, holdable SEP-41 balances, not internally tracked balances. `RecoveryEscrow` performs full compliance recovery for all three position types: `seize_sy` unwraps to underlying immediately; `seize_pt`/`seize_yt` seize a flagged position, and `finalize_pt`/`finalize_yt` redeem it through `PrincipalManager` at or after maturity, releasing underlying the same way. See [PROOF_OF_CONCEPT.md](PROOF_OF_CONCEPT.md) for full details.
-
-### Not yet implemented
-- `MarketPool` — yield-curve AMM with time-aware invariant, built-in implied-rate oracle, and LP fee distribution.
-- `Router` — single-transaction user flows including flash-mint YT and flash-redeem YT patterns.
-- Fee governance with timelock, protocol treasury accumulation.
-- Full integration test suite and third-party security audit.
-- Testnet launch with one USDY market and one maturity date.
-- Mainnet v1 deployment.
 
 ---
 
