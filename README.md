@@ -53,7 +53,7 @@ At maturity:
 
 ## Protocol Architecture
 
-The protocol is composed of ten Soroban contracts organized in four layers (see [TECHNICAL_SPECIFICATION.md](TECHNICAL_SPECIFICATION.md) for the full spec).
+The protocol is composed of ten Soroban contracts organized in four layers (see [docs/TECHNICAL_SPECIFICATION.md](docs/TECHNICAL_SPECIFICATION.md) for the full spec).
 
 ### Infrastructure layer (shared across all markets)
 
@@ -156,12 +156,14 @@ contracts/
   recovery_escrow/       — authenticates the issuer's SAC admin; orchestrates seize across SY/PT/YT
 
 Cargo.toml               — workspace (Soroban SDK 26.x, Rust 2021)
-TECHNICAL_SPECIFICATION.md — full protocol spec, AMM math, settlement, storage
-ARCHITECTURE.md          — contract diagrams, sequence flows, deployment order
-PROOF_OF_CONCEPT.md      — implemented scope, what is built, how to run it
-SECURITY.md              — threat model, per-contract security properties
-DEPLOYMENT.md            — Stellar CLI deployment guide
-AUDIT_REVIEW.md          — security findings tracker
+
+docs/
+  TECHNICAL_SPECIFICATION.md — full protocol spec, AMM math, settlement, storage
+  ARCHITECTURE.md            — contract diagrams, sequence flows, deployment order
+  PROOF_OF_CONCEPT.md        — implemented scope, what is built, how to run it
+  SECURITY.md                — threat model, per-contract security properties
+  DEPLOYMENT.md              — Stellar CLI deployment guide
+  CONTRIBUTING.md            — development workflow, code style, PR checklist
 ```
 
 ---
@@ -183,8 +185,8 @@ cargo build --target wasm32-unknown-unknown --release
 
 WASM artifacts are produced in `target/wasm32-unknown-unknown/release/`.
 
-See [PROOF_OF_CONCEPT.md](PROOF_OF_CONCEPT.md) for the current implemented scope and test instructions.  
-See [DEPLOYMENT.md](DEPLOYMENT.md) for testnet and mainnet deployment.
+See [docs/PROOF_OF_CONCEPT.md](docs/PROOF_OF_CONCEPT.md) for the current implemented scope and test instructions.  
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for testnet and mainnet deployment.
 
 ---
 
@@ -192,13 +194,12 @@ See [DEPLOYMENT.md](DEPLOYMENT.md) for testnet and mainnet deployment.
 
 | Document | Contents |
 |---|---|
-| [TECHNICAL_SPECIFICATION.md](TECHNICAL_SPECIFICATION.md) | Full protocol spec: all ten contracts, AMM invariant, settlement math, fee structure, storage design, error codes, constants |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Contract interaction diagrams, sequence flows (mint, swap, redeem, flash-mint YT), AMM curve, deployment order |
-| [PROOF_OF_CONCEPT.md](PROOF_OF_CONCEPT.md) | Eight implemented contracts, what they demonstrate, test coverage, build instructions |
-| [SECURITY.md](SECURITY.md) | Threat model, per-contract security properties, incident response |
-| [DEPLOYMENT.md](DEPLOYMENT.md) | Step-by-step Stellar CLI deployment for testnet and mainnet |
-| [AUDIT_REVIEW.md](AUDIT_REVIEW.md) | Security findings, status tracking, open items |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | Development workflow, code style, PR checklist |
+| [docs/TECHNICAL_SPECIFICATION.md](docs/TECHNICAL_SPECIFICATION.md) | Full protocol spec: all ten contracts, AMM invariant, settlement math, fee structure, storage design, error codes, constants |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Contract interaction diagrams, sequence flows (mint, swap, redeem, flash-mint YT), AMM curve, deployment order |
+| [docs/PROOF_OF_CONCEPT.md](docs/PROOF_OF_CONCEPT.md) | Eight implemented contracts, what they demonstrate, test coverage, build instructions |
+| [docs/SECURITY.md](docs/SECURITY.md) | Threat model, per-contract security properties, incident response |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Step-by-step Stellar CLI deployment for testnet and mainnet |
+| [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | Development workflow, code style, PR checklist |
 
 ---
 
