@@ -21,6 +21,16 @@ Principal Protocol fills this gap by creating a dedicated fixed-income and yield
 
 ---
 
+## Market Opportunity & Originality
+
+Stellar's tokenized RWA ecosystem has already grown past $3.2B, led by issuers such as Ondo, Franklin Templeton, and Spiko, with DTC-tokenized Treasury bills, bonds, and notes expected on Stellar in the first half of 2027. Despite that growth, Stellar still has no dedicated fixed-income or yield-trading infrastructure for these assets — no way to lock in a fixed yield, sell future yield upfront, or take a directional position on future rates.
+
+Most regulated RWAs on Stellar are issued as Stellar Assets, with compliance enforced natively through their Stellar Asset Contract (SAC) — authorization and clawback the issuer already manages. That compliance model doesn't automatically extend to a PT/YT market built on top of the asset: without inheriting it, an ineligible wallet could hold or trade PT/YT for an asset it isn't authorized to hold, and an issuer clawback of the underlying wouldn't reach the corresponding PT/YT position. Principal closes this gap with native compliance inheritance rather than a separate, Principal-managed allow-list that could drift out of sync with the issuer's own decisions — see [Compliance inheritance](#key-design-properties) below. This supports the different compliance models Stellar RWA issuers actually use: money-market funds such as BENJI rely on both authorization and clawback, while tokenized notes such as USDY have permissionless secondary transfers but retain clawback as a key issuer control. Principal preserves whichever controls are active, for both classes.
+
+The yield-tokenization model itself is proven — Pendle, the category-defining PT/YT protocol, has passed $1B in TVL across EVM chains. Principal brings the same primitive to Stellar, purpose-built for the compliance requirements regulated RWAs carry, which a permissionless-collateral design was never built to handle.
+
+---
+
 ## How it works
 
 ```
@@ -139,6 +149,22 @@ YT holder receives:  floor(yt_amount * max(0, final_rate - initial_rate) / final
 ```
 
 `pt_amount` and `yt_amount` are in USDC-notional units at SCALE. Dividing by `final_rate` (also at SCALE) converts back to underlying token units. `initial_rate` is per-user and ensures YT captures only yield accrued since that user's mint. If `final_rate ≤ initial_rate` (no yield), YT holders receive zero — PT principal is always protected. Settlement uses floor rounding; rounding residuals accumulate in a protocol-governed reserve.
+
+---
+
+## Business Model
+
+Each Principal market — one per underlying asset and maturity — carries three configurable fees, all set by the RWA issuer creating the market:
+
+| Fee | Charged on | Example |
+|---|---|---|
+| Tokenization fee | Underlying tokenized into PT/YT | 5 bps |
+| YT fee | Yield accrued by YT holders | 10% |
+| Swap fee | Each PT trade, decreasing as maturity approaches: `Fee Tier × Days to Maturity / 365` | 0.1% Fee Tier |
+
+Principal's protocol share of these fees is itself configurable, initially set at 20% — the remaining 80% goes to the market creator, i.e. the underlying SAC's current administrator.
+
+Go-to-market starts with a single USDY market, targeting USDY holders and treasuries seeking fixed yield, and vault managers and DeFi funds seeking exposure to future rates. The same fee structure extends to every additional maturity and RWA issuer as adoption grows, so multiple markets generate fees in parallel.
 
 ---
 
