@@ -56,7 +56,7 @@ The protocol is **asset-agnostic**. Any Stellar yield-bearing asset represented 
 | `RecoveryEscrow` | One per underlying asset | The central compliance-recovery component. Authenticates the underlying SAC's real, current administrator (`admin()`, read live, no separate key of its own) and orchestrates `seize` across `SYWrapper`/`PTToken`/`YTToken` — and, once built, LP positions — when the issuer needs to recover a deauthorized account's position — see §2.3. |
 | `PTToken` | One per maturity | SEP-41 Principal Token representing the fixed principal claim, already implemented and exercised on Testnet. Transfers inherit the underlying SAC's authorization floor on both sender and recipient. `seize()` for compliance recovery via `RecoveryEscrow`. |
 | `YTToken` | One per maturity | SEP-41 Yield Token representing the future yield claim, already implemented and exercised on Testnet, with continuous yield accrual and claiming. Gated the same way as PTToken; `update_yield_index` requires a fresh oracle. `seize()` for compliance recovery via `RecoveryEscrow`. |
-| `MarketPool` | One per maturity | Yield-curve AMM for PT ↔ SY trading — the next core component to implement |
+| `MarketPool` | One per maturity | Yield-curve AMM for PT ↔ SY trading — the next core component to implement. Every trade, add/remove-liquidity call, and LP token holding/transfer inherits the same underlying-SAC compliance controls as SY/PT/YT: the mandatory `authorized()` floor, plus `Permissioning` where the market's administrator has optionally configured it. |
 | `Router` | Shared across registered markets | Single-transaction orchestration for wrapping, minting, swapping, recombining, redeeming, and liquidity operations |
 
 Market creation and every compliance right in a market belong to the current administrator of the underlying SAC — that administrator also sets the market's maturity and fee parameters (§ Business Model, TECHNICAL_SPECIFICATION.md). `Permissioning` is one configuration surface that same administrator can optionally use: `PTToken` and `YTToken` carry independent eligibility policies by design, each checking `Permissioning.is_allowed_for_asset(account, own_contract_address)` in addition to the shared account-level `is_allowed()` gate, so the administrator can grant an account access to PT without granting YT, or vice versa. This is layered *on top of* the mandatory SAC-authorization floor every contract also checks, and is deployed/administered by the same operator as the rest of the market — Permissioning can narrow eligibility, never loosen it, and adds no restriction of its own when the SAC itself imposes none.
@@ -87,6 +87,8 @@ flowchart TD
     MarketPool --> SYWrapper
     MarketPool --> OracleAdapter
     MarketPool --> RiskControl
+    MarketPool --> Permissioning
+    MarketPool -. authorized .-> Underlying
 
     PrincipalManager --> SYWrapper
     PrincipalManager --> OracleAdapter
@@ -983,12 +985,32 @@ const assetBalance = account.balances.find(
 
 ## 7. Oracle Architecture
 
-`OracleAdapter` supports a primary source with a configurable fallback, freshness checks, and deviation checks, all asset-configurable. For the first market, USDY, the primary source is the **RedStone USDY/USD SEP-40 feed** — SEP-40 is Stellar's own oracle-consumer interface standard, so this is a native Stellar price feed, not a bridged or off-network source.
+`OracleAdapter` supports a primary source with a configurable fallback, freshness checks, and deviation checks, all asset-configurable. For the first market, USDY, the primary source is the **RedStone USDY/USD SEP-40 feed**. SEP-40 is Stellar's own on-chain oracle-consumer interface standard — RedStone publishes and maintains a SEP-40-compliant oracle *contract* on Stellar, updated by RedStone's own off-chain infrastructure. `OracleAdapter` consumes it with a direct, on-chain contract-to-contract call, not an HTTPS fetch: it is a native Stellar integration, not a bridged or off-network source, and RedStone's own update pipeline sits entirely outside Principal's system boundary.
+
+This is a materially different data path from an asset with no native SEP-40 provider, which falls back to Principal's own backend relay. Both paths converge on the same `OracleAdapter` contract and the same freshness/deviation guarantees; they differ only in how the value gets there.
 
 ### 7.1 Full data flow
 
 ```
-External reference value feed (RedStone USDY/USD SEP-40 feed for the USDY market; issuer API or price aggregator for other assets)
+Path A — SEP-40 on-chain oracle available (USDY today, via RedStone)
+
+RedStone's own off-chain infrastructure
+        │  (RedStone's own pipeline — outside Principal's system boundary)
+        ▼
+RedStone SEP-40 oracle contract (on-chain, Stellar)
+        │
+        ▼  (direct on-chain contract call — OracleAdapter reads the SEP-40
+        │   interface's lastprice()/price() directly; no HTTPS, no backend
+        │   relay, no off-chain signer in this path)
+OracleAdapter contract (on-chain)
+  - reads primary source (SEP-40 contract call) each time a fresh value is needed,
+    or is periodically synced on-chain depending on deployment configuration
+  - stores: Price, Timestamp
+  - emits:  ref_set event
+
+Path B — no native SEP-40 provider for this asset (fallback / other assets)
+
+External reference value feed (issuer API or price aggregator)
         │
         ▼  (HTTPS, configurable interval)
 Oracle Relay (backend scheduled job — one per asset)
@@ -999,6 +1021,8 @@ Oracle Relay (backend scheduled job — one per asset)
 OracleAdapter contract (on-chain)
   - stores: Price, Timestamp
   - emits:  ref_set event
+
+Both paths, downstream of OracleAdapter:
         │
         ├──▶ Backend indexer → oracle_history table → /oracle/:asset/history
         │
@@ -1012,7 +1036,7 @@ OracleAdapter contract (on-chain)
 
 | Concern | Architecture requirement |
 |---|---|
-| Source integrity | Each asset has an explicit source policy: issuer feed, institutional feed, or multi-relayer quorum |
+| Source integrity | Each asset has an explicit source policy: a native on-chain SEP-40 oracle contract (e.g. RedStone for USDY, read via direct contract call), or — where no SEP-40 provider exists — issuer feed, institutional feed, or multi-relayer quorum through Principal's own backend relay |
 | Timestamp monotonicity | On-chain adapter rejects updates whose timestamp is not newer than the stored timestamp |
 | Value monotonicity | On-chain adapter rejects a value below the currently stored one (`ValueDecreased`; equal values still allowed) — the PT/YT settlement math already, silently, assumes a non-decreasing rate |
 | Staleness threshold | `PrincipalManager`, `MarketPool`, and backend health checks use the same configured maximum staleness |

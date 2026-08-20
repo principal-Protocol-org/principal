@@ -196,7 +196,7 @@ stellar contract invoke --id recovery_escrow --source issuer_admin \
 
 ## 6. Permissioning and compliance
 
-Compliance is enforced through **two layers**, checked independently on every affected account:
+Compliance is inherited directly from the underlying SAC — this is the mechanism the protocol depends on to function at all. An optional, admin-controlled narrowing layer (`Permissioning`) can additionally be configured on top of it, but the protocol works correctly with SAC inheritance alone:
 
 - `underlying_SAC.authorized(account)` — the mandatory floor. Real, public, no-auth-required Stellar Asset Contract functions (`authorized`, `admin`) are read live from the actual issuer, so there is exactly one source of truth: if the issuer deauthorizes a wallet on the underlying asset itself, every Principal contract reflects that immediately, with no separate registry that could drift out of sync. This closes the compliance bypass that would otherwise exist if Principal only checked its own, separate registry — an underlying asset's own restrictions are never something the protocol needs to "mirror" and could get out of sync on.
 - `Permissioning.is_allowed(account)` — an optional, narrower configuration surface on top of the SAC floor, administered by the same underlying-SAC administrator who controls market creation — not a separate Principal-managed registry, and never a replacement for the SAC floor. It narrows within what the SAC already permits; it cannot loosen it, since both checks must independently pass, and it adds no restriction of its own when the SAC imposes none. Checked on both sides of every transfer-like operation, not only the recipient, so a flagged account is frozen rather than merely blocked from acquiring new positions.

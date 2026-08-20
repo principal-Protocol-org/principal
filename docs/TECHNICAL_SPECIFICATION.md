@@ -24,7 +24,7 @@ Eight of ten contracts are implemented and unit-tested:
 
 `PrincipalManager.mint`/`redeem` call the real `SYWrapper`, `PTToken`, and `YTToken` contracts — PT and YT minted through the protocol are genuine SEP-41 balances, holdable in any wallet. `RecoveryEscrow.finalize_pt`/`finalize_yt` (§6.3) build on that wiring to complete compliance recovery for PT/YT positions. `MarketPool` and `Router` remain the outstanding work. This document covers the complete protocol design, including the parts not yet built.
 
-Compliance is inherited directly from the underlying SAC, controlled throughout by that SAC's real, current administrator — who also controls market creation and its maturity and fee parameters. Everywhere a holder or recipient is checked, two layers apply: `underlying_SAC.authorized(account)` (the mandatory floor, read live from the actual Stellar Asset Contract the underlying is issued as — if the SAC imposes no authorization requirement, Principal adds no restriction of its own by default) and `Permissioning` (an optional, narrower configuration surface administered by that same SAC administrator, not a separate Principal-managed registry — see §6.4 for why both exist). Creating a market at all requires the underlying SAC's real `admin()` to authorize it.
+Compliance is inherited directly from the underlying SAC, controlled throughout by that SAC's real, current administrator — who also controls market creation and its maturity and fee parameters. This is the mechanism the protocol depends on to function at all: everywhere a holder or recipient is checked, `underlying_SAC.authorized(account)` applies (the mandatory floor, read live from the actual Stellar Asset Contract the underlying is issued as — if the SAC imposes no authorization requirement, Principal adds no restriction of its own by default). `Permissioning` is an *additional, optional* configuration surface administered by that same SAC administrator, not a separate Principal-managed registry and not a prerequisite for Principal to work — see §6.4 for why it exists at all. Creating a market at all requires the underlying SAC's real `admin()` to authorize it.
 
 ---
 
@@ -73,7 +73,7 @@ Compliance is inherited directly from the underlying SAC, controlled throughout 
 | `Permissioning` | `principal_permissioning` | Implemented | Account and per-asset eligibility registry — optional layer on top of SAC authorization |
 | `RiskControl` | `principal_risk_control` | Implemented | Global pause, multi-pauser roles, rolling circuit breaker |
 | `SYWrapper` | `principal_sy_wrapper` | Implemented | Standardized yield wrapper; holds underlying, issues SY shares; deposit/withdraw gated on SAC authorization + Permissioning; `seize()` for compliance recovery |
-| `PrincipalManager` | `principal_manager` | Implemented | Tokenization engine: mints/burns PT and YT internally, settles at maturity; mint/redeem gated the same two-layer way |
+| `PrincipalManager` | `principal_manager` | Implemented | Tokenization engine: mints/burns PT and YT internally, settles at maturity; mint/redeem inherit the same SAC-authorization floor |
 | `RecoveryEscrow` | `principal_recovery_escrow` | Implemented | Authenticates the underlying SAC's real `admin()` (live, no key of its own) and orchestrates `seize` across SYWrapper/PTToken/YTToken |
 | `PTToken` | `principal_pt_token` | Implemented | Standalone SEP-41 PT token contract, not yet called by PrincipalManager |
 | `YTToken` | `principal_yt_token` | Implemented | Standalone SEP-41 YT token contract with claimable yield, not yet called by PrincipalManager |
@@ -300,7 +300,7 @@ fn underlying_address(env) -> Address
 fn permissioning_address(env) -> Address
 ```
 
-**Compliance, precisely:** `transfer` and `transfer_from` check both `from` and `to` — not only the recipient. Checking only `to` would let a revoked holder freely move PT to any still-eligible party before being frozen, undermining the point of compliance enforcement. Each side is checked against two layers: `underlying_SAC.authorized(account)` — the mandatory floor, read live from the actual Stellar Asset Contract, and `Permissioning.is_allowed(account)` **and** `Permissioning.is_allowed_for_asset(account, this_contract_address)` — Principal's own optional, per-token narrowing. Using the per-asset Permissioning check makes **asymmetric PT/YT eligibility** possible: an admin can grant an account access to PT without granting YT (or vice versa) for the same market, using allow-list infrastructure that already exists rather than adding a new mechanism. The SAC check cannot be narrowed away by Permissioning, only added to. `mint` checks only `to`, the same way, on both layers. `burn` has no compliance check at all — it only removes value and never redirects it to a new party, so there's nothing to gate. `seize` is restricted to the one configured `RecoveryEscrow` address and moves a balance without the holder's authorization — see §6.3.
+**Compliance, precisely:** `transfer` and `transfer_from` check both `from` and `to` — not only the recipient. Checking only `to` would let a revoked holder freely move PT to any still-eligible party before being frozen, undermining the point of compliance enforcement. Each side is checked against `underlying_SAC.authorized(account)` — the mandatory floor, read live from the actual Stellar Asset Contract, and the mechanism this check depends on to function at all. Where configured, `Permissioning.is_allowed(account)` **and** `Permissioning.is_allowed_for_asset(account, this_contract_address)` add an optional, per-token narrowing on top — not a requirement for the transfer check to work. Using the per-asset Permissioning check makes **asymmetric PT/YT eligibility** possible: an admin can grant an account access to PT without granting YT (or vice versa) for the same market, using allow-list infrastructure that already exists rather than adding a new mechanism. The SAC check cannot be narrowed away by Permissioning, only added to. `mint` checks only `to`, the same way, on both layers. `burn` has no compliance check at all — it only removes value and never redirects it to a new party, so there's nothing to gate. `seize` is restricted to the one configured `RecoveryEscrow` address and moves a balance without the holder's authorization — see §6.3.
 
 ### 6.2 YTToken
 
@@ -519,6 +519,8 @@ effective_fee_rate = base_fee_rate * τ_days / 365
 Near maturity, near-zero fees allow efficient arbitrage back to par.
 
 ### 7.5 LP operations
+
+Every operation below — add liquidity, remove liquidity, LP token holding, and LP token transfer — inherits the same compliance model as SY, PT, and YT: the mandatory `underlying_SAC.authorized(account)` floor on both sides, plus `Permissioning` where the market's administrator has optionally configured it. Trading through `MarketPool` (§7.4) is gated the same way. This is planned design, since `MarketPool` is not yet implemented — no code exists yet to check against.
 
 **Add liquidity (single-token or dual):**
 

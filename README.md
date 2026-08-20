@@ -87,7 +87,7 @@ The protocol is composed of ten Soroban contracts organized in four layers (see 
 |---|---|
 | `PTToken` | Standalone SEP-41 Principal Token, already implemented and exercised on Testnet. Transfers inherit the underlying SAC's `authorized()` floor on both sender and recipient. |
 | `YTToken` | Standalone SEP-41 Yield Token with continuous yield accrual and claiming, already implemented and exercised on Testnet, gated the same way as PTToken. |
-| `MarketPool` | Yield-curve AMM for PT ↔ SY trading (time-aware, no LP impermanent loss from time decay) — the next core component to implement, alongside `Router` |
+| `MarketPool` | Yield-curve AMM for PT ↔ SY trading (time-aware, no LP impermanent loss from time decay) — the next core component to implement, alongside `Router`. Trading, add/remove liquidity, and LP holding/transfers all inherit the same underlying-SAC compliance controls as SY/PT/YT. |
 | `Router` | Single-transaction orchestration: wrap, mint, swap, recombine, redeem, and liquidity operations |
 
 `PrincipalManager` mints and burns through the real `PTToken`/`YTToken` contracts — PT and YT are genuine SEP-41 balances, holdable in any wallet, not tracked in `PrincipalManager`'s own storage. Compliance recovery covers SY, PT, and YT end to end today, including `RecoveryEscrow.finalize_pt`/`finalize_yt`, and extends to LP positions once `MarketPool` ships.
