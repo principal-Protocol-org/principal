@@ -1,6 +1,6 @@
 # Principal Protocol — Proof of Concept
 
-This document describes the current state of the Principal Protocol implementation: eight Soroban smart contracts that form the infrastructure, tokenization, standalone-token, and compliance-recovery layers of the protocol and demonstrate the core yield-tokenization mechanics on Stellar.
+This document describes the current state of the Principal Protocol implementation — a Soroban-native yield tokenization protocol for regulated RWAs on Stellar, with a native compliance layer: eight Soroban smart contracts that form the infrastructure, tokenization, standalone-token, and compliance-recovery layers of the protocol and demonstrate the core yield-tokenization mechanics on Stellar.
 
 ---
 
@@ -41,11 +41,11 @@ At or after the maturity timestamp, `PrincipalManager.redeem()` burns real PT/YT
 
 ### 4. Oracle integration
 
-`OracleAdapter` stores an admin-submitted USDY/USDC reference value with monotonic timestamp enforcement and freshness checks. This is the trust anchor for minting and redemption pricing.
+`OracleAdapter` stores an admin-submitted reference value (USDY/USD, via RedStone's SEP-40 feed, for the USDY market) with primary/fallback source, monotonic timestamp enforcement, freshness, and deviation checks. This is the trust anchor for minting and redemption pricing. (The Testnet run described below used a USDC-denominated rate — see the transaction record further down for the real historical values submitted.)
 
-### 5. Two-layer compliance: authorization inheritance + Permissioning
+### 5. Compliance inherited directly from the underlying SAC, with an optional admin-controlled narrowing layer
 
-Every contract checks two independent layers on every affected account: `underlying_SAC.authorized(account)` (the mandatory floor, read live from the actual Stellar Asset Contract the underlying is issued as — no separate registry that could drift out of sync with the issuer's own decisions) and `Permissioning` (an optional, Principal-specific additional layer that can narrow but never loosen the SAC floor). `Permissioning` is checked by `PrincipalManager` on both mint and redemption, and by `SYWrapper` on both deposit and withdrawal — on every path, both the sending and receiving side are checked, so a revoked or deauthorized account is frozen rather than merely blocked from acquiring new positions. This preserves the compliance constraints of the underlying USDY asset across all derived instruments, and reflects the issuer's own authorization decisions immediately rather than requiring a separate action to mirror them.
+Every contract checks two layers on every affected account: `underlying_SAC.authorized(account)` (the mandatory floor, read live from the actual Stellar Asset Contract the underlying is issued as — no separate registry that could drift out of sync with the issuer's own decisions; if the SAC imposes no authorization requirement, no restriction is added by default) and `Permissioning` (an optional, narrower configuration surface administered by the same SAC administrator who controls market creation, not a separate Principal-managed registry — it can narrow but never loosen the SAC floor). `Permissioning` is checked by `PrincipalManager` on both mint and redemption, and by `SYWrapper` on both deposit and withdrawal — on every path, both the sending and receiving side are checked, so a revoked or deauthorized account is frozen rather than merely blocked from acquiring new positions. This preserves the compliance constraints of the underlying USDY asset across all derived instruments — SY, PT, and YT today, with LP positions covered the same way once `MarketPool` is built — and reflects the issuer's own authorization decisions immediately rather than requiring a separate action to mirror them.
 
 ### 6. Risk controls
 

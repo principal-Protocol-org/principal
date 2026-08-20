@@ -1,10 +1,10 @@
 # Principal Protocol
 
-**Yield tokenization infrastructure for Stellar RWAs**
+**A Soroban-native yield tokenization protocol for regulated RWAs on Stellar, with a native compliance layer.**
 
-Principal Protocol is a Soroban-native protocol that splits yield-bearing assets into two independently tradable instruments: a **Principal Token (PT)** that delivers a fixed, predictable return at maturity, and a **Yield Token (YT)** that captures all variable yield generated between issuance and maturity.
+Principal Protocol splits a regulated, yield-bearing real-world asset into two independently tradable instruments: a **Principal Token (PT)** that delivers a fixed, predictable return at maturity, and a **Yield Token (YT)** that captures all variable yield generated between issuance and maturity. Every derived position — SY, PT, YT, and LP — inherits its compliance controls directly from the underlying asset's own Stellar Asset Contract (SAC), so regulated RWAs stay regulated all the way through the protocol, not just at the point of deposit.
 
-The first supported market targets **Ondo USDY on Stellar** — a tokenized US Treasury-backed note. The architecture is designed to support any Stellar yield-bearing asset.
+The first supported market targets **Ondo USDY on Stellar** — a tokenized US Treasury-backed note. The architecture is designed to support any regulated Stellar RWA.
 
 ---
 
@@ -52,7 +52,7 @@ PrincipalManager  ─────────── splits SY shares into:
                            (decays to zero at expiry)
 
 At maturity:
-  OracleAdapter provides final USDY/USDC rate
+  OracleAdapter provides final USDY/USD rate (RedStone SEP-40 feed)
   PT holders → receive principal in USDY
   YT holders → receive accumulated yield in USDY
 ```
@@ -69,28 +69,28 @@ The protocol is composed of ten Soroban contracts organized in four layers (see 
 
 | Contract | Role |
 |---|---|
-| `OracleAdapter` | USDY/USDC reference value with freshness controls |
-| `Permissioning` | Account and asset eligibility registry — an optional layer on top of SAC authorization (see below) |
+| `OracleAdapter` | Reference-value feed with primary/fallback source, freshness, and deviation checks. For the USDY market, the primary source is the RedStone USDY/USD SEP-40 feed. |
+| `Permissioning` | An optional, narrower eligibility configuration surface — administered by the same operator as the rest of the market, not a separate Principal-controlled registry (see below) |
 | `RiskControl` | Global pause, multi-pauser roles, rolling 24h circuit breaker |
 
 ### Tokenization layer (per underlying asset)
 
 | Contract | Role |
 |---|---|
-| `SYWrapper` | Wraps the underlying asset into standardized SY shares; exchange rate grows if the underlying rebases, otherwise value is tracked through the oracle. Deposit, withdraw, and transfer are gated on both the underlying SAC's own `authorized()` and `Permissioning`. `seize()` lets a configured `RecoveryEscrow` forcibly recover a deauthorized account's balance. |
-| `PrincipalManager` | Mints real PT + YT from a user's real SY shares (taking custody via `SYWrapper.transfer`); redeems both at maturity by burning them and releasing real underlying via `SYWrapper.withdraw`. Mint and redeem are gated the same two-layer way. |
-| `RecoveryEscrow` | Authenticates the underlying SAC's real admin (read live) and orchestrates `seize` across `SYWrapper`/`PTToken`/`YTToken` — see [Compliance below](#compliance-inheritance-not-a-shadow-registry). |
+| `SYWrapper` | Wraps the underlying asset into standardized SY shares; exchange rate grows if the underlying rebases, otherwise value is tracked through the oracle. Deposit, withdraw, and transfer inherit the underlying SAC's own `authorized()` as the mandatory compliance floor. `seize()` lets a configured `RecoveryEscrow` forcibly recover a deauthorized account's balance. |
+| `PrincipalManager` | Mints real PT + YT from a user's real SY shares (taking custody via `SYWrapper.transfer`); redeems both at maturity by burning them and releasing real underlying via `SYWrapper.withdraw`. Mint and redeem inherit the same SAC-authorization floor. |
+| `RecoveryEscrow` | The central compliance-recovery component. Authenticates the underlying SAC's real, current administrator (read live) and orchestrates `seize` across `SYWrapper`/`PTToken`/`YTToken` — and, once built, LP positions — see [Compliance below](#compliance-is-inherited-directly-from-the-underlying-sac). |
 
 ### Market layer (per maturity date)
 
 | Contract | Role |
 |---|---|
-| `PTToken` | Standalone SEP-41 Principal Token. Transfers check both sender and recipient, at both the SAC-authorization and per-token Permissioning level — PT and YT can carry independent eligibility policies. |
-| `YTToken` | Standalone SEP-41 Yield Token with continuous yield accrual and claiming, gated the same way as PTToken. |
-| `MarketPool` | Yield-curve AMM for PT ↔ SY trading (time-aware, no LP impermanent loss from time decay) |
-| `Router` | Single-transaction orchestration: wrap, mint, swap, recombine, redeem |
+| `PTToken` | Standalone SEP-41 Principal Token, already implemented and exercised on Testnet. Transfers inherit the underlying SAC's `authorized()` floor on both sender and recipient. |
+| `YTToken` | Standalone SEP-41 Yield Token with continuous yield accrual and claiming, already implemented and exercised on Testnet, gated the same way as PTToken. |
+| `MarketPool` | Yield-curve AMM for PT ↔ SY trading (time-aware, no LP impermanent loss from time decay) — the next core component to implement, alongside `Router` |
+| `Router` | Single-transaction orchestration: wrap, mint, swap, recombine, redeem, and liquidity operations |
 
-`PrincipalManager` mints and burns through the real `PTToken`/`YTToken` contracts — PT and YT are genuine SEP-41 balances, holdable in any wallet, not tracked in `PrincipalManager`'s own storage. Compliance recovery covers all three position types end to end, including `RecoveryEscrow.finalize_pt`/`finalize_yt`.
+`PrincipalManager` mints and burns through the real `PTToken`/`YTToken` contracts — PT and YT are genuine SEP-41 balances, holdable in any wallet, not tracked in `PrincipalManager`'s own storage. Compliance recovery covers SY, PT, and YT end to end today, including `RecoveryEscrow.finalize_pt`/`finalize_yt`, and extends to LP positions once `MarketPool` ships.
 
 ---
 
@@ -104,7 +104,13 @@ The protocol is composed of ten Soroban contracts organized in four layers (see 
 
 **Single liquidity pool** — PT and YT both trade through a single PT/SY pool. YT trading is routed through a flash-mint pattern, avoiding pool fragmentation and concentrating LP capital.
 
-**Compliance inheritance, not a shadow registry** — Most Stellar RWAs (BENJI, USDY) are issued as Stellar Assets with native `authorized()`/`admin()` controls the issuer already manages. Rather than maintaining a separate allow-list that could drift out of sync with the issuer's own decisions, `SYWrapper`, `PrincipalManager`, `PTToken`, and `YTToken` all check the underlying SAC's live `authorized(account)` as the mandatory floor, on both sides of every transfer-like operation. `Permissioning` remains available as an *optional* additional layer — e.g. for asymmetric PT/YT eligibility — but can only narrow, never loosen, what the issuer already allows. Market creation itself requires the issuer's real admin key (`initialize` checks `admin == underlying_SAC.admin()`), and `RecoveryEscrow.seize_*` authenticates the same way, live, with no separate Principal-controlled compliance key at all.
+### Compliance is inherited directly from the underlying SAC
+
+The current administrator of the underlying Stellar Asset Contract (SAC) controls market creation and every compliance right in that market, including its maturity and fee parameters (see [Business Model](#business-model)). Compliance controls applied to SY, PT, YT, and LP positions are inherited directly from those active on the underlying asset: if the SAC requires authorization, that requirement applies to every derived position; if the SAC imposes no such requirement, Principal adds no restriction of its own by default. This is enforced at the contract level, not just by convention — `initialize` on `SYWrapper`, `PrincipalManager`, `PTToken`, and `YTToken` each require `admin == underlying_SAC.admin()` (read live), so a market can only be created with the issuer's real participation.
+
+`Permissioning` gives that same administrator an optional, narrower configuration surface on top of the SAC floor — for example, distinct eligibility for PT versus YT. It's deployed and administered by the same operator as the rest of the market, not a separate Principal-managed registry, and it can only narrow eligibility, never loosen it below what the SAC already allows.
+
+`RecoveryEscrow` is the central compliance-recovery component. If the underlying SAC's real, current administrator deauthorizes an account, they can recover that account's derived positions without affecting any other depositor: SY is reconverted into the underlying asset immediately, since it carries no maturity; PT and YT remain fully backed inside `RecoveryEscrow` until maturity, then settle into the underlying asset so the issuer can execute their native SAC clawback. The same recovery path extends to LP positions once `MarketPool` ships.
 
 **Asset-agnostic** — The SYWrapper and PrincipalManager are designed for any Stellar yield-bearing asset. USDY is the first market; the same contracts extend to BENJI, USTBL, or any future RWA.
 
@@ -172,8 +178,8 @@ Go-to-market starts with a single USDY market, targeting USDY holders and treasu
 
 ```
 contracts/
-  oracle_adapter/        — USDY/USDC reference value oracle
-  permissioning/         — account and asset eligibility registry (optional layer)
+  oracle_adapter/        — reference value oracle (RedStone USDY/USD SEP-40 feed for the USDY market)
+  permissioning/         — optional, admin-controlled eligibility configuration (see README's compliance section)
   risk_control/          — pause, pauser roles, rolling circuit breaker
   sy_wrapper/            — standardized yield wrapper (SY-USDY); seize() for compliance recovery
   principal_manager/     — tokenization engine: mints/burns PT and YT internally

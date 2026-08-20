@@ -3,7 +3,6 @@ target/
 # Note: Cargo.lock is committed for smart contracts to guarantee reproducible WASM builds.
 
 # Grant and business documents — not part of the public technical release
-docs/
 MARKET_OPPORTUNITY.md
 WORKING_NOTES.md
 
