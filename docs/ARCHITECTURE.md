@@ -688,7 +688,9 @@ Clients subscribe by account and/or market_id. The backend manages subscriptions
 
 ### 4.5 Oracle relay service
 
-The oracle relay is a scheduled backend job that bridges an off-chain reference value feed to the `OracleAdapter` contract. It is **asset-specific**: each supported underlying asset has its own relay configuration pointing to its data source (e.g. an issuer API, a price aggregator, or an institutional feed).
+This relay is Path B from §7: it applies only to assets with **no native SEP-40 oracle provider**. USDY does not use this path — its `OracleAdapter` reads the RedStone SEP-40 feed directly on-chain (Path A, §7.1), with no backend relay, no relay-held key, and no HTTPS fetch anywhere in that path. The service below exists for future assets that lack a SEP-40 provider and must instead be bridged in by Principal's own backend job.
+
+Where it applies, the oracle relay is a scheduled backend job that bridges an off-chain reference value feed to the `OracleAdapter` contract. It is **asset-specific**: each such underlying asset has its own relay configuration pointing to its data source (e.g. an issuer API, a price aggregator, or an institutional feed).
 
 ```
 Oracle relay loop (configurable interval, e.g. every 10 minutes):
@@ -704,24 +706,20 @@ Oracle relay loop (configurable interval, e.g. every 10 minutes):
 
 The relay can operate in a single-source or multi-source mode depending on the asset's risk policy. A single-source asset uses one trusted issuer or institutional feed and submits directly to `OracleAdapter.set_reference_value`. A multi-source asset uses independent relayers that submit candidate values to an aggregation adapter; the adapter writes the canonical median or quorum-approved value. In both modes, the relay freshness configuration must match the on-chain staleness threshold used by `PrincipalManager` and `MarketPool`.
 
-**Configuration per asset:**
+**Configuration per asset (Path B only — assets with no SEP-40 provider):**
 
 ```yaml
 assets:
-  - id: usdy
+  # usdy is intentionally absent here: it uses Path A, RedStone's SEP-40
+  # feed read directly on-chain by OracleAdapter — no relay entry, no
+  # feed_url, no admin_key_ref for this asset.
+
+  - id: benji
     oracle_contract: C...
     feed_url: https://...          # issuer or institutional feed
     admin_key_ref: hsm://...       # key reference, never plaintext
     relay_interval_secs: 600
     max_deviation_bps: 100         # 1% max per update
-    max_staleness_secs: 3600
-
-  - id: benji
-    oracle_contract: C...
-    feed_url: https://...
-    admin_key_ref: hsm://...
-    relay_interval_secs: 600
-    max_deviation_bps: 100
     max_staleness_secs: 3600
 ```
 
@@ -1124,7 +1122,13 @@ Stage B — Per-maturity contracts (repeat per expiry date)
            recipient on its own SYWrapper.transfer/withdraw calls:
            Permissioning.grant_account(admin, principal_manager_address)
            underlying_SAC.set_authorized(principal_manager_address, true)
-  Step 9  MarketPool          needs: PTToken, SYWrapper, OracleAdapter, RiskControl
+  Step 9  MarketPool          needs: underlying SAC, PTToken, SYWrapper, OracleAdapter,
+                                     RiskControl, Permissioning (optional layer)
+                                     admin must equal underlying SAC's admin(), matching every
+                                     other market-creation step above — trading, add/remove
+                                     liquidity, and LP holding/transfers all inherit the same
+                                     SAC-authorization floor as SY/PT/YT, with Permissioning
+                                     available as the same optional, admin-controlled narrowing
 
 Stage A.5 — RecoveryEscrow (once per underlying asset, after Stage B's PrincipalManager exists)
   Step 4.5  RecoveryEscrow    needs: underlying SAC, SYWrapper, PTToken, YTToken, PrincipalManager
