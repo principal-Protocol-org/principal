@@ -881,6 +881,8 @@ Soroban provides three storage tiers. The protocol uses:
 | Key | Type | Tier |
 |---|---|---|
 | `Admin` | `Address` | instance |
+| `Underlying` | `Address` | instance — the underlying SAC, used for live `authorized()`/`admin()` reads |
+| `Permissioning` | `Address` | instance |
 | `PTToken` | `Address` | instance |
 | `SYWrapper` | `Address` | instance |
 | `Oracle` | `Address` | instance |
@@ -1029,6 +1031,9 @@ There is no `RecombineMismatch` code — `recombine` is not implemented (§5.3).
 | 7 | `ArithmeticOverflow` | fixed-point overflow |
 | 8 | `Paused` | pool is paused |
 | 9 | `InsufficientLPBalance` | remove > LP balance |
+| 10 | `IssuerMismatch` | `initialize` called with `admin` ≠ `underlying_SAC.admin()` |
+| 11 | `NotAuthorizedOnSac` | trade, add/remove liquidity, or LP transfer by an account failing `underlying_SAC.authorized()` |
+| 12 | `PermissionDenied` | same operation blocked by `Permissioning`, where configured |
 
 ---
 
@@ -1218,11 +1223,23 @@ Phase A.5 — Deploy RecoveryEscrow (once per asset, after Phase B's PrincipalMa
 
 Phase C (not yet implemented) — MarketPool and Router:
  11. MarketPool       stellar contract deploy + invoke initialize
-                        --admin <ADMIN> --pt-token <PT_TOKEN> --sy-wrapper <SY_WRAPPER>
+                        --admin <ADMIN> --underlying <ASSET_CONTRACT_ADDRESS>
+                        --pt-token <PT_TOKEN> --sy-wrapper <SY_WRAPPER>
                         --oracle <ORACLE_ADAPTER> --risk-control <RISK_CONTROL>
+                        --permissioning <PERMISSIONING>
                         --scalar-root <VALUE> --anchor-rate <VALUE>
                         --fee-rate <VALUE> --expiry <UNIX_TIMESTAMP>
                         --treasury <TREASURY_ADDRESS>
+                        (admin must equal underlying SAC's admin(), matching every other
+                        market-creation step above; trading, add/remove liquidity, and LP
+                        holding/transfers all inherit the same SAC-authorization floor as
+                        SY/PT/YT, with Permissioning available as the same optional,
+                        admin-controlled narrowing layer — see §7.5)
+
+     Grant MarketPool's own contract address both compliance layers, the same as
+     PrincipalManager (Step 8.5), since it takes custody of pooled SY and PT:
+     Permissioning.grant_account(admin=<ADMIN>, account=<MARKET_POOL>)
+     underlying_SAC.set_authorized(id=<MARKET_POOL>, authorize=true)
 
  12. Router           stellar contract deploy + invoke initialize --admin <ADMIN>
      Router.register_market(maturity_id=<PM_ADDRESS>, market_pool=<MP_ADDRESS>, ...)
