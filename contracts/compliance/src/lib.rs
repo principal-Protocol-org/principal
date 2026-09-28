@@ -86,7 +86,12 @@ pub fn kind(env: &Env) -> Kind {
 /// position)? Read live from the issuer's own contract.
 pub fn is_authorized(env: &Env, underlying: &Address, account: &Address) -> bool {
     match kind(env) {
-        Kind::Sac => token::StellarAssetClient::new(env, underlying).authorized(account),
+        // A trap inside the SAC (e.g. no trustline for the account) is "not authorized", not a
+        // panic of the calling contract.
+        Kind::Sac => matches!(
+            token::StellarAssetClient::new(env, underlying).try_authorized(account),
+            Ok(Ok(true))
+        ),
         Kind::Rwa => {
             let rwa = RwaTokenClient::new(env, underlying);
             if rwa.is_frozen(account) {
@@ -113,7 +118,10 @@ pub fn is_authorized(env: &Env, underlying: &Address, account: &Address) -> bool
 ///   an idempotent call the token only accepts from an authorised operator.
 pub fn is_authority(env: &Env, underlying: &Address, caller: &Address) -> bool {
     match kind(env) {
-        Kind::Sac => token::StellarAssetClient::new(env, underlying).admin() == *caller,
+        Kind::Sac => matches!(
+            token::StellarAssetClient::new(env, underlying).try_admin(),
+            Ok(Ok(admin)) if admin == *caller
+        ),
         Kind::Rwa => {
             let rwa = RwaTokenClient::new(env, underlying);
             let current = match rwa.try_is_frozen(caller) {

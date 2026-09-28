@@ -51,8 +51,14 @@ use soroban_sdk::{
 
 use principal_compliance as compliance;
 
-/// Upper bound on accounts per batch transaction (keeps a batch inside Soroban resource limits).
-pub const MAX_BATCH: u32 = 10;
+/// Upper bound on accounts per batch transaction.
+///
+/// Sized by the *ledger-entry footprint*, not CPU: seizing one account's SY + PT + YT + LP touches
+/// ~10 write and ~14 read entries, and a Soroban transaction may touch at most 100 entries in total
+/// (50 writes). Measured with every position type held: 3 accounts use ~82 entries and fit; 4 use
+/// 97-103 and are over the limit in practice (`footprint ledger entries: 103 > 100`); 5 fail
+/// outright. SY-only batches are far lighter, but one bound must be safe for the heaviest case.
+pub const MAX_BATCH: u32 = 3;
 const RECORD_TTL_LEDGERS: u32 = 518_400;
 
 #[contractclient(name = "SYWrapperClient")]
@@ -81,6 +87,7 @@ pub trait YTTokenInterface {
     fn underlying_address(env: Env) -> Address;
     fn seize(env: Env, caller: Address, account: Address, amount: i128) -> i128;
     fn balance(env: Env, account: Address) -> i128;
+    fn pending_claim(env: Env, account: Address) -> i128;
 }
 
 #[contractclient(name = "PoolClient")]
@@ -103,6 +110,9 @@ pub trait PrincipalManagerInterface {
     fn underlying_address(env: Env) -> Address;
     fn redeem(env: Env, from: Address, pt_amount: i128, yt_amount: i128) -> RedeemResult;
 }
+
+/// Instance-storage TTL applied by `bump` (~30 days at 5 s per ledger).
+const INSTANCE_TTL_LEDGERS: u32 = 518_400;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -164,6 +174,12 @@ pub struct RecoveryRecord {
     /// PT seized directly / YT seized, held in escrow until `finalize_record`.
     pub pt_amount: i128,
     pub yt_amount: i128,
+    /// Yield the seized YT had already accrued (underlying units, before the YT fee). It moves to
+    /// the escrow's pending claim with the position, so it is recovered rather than stranded on a
+    /// deauthorized account. Exact per record. Yield accruing *after* the seizure is pooled across
+    /// every YT position the escrow holds, and is paid out by whichever `finalize_record` runs
+    /// first -- see `underlying_from_yt`.
+    pub yt_yield_at_seize: i128,
     /// Set by `finalize_record`: the underlying the held PT and YT settled into.
     pub finalized: bool,
     pub underlying_from_pt: i128,
@@ -175,6 +191,16 @@ pub struct RecoveryEscrowContract;
 
 #[contractimpl]
 impl RecoveryEscrowContract {
+    /// Permissionless keeper call: extend this contract's *instance* storage (admin, config,
+    /// reserves, totals, settlement rate, fee buckets) for ~30 days. Soroban does not bump instance
+    /// TTL on ordinary reads or writes, so a long-dated market needs this called periodically (or
+    /// an archived instance restored) -- see docs/DEPLOYMENT.md.
+    pub fn bump(env: Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_LEDGERS, INSTANCE_TTL_LEDGERS);
+    }
+
     /// One-time wiring. Every position contract (and the manager and pool) must report the same
     /// underlying as `underlying`.
     pub fn initialize(
@@ -254,6 +280,10 @@ impl RecoveryEscrowContract {
     /// Accounts with no positions are skipped; reverts `NothingToSeize` if none had any.
     pub fn seize_all_positions(env: Env, caller: Address, accounts: Vec<Address>) -> Vec<u64> {
         Self::assert_issuer_admin(&env, &caller);
+        // Bound the work before reading a single balance.
+        if accounts.len() > MAX_BATCH {
+            panic_with_error!(&env, Error::BatchTooLarge);
+        }
         let sy = SYWrapperClient::new(&env, &Self::get(&env, &DataKey::SYWrapper));
         let pt = PTTokenClient::new(&env, &Self::get(&env, &DataKey::PTToken));
         let yt = YTTokenClient::new(&env, &Self::get(&env, &DataKey::YTToken));
@@ -408,6 +438,7 @@ impl RecoveryEscrowContract {
             underlying_from_lp: 0,
             pt_amount: 0,
             yt_amount: 0,
+            yt_yield_at_seize: 0,
             finalized: false,
             underlying_from_pt: 0,
             underlying_from_yt: 0,
@@ -423,8 +454,11 @@ impl RecoveryEscrowContract {
                 .seize(&this, account, &pt_amount);
         }
         if yt_amount > 0 {
-            rec.yt_amount = YTTokenClient::new(env, &Self::get(env, &DataKey::YTToken))
-                .seize(&this, account, &yt_amount);
+            let yt = YTTokenClient::new(env, &Self::get(env, &DataKey::YTToken));
+            let pending_before = yt.pending_claim(&this);
+            rec.yt_amount = yt.seize(&this, account, &yt_amount);
+            // `seize` settles both sides and moves the account's accrued yield to the escrow.
+            rec.yt_yield_at_seize = yt.pending_claim(&this) - pending_before;
         }
         if lp_amount > 0 {
             let pool = PoolClient::new(env, &Self::get(env, &DataKey::Pool));

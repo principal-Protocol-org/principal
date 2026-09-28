@@ -1,5 +1,11 @@
 # Testnet Stress Test Evidence — 30 July 2026
 
+> **Status (Tranche 1).** This evidence describes the Testnet deployment made **before** Tranche 1, of the original
+> eight contracts (e.g. `finalize_pt`/`finalize_yt`, a wall-clock circuit breaker, no AMM/Router/MarketConfig). The
+> transactions and addresses are accurate history; they do not describe the current contracts, which must be
+> redeployed (Tranche 2). Current documentation: [TRANCHE_1_DELIVERABLES.md](TRANCHE_1_DELIVERABLES.md).
+
+
 A multi-user, high-transaction-volume exercise of the protocol on **Stellar Testnet**, run
 immediately after the single-user/single-recovery deployment documented in
 [TESTNET_DEPLOYMENT_EVIDENCE.md](TESTNET_DEPLOYMENT_EVIDENCE.md). This run adds five fresh

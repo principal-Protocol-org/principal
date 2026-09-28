@@ -254,9 +254,9 @@ fn yield_accrues_after_rate_increase() {
     f.client.mint(&user, &(1_000 * SCALE)); // notional 1000 units at SCALE
 
     // Rate goes from 1.0 to 1.03.
+    f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
     f.oracle
         .set_reference_value(&f.oracle_admin, &10_300_000, &(T0 + 1));
-    f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
     f.client.update_yield_index();
 
     // new_factor = ceil(factor * last_rate / now_rate) = ceil(INDEX_SCALE * SCALE / 10_300_000)
@@ -298,8 +298,8 @@ fn yield_is_path_independent_across_many_intermediate_updates() {
     for i in 1..=n_steps {
         ts += 1;
         let r = SCALE + (final_rate - SCALE) * (i as i128) / (n_steps as i128);
-        f.oracle.set_reference_value(&f.oracle_admin, &r, &ts);
         f.env.ledger().with_mut(|li| li.timestamp = ts);
+        f.oracle.set_reference_value(&f.oracle_admin, &r, &ts);
         f.client.update_yield_index();
     }
 
@@ -332,9 +332,9 @@ fn late_buyer_does_not_receive_prior_yield() {
     f.client.mint(&alice, &(1_000 * SCALE));
 
     // Rate rises before Bob ever holds YT.
+    f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
     f.oracle
         .set_reference_value(&f.oracle_admin, &10_300_000, &(T0 + 1));
-    f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
     f.client.update_yield_index();
 
     // Bob receives YT only now, after the index already moved.
@@ -360,9 +360,9 @@ fn transfer_settles_both_sides() {
     grant(&f, &bob);
 
     f.client.mint(&alice, &(1_000 * SCALE));
+    f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
     f.oracle
         .set_reference_value(&f.oracle_admin, &10_300_000, &(T0 + 1));
-    f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
     f.client.update_yield_index();
 
     // Alice transfers everything to Bob; her accrued yield up to this point must
@@ -432,9 +432,9 @@ fn seize_moves_balance_and_settles_both_sides() {
     f.client.mint(&bad_actor, &(1_000 * SCALE));
 
     // Rate rises before the seizure.
+    f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
     f.oracle
         .set_reference_value(&f.oracle_admin, &10_300_000, &(T0 + 1));
-    f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
     f.client.update_yield_index();
 
     let seized = f.client.seize(&escrow, &bad_actor, &(1_000 * SCALE));
@@ -442,9 +442,41 @@ fn seize_moves_balance_and_settles_both_sides() {
     assert_eq!(f.client.balance(&bad_actor), 0);
     assert_eq!(f.client.balance(&escrow), 1_000 * SCALE);
 
-    // Yield accrued before seizure stays with the original holder, not the escrow.
-    assert!(f.client.claim_yield(&minter, &bad_actor) > 0);
-    assert_eq!(f.client.claim_yield(&minter, &escrow), 0);
+    // Yield accrued before seizure moves with the position to the escrow: the flagged account
+    // can never claim it (it is deauthorized), so leaving it behind would strand it.
+    assert_eq!(f.client.claim_yield(&minter, &bad_actor), 0);
+    let recovered = f.client.claim_yield(&minter, &escrow);
+    // 1000 YT * (1/1.00 - 1/1.03) = 29.126...
+    assert!(
+        (recovered - 291_262_135).abs() <= 2,
+        "recovered {recovered}"
+    );
+}
+
+#[test]
+fn a_plain_transfer_does_not_hand_unsynced_yield_to_the_receiver() {
+    // The index is advanced only by `update_yield_index`; a transfer must not settle against a
+    // stale one. Rate 1.0 -> 1.1 with NO update_yield_index call, then a plain transfer.
+    let f = setup();
+    let minter = Address::generate(&f.env);
+    f.client.set_minter(&f.admin, &minter);
+    let alice = Address::generate(&f.env);
+    let bob = Address::generate(&f.env);
+    grant(&f, &alice);
+    grant(&f, &bob);
+    f.client.mint(&alice, &(100 * SCALE));
+
+    f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
+    f.oracle
+        .set_reference_value(&f.oracle_admin, &11_000_000, &(T0 + 1));
+    f.client.transfer(&alice, &bob, &(100 * SCALE));
+
+    // Alice earned the whole 1.0 -> 1.1 move while she held the YT; Bob earned none of it.
+    let alice_claim = f.client.claim_yield(&minter, &alice);
+    let bob_claim = f.client.claim_yield(&minter, &bob);
+    // 100 * (1 - 1/1.1) = 9.0909...
+    assert!((alice_claim - 90_909_090).abs() <= 2, "alice {alice_claim}");
+    assert_eq!(bob_claim, 0);
 }
 
 #[test]
@@ -800,9 +832,9 @@ fn pt_plus_yt_claims_never_exceed_the_deposited_shares_at_any_mint_rate() {
         let f = setup();
         let minter = Address::generate(&f.env);
         f.client.set_minter(&f.admin, &minter);
+        f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
         f.oracle
             .set_reference_value(&f.oracle_admin, &r0, &(T0 + 1));
-        f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
         let user = Address::generate(&f.env);
         grant(&f, &user);
         let shares = 100 * SCALE;

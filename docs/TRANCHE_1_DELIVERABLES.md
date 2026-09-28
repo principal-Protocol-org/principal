@@ -8,7 +8,7 @@ self-reported: every claim names a test or CI job that fails if it stops being t
 
 ```bash
 cargo build --release --target wasm32v1-none -p principal_market_pool   # once, for the CPU-budget test
-cargo test --workspace                       # 314 tests, ~40 s
+cargo test --workspace                       # 328 tests, ~45 s
 cargo llvm-cov --workspace --ignore-filename-regex '(/test\.rs|_test\.rs|/tests/|integration_tests|mock_rwa)' --summary-only
 cargo build --workspace --release --target wasm32v1-none   # all 11 contracts
 ```
@@ -22,9 +22,10 @@ summary. Documentation is built and published by `.github/workflows/docs.yml`.
 | | |
 |---|---|
 | Contracts | **11** (was 8): + `MarketConfig`, `MarketPool` (AMM), `Router`, and the shared `principal_compliance` adapter crate (not a contract) |
+| Internal audit | 5-reviewer pass after the initial build; 2 High + 9 Medium/Low findings fixed, rest documented — see [TRANCHE_1_AUDIT.md](TRANCHE_1_AUDIT.md) |
 | Rust | 14.3 k lines (was 7.2 k); all new code covered below |
-| Tests | **314**: 203 unit + 111 cross-contract integration, all passing |
-| Coverage (production code) | **97.5 % of lines** (3 695 / 3 788), 96.5 % of regions; every file ≥ 95 % |
+| Tests | **328**: 217 unit + 111 cross-contract integration, all passing |
+| Coverage (production code) | **97.7 % of lines** (3 810 / 3 901), 96.7 % of regions; every file ≥ 93.9 % |
 | Contract sizes | all under Soroban's 128 KiB limit; largest `market_pool` 66 KB |
 | AMM cost | swap ≈ 4.6 M CPU instructions (4.6 % of the 100 M limit), measured on the real WASM |
 | Static checks | `cargo fmt --check` and `cargo clippy --workspace --all-targets -D warnings` clean |
@@ -54,7 +55,7 @@ Budget $23,200 · Weeks 1–3.
 | | operations gated by the underlying's Stellar compliance rules | `principal_compliance::is_authorized` on both sides of every deposit/withdraw/transfer | `compliance_matrix_deauthorized_accounts_are_blocked_on_every_position_type` (SAC **and** SEP-57) |
 | **PrincipalManager** | two-phase initialization that resolves the circular dependency | PT/YT deployed first → `PrincipalManager.initialize` (topology-checked: same underlying, permissioning, maturity, oracle, config) → one-time `set_minter` | `initialize_rejects_mismatched_{underlying,permissioning,maturity,oracle}` |
 | | per-user entry-rate tracking at mint | every account snapshots the YT index at its own mint/transfer (`LastClaimedIndex`), so it earns only from when it held the position | `late_minter_does_not_receive_prior_yield`, `multi_user_late_mint_does_not_dilute_early_holder_yield` |
-| | yield accounting | `claim_yield` (pre-maturity, paid in the same call) and the YT leg of `redeem` | `full_split_transfer_claim_and_redeem`, `pt_plus_yt_claims_never_exceed_the_deposited_shares_at_any_mint_rate` |
+| | yield accounting | `claim_yield` (pre-maturity, paid in the same call) and the YT leg of `redeem` | `allowance_transfer_and_mid_life_claim_then_redeem`, `pt_plus_yt_claims_never_exceed_the_deposited_shares_at_any_mint_rate` |
 | | maturity settlement | `settle_all()` freezes one settlement rate for PT and YT; yield stops at maturity | `yt_stops_accruing_at_maturity_and_pt_uses_the_frozen_rate`, `settle_all_requires_maturity_and_a_fresh_oracle` |
 | | (extra) recombination | `recombine` PT + YT → SY before maturity | `recombine_returns_sy_at_the_current_rate_…` |
 | **PT** | standard SEP-41, mint/burn only by PrincipalManager, `seize` for compliance recovery | `contracts/pt_token` | 29 unit tests; `only_the_manager_can_mint_and_burn_pt_and_yt_…` |
@@ -116,9 +117,9 @@ Budget $7,600 · Weeks 4–5.
 
 | Item | Delivered | Where |
 |---|---|---|
-| **Edge cases: error conditions** | every contract's error enum is exercised through a `try_*` call asserting the *specific* code | across all suites |
+| **Edge cases: error conditions** | most error paths (all of `edge_cases.rs`, `recovery.rs`, `risk_control.rs`, `liquidity_and_router.rs`, the oracle/PM/YT audit regressions) assert the *specific* `try_*` error code; some pre-audit unit tests still use `#[should_panic]` and are being migrated (tracked, not blocking) | across all suites |
 | **Edge cases: boundary values** | zero / negative / `i128::MIN` on every entry point; maximum amounts up to `i128::MAX` leave state untouched; a 10-billion-token position round-trips; exact thresholds for the deposit cap, slippage, circuit breaker, maturity (second-exact), oracle freshness (3 600 vs 3 601 s), allowance expiry, deadline | `edge_cases.rs` |
-| **Edge cases: authorization** | every admin-only function rejects a non-admin; escrow-only `seize` rejects even the admin; mint/burn need the manager; **and** every state-changing call fails with *no signatures at all* (`mock_auths(&[])`); permissionless calls (`update_yield_index`, fee claims) work with none and cannot redirect value | `edge_cases.rs` |
+| **Edge cases: authorization** | every admin-only function rejects a non-admin; escrow-only `seize` rejects even the admin; mint/burn need the manager; a representative set of state-changing calls (deposit/withdraw/transfer, mint, admin setters, a pool swap and LP exit, a Router swap) fails with *no signatures at all* (`mock_auths(&[])`) in `edge_cases.rs::state_changing_calls_need_the_callers_own_signature`; permissionless calls (`update_yield_index`, fee claims) work with none and cannot redirect value | `edge_cases.rs` |
 | **Full lifecycle integration** | deposit → wrap → PT/YT issuance → trading → liquidity → yield claiming → settlement → redemption → fee claims, with a solvency check | `full_lifecycle.rs::deposit_tokenize_trade_claim_settle_redeem_with_fees_stays_solvent` |
 | **Complete compliance-recovery cycle** | flag → seize (SY, PT/YT, LP, batch) → finalize → native clawback, over a SAC and a SEP-57 token | `recovery.rs` |
 | **Documentation: function reference** | what each function does, needs, and what can go wrong | [API_REFERENCE.md](API_REFERENCE.md) |
@@ -131,7 +132,7 @@ Budget $7,600 · Weeks 4–5.
 | Criterion | Status |
 |---|---|
 | Contracts merged to `main` under a tagged release | **Pending** — code is complete and tested; the merge and `v*` tag are the maintainers' step. CI runs on `v*` tags. |
-| Test suite passing in public CI with a coverage report published | Workflows added; they run on the first push. Locally: 314 / 314 pass, coverage 97.5 %. |
+| Test suite passing in public CI with a coverage report published | Workflows added (`.github/workflows/ci.yml`, `docs.yml`); confirm on the first pushed pull request — not yet independently observed on GitHub. Locally: 328 / 328 pass, coverage 97.7 %. |
 | RiskControl demonstrably blocks an oversized deposit in an integration test | ✅ `an_over_limit_deposit_reverts_automatically_with_no_manual_call` |
 | Documentation published in the repository | ✅ `docs/` + published site |
 

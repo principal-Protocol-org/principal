@@ -466,6 +466,7 @@ fn flash_mint_buys_yt_by_minting_and_selling_the_pt_in_one_transaction() {
         &s.pool.address,
         &(100 * SCALE),
         &(100 * SCALE),
+        &(100 * SCALE),
         &u64::MAX,
     );
 
@@ -493,16 +494,29 @@ fn flash_mint_enforces_min_yt_out_and_the_deadline() {
     let pool = s.pool.address.clone();
     assert!(s
         .router
-        .try_swap_sy_for_yt(&buyer, &pool, &(10 * SCALE), &(10 * SCALE + 1), &u64::MAX)
+        .try_swap_sy_for_yt(
+            &buyer,
+            &pool,
+            &(10 * SCALE),
+            &(10 * SCALE + 1),
+            &(10 * SCALE),
+            &u64::MAX
+        )
         .is_err());
     // Deadline in the past.
     assert!(s
         .router
-        .try_swap_sy_for_yt(&buyer, &pool, &(10 * SCALE), &0, &(T0 - 1))
+        .try_swap_sy_for_yt(&buyer, &pool, &(10 * SCALE), &0, &(10 * SCALE), &(T0 - 1))
         .is_err());
     // Exactly at the deadline is still valid.
-    s.router
-        .swap_sy_for_yt(&buyer, &pool, &(10 * SCALE), &(10 * SCALE), &T0);
+    s.router.swap_sy_for_yt(
+        &buyer,
+        &pool,
+        &(10 * SCALE),
+        &(10 * SCALE),
+        &(10 * SCALE),
+        &T0,
+    );
 }
 
 // ----------------------------------------------------- flash-redeem YT
@@ -513,9 +527,14 @@ fn flash_redeem_sells_yt_for_sy_by_recombining_with_pool_pt() {
     let holder = s.new_user();
     deposit_sy(&s, &holder, 100 * SCALE);
     let pool = s.pool.address.clone();
-    let (yt, sy_after_buy) = s
-        .router
-        .swap_sy_for_yt(&holder, &pool, &(100 * SCALE), &0, &u64::MAX);
+    let (yt, sy_after_buy) = s.router.swap_sy_for_yt(
+        &holder,
+        &pool,
+        &(100 * SCALE),
+        &0,
+        &(100 * SCALE),
+        &u64::MAX,
+    );
     assert_eq!(yt, 100 * SCALE);
 
     let (pt_res0, sy_res0) = s.pool.reserves();
@@ -545,7 +564,7 @@ fn flash_mint_then_flash_redeem_round_trip_returns_the_capital_minus_impact() {
     deposit_sy(&s, &user, 100 * SCALE);
     let pool = s.pool.address.clone();
     s.router
-        .swap_sy_for_yt(&user, &pool, &(100 * SCALE), &0, &u64::MAX);
+        .swap_sy_for_yt(&user, &pool, &(100 * SCALE), &0, &(100 * SCALE), &u64::MAX);
     let yt = s.yt.balance(&user);
     s.router.swap_yt_for_sy(&user, &pool, &yt, &0, &u64::MAX);
     let end = s.sy.balance_of(&user);
@@ -595,8 +614,14 @@ fn flash_redeem_min_out_is_a_hard_floor_at_the_exact_payout() {
     let holder = s.new_user();
     deposit_sy(&s, &holder, 100 * SCALE);
     let pool = s.pool.address.clone();
-    s.router
-        .swap_sy_for_yt(&holder, &pool, &(100 * SCALE), &0, &u64::MAX);
+    s.router.swap_sy_for_yt(
+        &holder,
+        &pool,
+        &(100 * SCALE),
+        &0,
+        &(100 * SCALE),
+        &u64::MAX,
+    );
     let yt = s.yt.balance(&holder);
     let q = s.pool.quote_buy_exact_pt(&yt);
     let payout = 100 * SCALE - q.amount_in;

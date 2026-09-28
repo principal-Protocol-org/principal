@@ -18,7 +18,7 @@ Written so an integrator can build on the protocol without reading the code.
   wrapper's; the tables list the code each contract itself raises.
 * A `try_*` variant of every function exists on the generated clients and returns the error instead of
   trapping.
-* Every state-changing function emits an event (appendix A).
+* Most state-changing functions emit an event (appendix A); `initialize`, `check_deposit`, `bump` and the Router flows do not.
 
 Contents: [OracleAdapter](#oracleadapter) · [Permissioning](#permissioning) ·
 [RiskControl](#riskcontrol) · [MarketConfig](#marketconfig) · [SYWrapper](#sywrapper) ·
@@ -37,7 +37,7 @@ never negative.
 | Function | Auth | What it does / needs | Errors |
 |---|---|---|---|
 | `initialize(admin)` | – | One-time setup. | `AlreadyInitialized`(1) |
-| `set_reference_value(caller, value, timestamp)` | `caller` = admin | Publishes `value` at `timestamp`. Needs `value > 0`, `value ≥` the stored value, `timestamp >` the stored timestamp. | `Unauthorized`(2), `InvalidValue`(3), `TimestampTooOld`(4), `ValueDecreased`(6) |
+| `set_reference_value(caller, value, timestamp)` | `caller` = admin | Publishes `value` at `timestamp`. Needs `value > 0`, `value ≥` the stored value, and `stored timestamp < timestamp ≤ ledger time` (a future-dated timestamp is rejected so the feed cannot be bricked). | `Unauthorized`(2), `InvalidValue`(3), `TimestampTooOld`(4), `ValueDecreased`(6), `TimestampInFuture`(7) |
 | `get_reference_value()` → `i128` | – | Last published value. | `NotInitialized`(5) if none |
 | `get_reference_timestamp()` → `u64` | – | Timestamp of the last value. | `NotInitialized`(5) |
 | `is_fresh(max_stale_seconds)` → `bool` | – | `true` iff `ledger_time − stored_timestamp ≤ max_stale_seconds`. A stored timestamp *ahead* of the ledger clock is stale. Consumers use 3 600 s. | – |
@@ -152,7 +152,7 @@ oracle (reverting if stale). Additional/different functions:
 | Function | Auth | What it does / needs | Errors |
 |---|---|---|---|
 | `initialize(admin, permissioning, underlying, oracle, maturity, name, symbol, decimals)` | `admin` = issuer authority | One-time; baselines the index at the live oracle rate. | `AlreadyInitialized`(1), `IssuerMismatch`(12), `OracleStale`(10) |
-| `update_yield_index()` | **anyone** | Advances the index to the current oracle rate (only if it rose). The first call at/after maturity advances it a last time and **freezes** it; later calls are no-ops. Needs a fresh oracle unless frozen. | `OracleStale`(10) |
+| `update_yield_index()` | **anyone** | Advances the index to the current oracle rate (only if it rose). Every balance change (`mint`, `burn`, `transfer`, `transfer_from`, `seize`) also syncs the index first, so yield is never attributed against a stale index; after maturity an unfrozen index needs a fresh oracle. The first call at/after maturity advances it a last time and **freezes** it; later calls are no-ops. Needs a fresh oracle unless frozen. | `OracleStale`(10) |
 | `claim_yield(caller, from)` → i128 | `caller` = the **minter** | Settles `from` and returns/zeroes their pending yield (underlying units). Only `PrincipalManager` can reach it, and it pays in the same call — a holder cannot burn a claim without being paid. | `Unauthorized`(2), `MinterNotSet`(9) |
 | `pending_claim(account)`, `accrued_yield_index()`, `last_claimed_index(account)`, `is_frozen()`, `last_oracle_rate()`, `oracle_address()` | – | Views. `last_oracle_rate` is the market's settlement rate once frozen. | – |
 | all other functions | | identical to `PTToken`, except that `mint`/`burn`/`transfer`/`transfer_from`/`seize` also settle each affected account's pending yield *before* the balance moves | error codes differ: `OracleStale`=10, `NotAuthorizedOnSac`=11, `IssuerMismatch`=12, `RecoveryEscrowAlreadySet`=13, `NotRecoveryEscrow`=14 |
@@ -167,7 +167,7 @@ freezes the settlement rate and redeems.
 | `initialize(admin, sy_wrapper, pt_token, yt_token, oracle, permissioning, underlying, maturity, market_config)` | `admin` = issuer authority | One-time. **Topology-checked**: SY/PT/YT/config must share the underlying; SY/PT/YT the permissioning; PT/YT/config the maturity; YT the oracle. | `AlreadyInitialized`(1), `IssuerMismatch`(12), `TopologyMismatch`(13) |
 | `mint(from, sy_shares)` → `MintResult{pt_minted, yt_minted, fee_shares}` | `from` | Splits SY into equal PT + YT. Needs: not paused, before maturity, fresh oracle, `sy_shares > 0`, `from` compliant, `RiskControl` passing (if wired; counts the underlying value), and a non-zero notional after the tokenization fee. Takes custody of *all* `sy_shares` (fee included), brings the YT index current first, mints. | `Paused`(9), `AlreadyMature`(6), `OracleStale`(7), `ZeroAmount`(4), `NotAuthorizedOnSac`(11), `PermissionDenied`(10) + RiskControl's |
 | `recombine(from, amount)` → shares | `from` | Before maturity: burns `amount` PT and `amount` YT and returns `amount × SCALE / rate` SY at the current rate. Accrued YT yield stays claimable. | `Paused`(9), `AlreadyMature`(6), `OracleStale`(7), `ZeroAmount`(4), compliance errors, `InsufficientBalance` from the tokens |
-| `settle_all()` → rate | **anyone** | At/after maturity: advances (and freezes) the YT index and records the frozen settlement rate. Idempotent. Not blocked by the pause. | `NotMature`(5), `OracleStale`(7) |
+| `settle_all()` → rate | **anyone** | At/after maturity: advances (and freezes) the YT index and records the frozen settlement rate; if the index is already frozen no oracle is needed. Idempotent. Not blocked by the pause. | `NotMature`(5), `OracleStale`(7) |
 | `redeem(from, pt_amount, yt_amount)` → `RedeemResult{underlying_from_pt, underlying_from_yt}` | `from` | After maturity, any mix of PT and YT (either may be 0, not both). PT pays `pt × SCALE / settled_rate`; YT pays its remaining yield less the YT fee. Settles implicitly if nobody called `settle_all`. After settlement no fresh oracle is needed. | `Paused`(9), `NotMature`(5), `ZeroAmount`(4), `OracleStale`(7) (first redeem only), compliance errors |
 | `claim_yield(from)` → underlying paid | `from` | Pays accrued YT yield (less the YT fee) without burning YT, before or after maturity. | `Paused`(9), `OracleStale`(7) (unless settled), compliance errors |
 | `claim_protocol_fees()` / `claim_creator_fees()` → SY shares | **anyone** | Pays the accrued fee bucket, in SY, to `MarketConfig.treasury()` / `MarketConfig.creator()` (live issuer authority). Payee is fixed by configuration — calling cannot redirect. The payee must be compliant. | `NothingToClaim`(14) |
@@ -189,7 +189,7 @@ address must be authorized, Permissioning-granted, and per-asset granted for PT 
 | `swap_yt_for_sy(from, to, yt_in, min_sy_out)` → SY out | `from` | **Flash-redeem:** takes `yt_in` YT, recombines it with `yt_in` PT from the pool's own reserve, keeps the curve price of that PT plus fee, pays `to` the rest. Reverts if the recombined SY does not cover the price. Atomic. | as above; `InsufficientLiquidity`(9) when YT is worth too little |
 | `add_liquidity(from, pt_desired, sy_desired, min_lp_out)` → `(pt_used, sy_used, lp)` | `from` | First deposit sets the opening price (SY value must not exceed PT) and locks 1 000 LP; later deposits are pro-rata (`ceil` on the amounts taken), surplus stays with the caller. | `InvalidInitialRatio`(15), `MinimumLiquidity`(21), `ZeroAmount`(7), `SlippageExceeded`(8), `Expired`(6), `Paused`(5) |
 | `add_liquidity_single_sy(from, sy_in, min_lp_out)` → `(pt_used, sy_used, lp)` | `from` | Swaps just enough SY into PT (normal fee) to deposit both in the post-swap ratio; rounding leftovers are refunded. Needs a seeded pool. | as above, `InsufficientLiquidity`(9) on an empty pool |
-| `remove_liquidity(from, to, lp, min_pt_out, min_sy_out)` → `(pt, sy)` | `from` | Pro-rata exit, **also after maturity**, and without an oracle. | `InsufficientLpBalance`(10), `ZeroAmount`(7), `SlippageExceeded`(8), `Paused`(5), compliance errors |
+| `remove_liquidity(from, to, lp, min_pt_out, min_sy_out)` → `(pt, sy)` | `from` | Pro-rata exit, also after maturity, and without an oracle. The pool pause blocks it while the market is live but never after maturity. | `InsufficientLpBalance`(10), `ZeroAmount`(7), `SlippageExceeded`(8), `Paused`(5), compliance errors |
 | `lp_balance(a)`, `lp_total_supply()` | – | | – |
 | `transfer_lp(from, to, amount)` | `from` | Moves LP; **both** sides compliant. | `InsufficientLpBalance`(10), `ZeroAmount`(7), compliance errors, `Paused`(5) |
 | `seize_lp(caller, account, amount)` / `redeem_seized_lp(caller, lp)` | the configured escrow | Forced LP transfer to the escrow / burn of the escrow's own LP for PT + SY sent to the escrow. Work while paused and after maturity. | `NotRecoveryEscrow`(18), `ZeroAmount`(7), `InsufficientLpBalance`(10) |
@@ -211,7 +211,7 @@ Stateless coordinator. Holds no funds, needs no standing on the underlying, and 
 user**, so every downstream check is evaluated against the real user. A market is named by its pool and
 must be registered.
 
-Every user function takes a `deadline` (ledger timestamp; revert `DeadlineExpired` if `now > deadline`)
+Every user function except `redeem_at_maturity` and `claim_yield` takes a `deadline` (ledger timestamp; revert `DeadlineExpired` if `now > deadline`)
 and, where there is an output, a `min_*_out` (revert `SlippageExceeded`). Downstream errors surface with
 their own codes.
 
@@ -219,11 +219,12 @@ their own codes.
 |---|---|---|
 | `initialize(admin)` | – | One-time (`AlreadyInitialized`(1)). |
 | `register_market(caller, pool)` → `MarketInfo` | router admin | Resolves manager/SY/PT/YT/underlying from the pool and cross-checks them (`TopologyMismatch`(7), `AlreadyRegistered`(8), `Unauthorized`(3)). |
+| `unregister_market(caller, pool)` | router admin | Removes a listing (`MarketNotRegistered`(4) if absent). |
 | `is_registered(pool)`, `market(pool)`, `get_admin`, `transfer_admin` | – / admin | `market` reverts `MarketNotRegistered`(4). |
 | `wrap_and_mint(from, pool, amount, min_pt_out, deadline)` → `MintResult` | `from` | underlying → SY → PT + YT. |
 | `unwrap(from, pool, shares, min_underlying_out, deadline)` | `from` | SY → underlying. |
 | `swap_sy_for_pt` / `swap_pt_for_sy(from, pool, amount, min_out, deadline)` | `from` | Pool trades. |
-| `swap_sy_for_yt(from, pool, sy_in, min_yt_out, deadline)` → `(yt_out, sy_back)` | `from` | **Flash-mint:** mint PT + YT from `sy_in`, sell the PT into the pool, keep the YT and the SY proceeds. |
+| `swap_sy_for_yt(from, pool, sy_in, min_yt_out, max_net_cost, deadline)` → `(yt_out, sy_back)` | `from` | **Flash-mint:** mint PT + YT from `sy_in`, sell the PT into the pool, keep the YT and the SY proceeds. `min_yt_out` guards the YT minted; `max_net_cost` guards the pool price (`sy_in − sy_back`), reverting the pool's `SlippageExceeded`(8) if the PT fetches too little. |
 | `swap_yt_for_sy(from, pool, yt_in, min_sy_out, deadline)` | `from` | **Flash-redeem** via the pool. |
 | `add_liquidity`, `add_liquidity_single_sy`, `remove_liquidity` | `from` | Pool LP operations. |
 | `recombine(from, pool, amount, min_sy_out, deadline)` | `from` | PT + YT → SY before maturity. |
@@ -242,7 +243,7 @@ underlying. Each event writes a [`RecoveryRecord`](#appendix-b-types).
 | `seize_sy(caller, account, shares)` → underlying | Seize SY and **unwrap at once**; the escrow holds raw underlying ready for the issuer's native clawback. | `Unauthorized`(3), `TargetStillAuthorized`(4), `ZeroAmount`(5) |
 | `seize_pt(caller, account, amount)`, `seize_yt(...)` | Seize into escrow, held fully backed until maturity. | as above |
 | `seize_lp(caller, account, amount)` → `(pt_received, underlying_from_sy_leg)` | Seize LP, burn it in the pool, unwrap the SY leg at once, hold the PT leg. | as above |
-| `seize_batch(caller, requests)` → record ids | Up to `MAX_BATCH` = 10 accounts in one transaction; one record each; **all-or-nothing** (one still-authorized target reverts the whole batch). Each `SeizeRequest` names per-position amounts; `0` skips a position. | `BatchTooLarge`(7), `ZeroAmount`(5) for an empty batch or an empty request, `TargetStillAuthorized`(4) |
+| `seize_batch(caller, requests)` → record ids | Up to `MAX_BATCH` = 3 accounts in one transaction (bounded by the 100-entry ledger footprint with every position type held); one record each; **all-or-nothing** (one still-authorized target reverts the whole batch). Each `SeizeRequest` names per-position amounts; `0` skips a position. | `BatchTooLarge`(7), `ZeroAmount`(5) for an empty batch or an empty request, `TargetStillAuthorized`(4) |
 | `seize_all_positions(caller, accounts)` → record ids | Reads each account's full SY/PT/YT/LP balances and seizes them all; accounts with nothing are skipped. | `NothingToSeize`(10) |
 | `finalize_record(caller, id)` → `(underlying_from_pt, underlying_from_yt)` | At/after maturity, redeems the PT (`pt_amount + lp_pt`) and YT a record still holds and writes the underlying onto that record. Once per record. | `Unauthorized`(3), `RecordNotFound`(8), `AlreadyFinalized`(9), `NothingToFinalize`(11) for a pure-SY record; `NotMature` from the manager |
 | `get_record(id)`, `account_records(account)` → ids oldest first, `record_count()`, `underlying_address()` | Views. | `RecordNotFound`(8) |
@@ -276,10 +277,14 @@ SeizeRequest    { account, sy_shares, pt_amount, yt_amount, lp_amount }    // 0 
 RecoveryRecord  { id, account, ledger, timestamp,
                   sy_shares, underlying_from_sy,
                   lp_amount, lp_pt, lp_sy_shares, underlying_from_lp,
-                  pt_amount, yt_amount,
+                  pt_amount, yt_amount, yt_yield_at_seize,
                   finalized, underlying_from_pt, underlying_from_yt }
 ```
 
 Constants: `SCALE` = 1e7 · `FEE_SCALE` = 1e12 · `INDEX_SCALE` = 1e12 · `WAD` = 1e18 ·
-`DEFAULT_WINDOW_LEDGERS` = 17 280 · `MAX_BATCH` = 10 · `MINIMUM_LIQUIDITY` = 1 000 ·
+`DEFAULT_WINDOW_LEDGERS` = 17 280 · `MAX_BATCH` = 3 · `MINIMUM_LIQUIDITY` = 1 000 ·
 oracle staleness window = 3 600 s · fee caps: tokenization 100 bps, YT 5 000 bps, swap tier 500 bps.
+
+## Keeper functions
+
+Every long-lived contract (`SYWrapper`, `PTToken`, `YTToken`, `PrincipalManager`, `MarketPool`, `Router`, `MarketConfig`, `RecoveryEscrow`) exposes a permissionless `bump()` that extends its *instance* storage (admin, config, reserves, totals, settlement rate, fee buckets) by ~30 days. Soroban does not extend instance TTL on ordinary calls, so a long-dated market needs a keeper to call it (or to restore an archived instance). Per-user persistent entries are extended on every write; `Permissioning` entries only by `grant_*` (re-grant before expiry).

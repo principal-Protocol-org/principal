@@ -44,9 +44,9 @@ fn deposit_tokenize_trade_claim_settle_redeem_with_fees_stays_solvent() {
 
     let carol = s.new_user();
     deposit_sy(&s, &carol, 200 * SCALE);
-    let (carol_yt, _) = s
-        .router
-        .swap_sy_for_yt(&carol, &pool, &(200 * SCALE), &0, &FAR);
+    let (carol_yt, _) =
+        s.router
+            .swap_sy_for_yt(&carol, &pool, &(200 * SCALE), &0, &(200 * SCALE), &FAR);
     assert!(carol_yt > 199 * SCALE && carol_yt < 200 * SCALE); // minus the 5 bps fee
 
     // --- day 30: rate 1.01. Alice claims mid-life yield (10% YT fee withheld) ------------------
@@ -311,9 +311,14 @@ fn recombine_returns_sy_at_the_current_rate_and_keeps_accrued_yield_claimable() 
     assert_eq!(s.pm.pt_balance(&user), 0);
     assert_eq!(s.pm.yt_balance(&user), 0);
     // The accrued yield survives the burn and is paid on the next claim: 100 * 0.25/1.25 = 20.
-    assert_eq!(s.pm.claim_yield(&user), 20 * SCALE);
-    // Nothing is left over in custody.
-    assert_eq!(s.sy.balance_of(&s.pm.address), 0);
+    // (The index rounds in the protocol's favor by at most one unit, so allow that.)
+    let claimed = s.pm.claim_yield(&user);
+    assert!(
+        (0..=2).contains(&(20 * SCALE - claimed)),
+        "claimed {claimed}, expected 20 SY less at most 2 raw units"
+    );
+    // Nothing is left over in custody beyond that rounding dust.
+    assert!((0..=2).contains(&s.sy.balance_of(&s.pm.address)));
 }
 
 #[test]
@@ -390,8 +395,10 @@ fn zero_fee_market_takes_nothing() {
     assert_eq!(r.fee_shares, 0);
     assert_eq!(s.pm.accrued_fees(), (0, 0));
     s.advance(T0 + 500, SCALE * 2);
-    // No YT fee either: claim pays the full 50 (100 * (2-1)/2).
-    assert_eq!(s.pm.claim_yield(&user), 50 * SCALE);
+    // No YT fee either: claim pays the full 50 (100 * (2-1)/2), less at most 1 raw unit of
+    // direction-safe index rounding.
+    let paid = s.pm.claim_yield(&user);
+    assert!((0..=1).contains(&(50 * SCALE - paid)), "paid {paid}");
 }
 
 // -------------------------------------------------------------- pause switch

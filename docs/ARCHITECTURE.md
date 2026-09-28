@@ -175,46 +175,40 @@ A new asset is onboarded by deploying a fresh infrastructure set and per-maturit
 sequenceDiagram
     participant U as User
     participant RT as Router
-    participant RC as RiskControl
     participant SYW as SYWrapper
-    participant UND as Underlying SAC
+    participant RC as RiskControl
+    participant PM as PrincipalManager
+    participant UND as Underlying (SAC / SEP-57)
     participant PERM as Permissioning
     participant OA as OracleAdapter
-    participant PM as PrincipalManager
     participant PT as PTToken
     participant YT as YTToken
 
-    U->>RT: wrap_and_mint(asset_amount, maturity_id)
-    RT->>RC: check_deposit(caller=RT, asset_amount)
-    RC-->>RT: ok or revert NotConsumer/Paused/CircuitBreakerTripped
-    RT->>SYW: deposit(from=user, amount=asset_amount)
-    SYW->>UND: authorized(user)
-    UND-->>SYW: true or revert NotAuthorizedOnSac
+    U->>RT: wrap_and_mint(from, pool, amount, min_pt_out, deadline)
+    RT->>SYW: deposit(from=user, amount, min_shares_out=0)
+    SYW->>UND: compliance: authorized(user)
     SYW->>PERM: is_allowed(user)
-    PERM-->>SYW: true or revert PermissionDenied
-    SYW->>SYW: shares = amount * RATE_SCALE / exchange_rate
-    SYW-->>RT: shares_minted
-    RT->>PM: mint(from=user, sy_shares)
-    PM->>UND: authorized(user)
-    UND-->>PM: true or revert NotAuthorizedOnSac
+    SYW->>RC: check_deposit(caller=SYWrapper, asset, amount)
+    RC-->>SYW: ok, or revert Paused / NotConsumer / CircuitBreakerTripped / AssetLimitTripped
+    SYW->>UND: transfer(user -> SYWrapper, amount)
+    SYW-->>RT: shares
+    RT->>PM: mint(from=user, shares)
+    PM->>UND: compliance: authorized(user)
     PM->>PERM: is_allowed(user)
-    PERM-->>PM: true or revert PermissionDenied
-    PM->>OA: is_fresh(MAX_ORACLE_STALENESS_SECS)
-    OA-->>PM: true or revert OracleStale
-    PM->>OA: get_reference_value()
-    OA-->>PM: oracle_rate
+    PM->>OA: is_fresh(3600) and get_reference_value()
+    PM->>RC: check_deposit(caller=PrincipalManager, asset, underlying_value)
+    PM->>SYW: transfer(user -> PrincipalManager, shares)   [custody, incl. the fee]
     PM->>YT: update_yield_index()
-    PM->>SYW: transfer(from=user, to=PrincipalManager, sy_shares)
-    SYW-->>PM: shares moved into PrincipalManager's own custody
-    PM->>PT: mint(to=user, amount=notional)
-    PM->>YT: mint(to=user, amount=notional)
-    PM-->>RT: MintResult pt_minted and yt_minted
+    PM->>PT: mint(to=user, notional)
+    PM->>YT: mint(to=user, notional)
+    PM-->>RT: MintResult{pt_minted, yt_minted, fee_shares}
+    RT->>RT: require pt_minted >= min_pt_out
     RT-->>U: MintResult
 ```
 
-`SYWrapper.transfer` is what lets `PrincipalManager` take real custody of the caller's shares — it is checked the same both-sides, both-layer way as `deposit`/`withdraw` (§8.1), which is why `PrincipalManager`'s own contract address must itself be SAC-authorized and Permissioning-granted at deployment time (§9.1, Step 8.5). `update_yield_index()` runs before `YTToken.mint` credits the new balance, so a fresh mint's own yield snapshot always starts at the just-updated factor and can never retroactively earn a rate movement that happened before it existed.
+The circuit breaker is called by **`SYWrapper.deposit` and `PrincipalManager.mint` themselves**, each with its own address as the caller (both are registered consumers); the Router never talks to RiskControl, so calling either contract directly is exactly as limited as going through the Router. Because both report, a `wrap_and_mint` counts at both entry points. Every nested call is made as the user, who signs the whole tree during simulation.
 
-`SYWrapper` and `PrincipalManager` each check both compliance layers independently — neither relies on `Router` (or any other caller) to have checked on its behalf, so calling either contract directly, bypassing `Router` entirely, is exactly as gated as going through it. The SAC's `authorized()` is the mandatory floor, checked first; `Permissioning` is Principal's own optional additional layer.
+`SYWrapper.transfer` is what lets `PrincipalManager` take custody of the caller's shares; it is checked the same both-sides, both-layer way as `deposit`/`withdraw`, so `PrincipalManager`'s own address needs underlying-level authorization and a Permissioning grant at deployment (DEPLOYMENT.md step 11). `update_yield_index()` runs before `YTToken.mint` credits the new balance (and `YTToken.mint` also syncs the index itself), so a fresh position can never retroactively earn a movement that predates it. `SYWrapper` and `PrincipalManager` each check compliance independently — neither relies on any caller to have checked on its behalf.
 
 #### AMM swap: SY → PT
 
@@ -248,62 +242,56 @@ sequenceDiagram
     participant PT as PTToken
     participant YT as YTToken
 
-    U->>RT: request SY to YT swap
-    RT->>PM: mint PT and YT from SY
-    PM->>PT: mint PT to Router
-    PM->>YT: mint YT to Router
-    PM-->>RT: return minted PT and YT
-    RT->>MP: sell minted PT for SY
-    MP->>PT: move PT from Router to pool
-    MP-->>RT: return SY from PT sale
-    RT->>YT: move YT from Router to user
-    RT-->>U: confirm YT received
+    U->>RT: swap_sy_for_yt(from, pool, sy_in, min_yt_out, max_net_cost, deadline)
+    RT->>PM: mint(from=user, sy_in)
+    PM->>PT: mint(to=user, notional)
+    PM->>YT: mint(to=user, notional)
+    PM-->>RT: MintResult
+    RT->>RT: require yt_minted >= min_yt_out
+    RT->>MP: swap_pt_for_sy(from=user, to=user, pt_minted, min_sy_out = sy_in - max_net_cost)
+    MP->>PT: transfer(user -> pool, pt_minted)
+    MP-->>RT: sy_back (to the user)
+    RT-->>U: (yt_minted, sy_back)
 ```
 
-#### Maturity redemption
+PT and YT are minted **to the user**, not to the Router — the Router never holds a token. The user keeps the YT; the PT is sold straight from their own balance. `max_net_cost` bounds the price of the pool leg (`sy_in - sy_back`), the only part of the flow a trader can move.
+
+**Flash-redeem** (`MarketPool.swap_yt_for_sy`) is the mirror image and runs inside the pool: it takes the user's YT, calls `PrincipalManager.recombine(pool, yt_in)` with `yt_in` of its own PT reserve, keeps the curve price of that PT plus fee, and pays the user the remainder — all in one call, reverting `InsufficientLiquidity` if the recombined SY does not cover the price.
+
+#### Maturity settlement and redemption
 
 ```mermaid
 sequenceDiagram
+    participant K as Keeper (anyone)
     participant U as User
     participant RT as Router
     participant PM as PrincipalManager
-    participant UND as Underlying SAC
-    participant PERM as Permissioning
     participant OA as OracleAdapter
     participant PT as PTToken
     participant YT as YTToken
     participant SYW as SYWrapper
 
-    U->>RT: redeem_at_maturity(pt_amount, yt_amount)
+    K->>PM: settle_all()   [permissionless, at/after maturity]
+    PM->>YT: is_frozen()
+    PM->>OA: is_fresh(3600)   [skipped if the YT index is already frozen]
+    PM->>YT: update_yield_index()   [advances a last time and FREEZES]
+    PM->>YT: last_oracle_rate()
+    PM-->>K: settled_rate (recorded once)
+
+    U->>RT: redeem_at_maturity(from, pool, pt_amount, yt_amount)
     RT->>PM: redeem(from=user, pt_amount, yt_amount)
-    PM->>PM: assert now at or after maturity
-    PM->>UND: authorized(user)
-    UND-->>PM: true or revert NotAuthorizedOnSac
-    PM->>PERM: is_allowed(user)
-    PERM-->>PM: true or revert PermissionDenied
-    PM->>OA: is_fresh(MAX_ORACLE_STALENESS_SECS)
-    OA-->>PM: true or revert OracleStale
-    PM->>OA: get_reference_value()
-    OA-->>PM: final_rate
-    Note over PM,SYW: PT path -- PrincipalManager computes the payout itself
-    PM->>PT: burn(from=user, amount=pt_amount)
-    PM->>PM: underlying_pt = floor(pt_amount * SCALE / final_rate)
-    PM->>SYW: exchange_rate()
-    SYW-->>PM: sy_rate
-    PM->>SYW: withdraw(from=PrincipalManager, shares_for(underlying_pt, sy_rate), to=user)
-    Note over PM,YT: YT path -- delegated to YTToken's own index, not computed here
-    PM->>YT: update_yield_index()
-    PM->>YT: burn(from=user, amount=yt_amount)
+    PM->>PM: compliance checks on user; settle() if nobody called settle_all
+    PM->>PT: burn(user, pt_amount)
+    PM->>SYW: withdraw(PrincipalManager, shares_for(pt_amount x SCALE / settled_rate), to=user)
+    PM->>YT: update_yield_index() [no-op, frozen]; burn(user, yt_amount)
     PM->>YT: claim_yield(caller=PrincipalManager, from=user)
-    YT-->>PM: underlying_yt (settled against YTToken's own accrual index)
-    PM->>SYW: exchange_rate()
-    SYW-->>PM: sy_rate
-    PM->>SYW: withdraw(from=PrincipalManager, shares_for(underlying_yt, sy_rate), to=user)
-    PM-->>RT: RedeemResult underlying_from_pt and underlying_from_yt
-    RT-->>U: underlying asset delivered
+    YT-->>PM: gross yield (underlying)
+    PM->>SYW: withdraw(PrincipalManager, net shares after the YT fee, to=user)
+    PM-->>RT: RedeemResult
+    RT-->>U: underlying delivered
 ```
 
-Eligibility is checked at redemption now, not only at mint — closing a gap where a revoked account could previously still redeem PT/YT for the underlying asset. `PrincipalManager` self-authorizes as its own contract address on both `SYWrapper.withdraw` calls (a Soroban contract can `require_auth()` as itself when it is the invoking contract), the same pattern `RecoveryEscrow` uses to unwrap a seizure. YT redemption is deliberately **not** computed independently by `PrincipalManager` — `YTToken.claim_yield` is minter-gated (only `PrincipalManager` can call it, the same way `mint`/`burn` already are), so `PrincipalManager` treats its return value as authoritative with no independent second payer to conflict with. `PrincipalManager.claim_yield` provides the same settle-and-pay mechanism ahead of redemption, without burning YT or requiring maturity.
+`settle_all` freezes one settlement rate for PT and YT, so a relay that goes silent *after a single fresh observation* cannot lock redemption (if the index is still unfrozen, the first settlement needs a fresh oracle). Eligibility is checked at redemption as well as at mint. `PrincipalManager` self-authorizes as its own address on the `SYWrapper.withdraw` calls (a contract auto-authorizes calls it makes directly), the same pattern `RecoveryEscrow` uses to unwrap a seizure. YT redemption is not computed by `PrincipalManager`: `YTToken.claim_yield` is minter-gated (only `PrincipalManager` can call it), so its return value is authoritative, less the market's YT fee. `PrincipalManager.claim_yield` provides the same settle-and-pay mechanism ahead of redemption without burning YT.
 
 #### Pre-maturity recombination
 
@@ -316,19 +304,25 @@ sequenceDiagram
     participant YT as YTToken
     participant SYW as SYWrapper
 
-    U->>RT: recombine(pt_amount, yt_amount)
-    RT->>PM: recombine(from=user, pt_amount, yt_amount)
-    PM->>PM: require pt_amount equals yt_amount
-    PM->>PM: require now before maturity
-    PM->>PM: sy_returned = pt_amount * SCALE / oracle_rate
-    PM->>PT: burn(from=user, amount=pt_amount)
-    PM->>YT: burn(from=user, amount=yt_amount)
-    PM->>SYW: transfer(shares=sy_returned, to=user)
-    PM-->>RT: sy_returned
-    RT-->>U: SY shares
+    U->>RT: recombine(from, pool, amount, min_sy_out, deadline)
+    RT->>PM: recombine(from=user, amount)
+    PM->>PM: not paused, before maturity, oracle fresh, user compliant
+    PM->>YT: update_yield_index()
+    PM->>YT: burn(user, amount)   [settles pending yield first: it stays claimable]
+    PM->>PT: burn(user, amount)
+    PM->>SYW: transfer(PrincipalManager -> user, amount x SCALE / oracle_rate)
+    PM-->>RT: shares
+    RT->>RT: require shares >= min_sy_out
+    RT-->>U: SY
 ```
 
----
+A single `amount` of PT and of YT is burned together; the SY returned is valued at the *current* oracle rate, and the yield the YT already accrued is paid by a later `claim_yield`.
+
+> **Scope note.** Sections 3–7 below (Stellar network interface, backend API, frontend integration, SDK
+> reference and the oracle relay architecture) are the **design** for the Tranche 2 and 3 components; none of
+> them is implemented in Tranche 1, which delivers the on-chain contracts (§2, §8.1, §9). In particular the
+> `OracleAdapter` is fed by an admin/relay via `set_reference_value` today; reading the RedStone SEP-40 feed
+> directly on-chain ("Path A") is planned, not built.
 
 ## 3. Stellar Network Interface Layer
 
@@ -1061,7 +1055,7 @@ Both paths, downstream of OracleAdapter:
 | Staleness threshold | `PrincipalManager`, `MarketPool`, and backend health checks use the same configured maximum staleness |
 | Deviation checks | Relay rejects updates whose rate movement exceeds the configured basis-point threshold |
 | Key management | Oracle update authority is held by HSM, threshold signer, multisig, or a dedicated governance account |
-| Failure response | Stale or invalid feed state triggers `RiskControl.pause()` for affected markets |
+| Failure response | An operator procedure, not automatic: on a stale or invalid feed an operator pauses via `RiskControl.pause()` (blocking deposits/mints) |
 | Auditability | Every submitted reference value is emitted as an event and indexed into `oracle_history` |
 | Asset onboarding | A new asset receives its own oracle adapter, source policy, relay configuration, and monitoring alerts |
 
@@ -1080,7 +1074,7 @@ Both paths, downstream of OracleAdapter:
 | Eligibility checks (optional, admin-controlled layer) | `Permissioning.is_allowed()` (account-level), layered on top of SAC authorization and administered by the same operator as the rest of the market, so a revoked account is frozen rather than merely blocked from new positions. `PTToken`/`YTToken` transfers additionally check `is_allowed_for_asset()` per token, enabling independent PT/YT eligibility policies. Can only narrow the SAC floor, never loosen it — adds no restriction of its own when the SAC imposes none. |
 | Market-creation gating | `initialize` on `SYWrapper`, `PrincipalManager`, `PTToken`, `YTToken` requires `admin == underlying_SAC.admin()` (read live) and `admin.require_auth()` — a market cannot be created without the actual issuer's participation. That same administrator sets the market's maturity and fee parameters. |
 | Compliance-recovery authentication | `RecoveryEscrow.seize_*` requires the caller to be the underlying's live issuer authority (`SAC.admin()`, or the SEP-57 operator role) and the target to already be deauthorized — the escrow has no admin key of its own, so there's nothing separate to compromise. Covers SY, PT, YT and LP; batch seizure is all-or-nothing. |
-| Global pause | `RiskControl.pause()` halts all minting, trading, and redemption |
+| Global pause | `RiskControl.pause()` makes `check_deposit` revert, blocking `SYWrapper.deposit` and `PrincipalManager.mint`; trading and redemption are halted only by each contract's own `set_paused`; `settle_all` and recovery are never paused |
 | Circuit breaker | Caps deposit volume (protocol-wide and per-asset) per window of ledger sequence numbers (default ≈ 24 h); enforced inside `SYWrapper.deposit` and `PrincipalManager.mint`; resets automatically |
 | Slippage protection | `min_out` and `deadline` on every Router flow, plus minimums on `SYWrapper` and `MarketPool`; reverts with `SlippageExceeded` / `DeadlineExpired` |
 | YT yield floor | `max(0, rate_delta)` — YT yields zero if no growth; PT principal never at risk |

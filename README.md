@@ -38,7 +38,7 @@ User deposits USDY
         │
         ▼
    SYWrapper  ──────────────── issues SY-USDY shares
-   (standardized yield          (exchange rate grows as
+   (standardized yield          (exchange rate is fixed at 1.0;
     wrapper)                     yield accrues)
         │
         ▼
@@ -63,7 +63,7 @@ At maturity:
 
 ## Protocol Architecture
 
-The protocol is composed of **eleven Soroban contracts** organized in four layers, plus one shared library crate (`principal_compliance`). See [docs/TECHNICAL_SPECIFICATION.md](docs/TECHNICAL_SPECIFICATION.md) for the full spec and [docs/API_REFERENCE.md](docs/API_REFERENCE.md) for every function.
+The protocol is composed of **eleven Soroban contracts** organized in three layers, plus one shared library crate (`principal_compliance`). See [docs/TECHNICAL_SPECIFICATION.md](docs/TECHNICAL_SPECIFICATION.md) for the full spec and [docs/API_REFERENCE.md](docs/API_REFERENCE.md) for every function.
 
 ### Infrastructure layer (shared across all markets)
 
@@ -87,12 +87,12 @@ The protocol is composed of **eleven Soroban contracts** organized in four layer
 
 | Contract | Role |
 |---|---|
-| `PTToken` | SEP-41 Principal Token; both-sides compliance on every transfer; `seize` for recovery. |
-| `YTToken` | SEP-41 Yield Token with a `1/rate` yield index (exactly solvent at any mint rate), claimable any time, frozen at maturity; same gating and `seize`. |
+| `PTToken` | SEP-41-style Principal Token (see *SEP-41 deviations* below); both-sides compliance on every transfer; `seize` for recovery. |
+| `YTToken` | SEP-41-style Yield Token with a `1/rate` yield index (exactly solvent at any mint rate), claimable any time, frozen at maturity; same gating and `seize`. |
 | `MarketPool` | The time-aware PT/SY yield-curve AMM (constant power sum `x^a + y^a = k`, `a = 1 − τ/S`): PT converges to par at maturity with no time-decay impermanent loss. Swaps, proportional and single-sided liquidity, compliance-gated LP positions, the flash-redeem YT path, and swap fees that decay as `Fee Tier × Days to Maturity / 365`. |
 | `Router` | Stateless single-transaction flows — wrap-and-mint, swaps, **flash-mint** YT, flash-redeem YT, liquidity, recombine, redeem — each with a `deadline` and `min_out`. Acts as the user, holds nothing. |
 
-`PrincipalManager` mints and burns through the real `PTToken`/`YTToken` contracts — PT and YT are genuine SEP-41 balances, holdable in any wallet. Compliance recovery covers SY, PT, YT and LP end to end.
+`PrincipalManager` mints and burns through the real `PTToken`/`YTToken` contracts — PT and YT are genuine token balances that follow SEP-41's `transfer`/`approve`/`balance` model (with the deviations listed under *SEP-41 deviations* below). Compliance recovery covers SY, PT, YT and LP end to end.
 
 ---
 
@@ -123,7 +123,7 @@ Two things follow that an integrator must know, both detailed in [docs/COMPLIANC
 
 **Asset-agnostic** — The SYWrapper and PrincipalManager are designed for any Stellar yield-bearing asset, classic or SEP-57. USDY is the first market; the same contracts extend to BENJI, USTBL, or any future RWA.
 
-**Stellar-native** — All contracts use Soroban storage tiers (`instance` / `persistent`), `require_auth()`, `#[contracttype]` typed keys, `#[contracterror]` typed errors, and SEP-41 for tokens.
+**Stellar-native** — All contracts use Soroban storage tiers (`instance` / `persistent`), `require_auth()`, `#[contracttype]` typed keys, `#[contracterror]` typed errors, and the SEP-41 token model for PT/YT.
 
 ---
 
@@ -171,6 +171,10 @@ YT holder accrues:   N_yt × (1/r_settle − 1/r_now)                       unde
 `final_rate` is the single rate frozen by `settle_all()` at maturity. The YT index is the closed form `1/rate`, so over a position's life PT + YT claims telescope to exactly `N / r₀ = n` — the SY deposited — for **any** mint rate and any number of oracle updates. (Worked example: 100 SY minted at 1.05 and settled at 1.10 pay 95.4545 to the PT and 4.5454 to the YT: total 100.) Yield stops accruing at maturity; rounding always favors the protocol. A full guide with real numbers is in [docs/YIELD_MATH_AND_FEES.md](docs/YIELD_MATH_AND_FEES.md).
 
 ---
+
+### SEP-41 deviations (PT / YT)
+
+PT and YT implement `transfer`, `transfer_from`, `approve`, `allowance`, `balance`, `decimals`, `name`, `symbol`, but deliberately differ from the reference SEP-41 interface (v0.5.2) in four ways: `burn` is **minter-only** and there is no holder `burn`/`burn_from` (an uncontrolled burn would desync supply from the SY backing it); `transfer`'s `to` is an `Address`, not a `MuxedAddress`; events use short topic symbols with tuple data rather than the standard `["transfer", from, to]` / `amount` shape; and both-sides compliance checks make transfers revert for flagged accounts. Wallets and indexers keyed to the standard event shape will not see PT/YT transfers until the events are migrated to `#[contractevent]` (tracked for Tranche 2).
 
 ## Business Model
 
@@ -227,7 +231,7 @@ docs/
 
 ## Quick Start
 
-**Requirements:** Rust stable (≥ 1.84), the `wasm32v1-none` target, Stellar CLI ≥ 22.0. (`wasm32-unknown-unknown` no longer builds with Soroban SDK 26 on current Rust.)
+**Requirements:** Rust stable (≥ 1.91, required by soroban-sdk 26), the `wasm32v1-none` target, Stellar CLI ≥ 22.0. (`wasm32-unknown-unknown` no longer builds with Soroban SDK 26 on current Rust.)
 
 ```bash
 # Add the WASM target (once)

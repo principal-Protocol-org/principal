@@ -85,6 +85,9 @@ pub trait RiskControlInterface {
     fn check_deposit(env: Env, caller: Address, asset: Address, amount: i128);
 }
 
+/// Instance-storage TTL applied by `bump` (~30 days at 5 s per ledger).
+const INSTANCE_TTL_LEDGERS: u32 = 518_400;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(u32)]
@@ -126,6 +129,16 @@ pub struct SYWrapperContract;
 
 #[contractimpl]
 impl SYWrapperContract {
+    /// Permissionless keeper call: extend this contract's *instance* storage (admin, config,
+    /// reserves, totals, settlement rate, fee buckets) for ~30 days. Soroban does not bump instance
+    /// TTL on ordinary reads or writes, so a long-dated market needs this called periodically (or
+    /// an archived instance restored) -- see docs/DEPLOYMENT.md.
+    pub fn bump(env: Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_LEDGERS, INSTANCE_TTL_LEDGERS);
+    }
+
     /// Initialize with the admin address, the underlying SAC address, and the Permissioning
     /// registry used as an additional eligibility layer. `admin` must be the underlying SAC's
     /// actual admin (`admin()`, read live) and must authorize this call -- this is what ties

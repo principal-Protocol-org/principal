@@ -1,5 +1,11 @@
 # Testnet Deployment Evidence — 30 July 2026
 
+> **Status (Tranche 1).** This evidence describes the Testnet deployment made **before** Tranche 1, of the original
+> eight contracts (e.g. `finalize_pt`/`finalize_yt`, a wall-clock circuit breaker, no AMM/Router/MarketConfig). The
+> transactions and addresses are accurate history; they do not describe the current contracts, which must be
+> redeployed (Tranche 2). Current documentation: [TRANCHE_1_DELIVERABLES.md](TRANCHE_1_DELIVERABLES.md).
+
+
 Full, raw record of the current-source deployment summarized narratively in
 [PROOF_OF_CONCEPT.md](PROOF_OF_CONCEPT.md)'s "Current Testnet Deployment" section. Every
 address and transaction hash below is real and independently verifiable on

@@ -63,7 +63,7 @@ fn amm_operations_fit_the_per_transaction_cpu_budget() {
     });
     measure("router.swap_sy_for_yt (flash-mint)", &|| {
         s.router
-            .swap_sy_for_yt(&trader, &pool, &(20 * SCALE), &0, &u64::MAX);
+            .swap_sy_for_yt(&trader, &pool, &(20 * SCALE), &0, &(20 * SCALE), &u64::MAX);
     });
     let yt = s.yt.balance(&trader).min(15 * SCALE);
     measure("swap_yt_for_sy (flash-redeem)", &|| {

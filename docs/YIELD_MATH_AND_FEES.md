@@ -137,17 +137,17 @@ The pool trades PT against SY on `x^a + y^a = k`, `a = 1 − τ/S` (details in
 time to maturity, `S` the time stretch (4 years here). The spot price of one PT in SY is
 `(x / y)^(τ / S)`.
 
-**Example 5 — a pool of 1 000 PT against SY worth 950, 180 days out (`S` = 4 years).**
+**Example 5 — a pool of 999.5 PT (1 000 SY tokenized, less the 5 bps fee) against SY worth 950, 180 days out (`S` = 4 years).**
 
 * exponent `a = 1 − (180/365)/4 = 0.8767`
-* opening price `0.95^0.1233 =` **0.99376** → a fixed yield of `(1/0.99376 − 1) × 365/180 =` **1.27 % a year**
+* opening price `(950 / 999.5)^0.1233 =` **0.99376** → a fixed yield of `(1/0.99376 − 1) × 365/180 =` **1.27 % a year**
 * buying PT with 20 SY returns **20.0648 PT**, paying **0.00986 SY** fee (0.1 % × 180/365 × 20)
 
 **Time decay with no trading at all** — reserves untouched, only the clock moving:
 
 | Day | 0 | 60 | 90 | 120 | 150 | 179 | 1 minute before maturity |
 |---|---|---|---|---|---|---|---|
-| PT price | 0.99376 | 0.99583 | 0.99687 | 0.99792 | 0.99896 | 0.99997 | **0.9999999** |
+| PT price | 0.99376 | 0.99583 | 0.99687 | 0.99792 | 0.99896 | 0.99997 | **≥ 0.9999998** |
 | Implied rate | 1.274 % | ≈1.27 % | ≈1.27 % | ≈1.27 % | ≈1.27 % | ≈1.27 % | – |
 
 The price climbs to par by itself and the implied fixed rate stays put — so LPs, who hold a fixed

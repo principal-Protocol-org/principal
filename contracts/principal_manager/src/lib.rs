@@ -161,6 +161,7 @@ pub trait YTTokenInterface {
     fn oracle_address(env: Env) -> Address;
     fn maturity(env: Env) -> u64;
     fn last_oracle_rate(env: Env) -> i128;
+    fn is_frozen(env: Env) -> bool;
 }
 
 /// Minimum interface required from MarketConfig.
@@ -184,6 +185,9 @@ pub trait RiskControlInterface {
 // ---------------------------------------------------------------------------
 // Error codes
 // ---------------------------------------------------------------------------
+
+/// Instance-storage TTL applied by `bump` (~30 days at 5 s per ledger).
+const INSTANCE_TTL_LEDGERS: u32 = 518_400;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -256,6 +260,16 @@ pub struct PrincipalManagerContract;
 
 #[contractimpl]
 impl PrincipalManagerContract {
+    /// Permissionless keeper call: extend this contract's *instance* storage (admin, config,
+    /// reserves, totals, settlement rate, fee buckets) for ~30 days. Soroban does not bump instance
+    /// TTL on ordinary reads or writes, so a long-dated market needs this called periodically (or
+    /// an archived instance restored) -- see docs/DEPLOYMENT.md.
+    pub fn bump(env: Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_LEDGERS, INSTANCE_TTL_LEDGERS);
+    }
+
     /// One-time initialization.
     ///
     /// * `sy_wrapper`    — address of the SYWrapper contract
@@ -724,6 +738,11 @@ impl PrincipalManagerContract {
     }
 
     /// Record (once) and return the frozen settlement rate. Requires maturity to have passed.
+    ///
+    /// If the YT index is already frozen (anyone can freeze it with `update_yield_index`, and it
+    /// froze at a *fresh* observation) its final rate is the settlement rate and no oracle is
+    /// needed: a relay that stops after maturity cannot lock PT once a single fresh observation has
+    /// been taken. Otherwise a fresh oracle is required to take that observation.
     fn settle(env: &Env) -> i128 {
         if let Some(rate) = env
             .storage()
@@ -732,10 +751,12 @@ impl PrincipalManagerContract {
         {
             return rate;
         }
-        Self::assert_oracle_fresh(env);
         let yt_client = YTTokenClient::new(env, &Self::get_yt_token(env));
-        // The first update at/after maturity advances the index a final time and freezes it.
-        yt_client.update_yield_index();
+        if !yt_client.is_frozen() {
+            Self::assert_oracle_fresh(env);
+            // The first update at/after maturity advances the index a final time and freezes it.
+            yt_client.update_yield_index();
+        }
         let rate = yt_client.last_oracle_rate();
         env.storage().instance().set(&DataKey::SettledRate, &rate);
         env.events().publish((symbol_short!("settled"),), rate);

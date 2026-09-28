@@ -32,6 +32,7 @@ pub enum Error {
     TimestampTooOld = 4,
     NotInitialized = 5,
     ValueDecreased = 6,
+    TimestampInFuture = 7,
 }
 
 #[contracttype]
@@ -74,6 +75,12 @@ impl OracleAdapterContract {
             .unwrap_or(0u64);
         if timestamp <= current_ts {
             panic_with_error!(&env, Error::TimestampTooOld);
+        }
+        // A timestamp ahead of the ledger clock (e.g. milliseconds instead of seconds) would make
+        // the feed read as stale until real time caught up *and* lock out every correction, since
+        // later timestamps must exceed it. Reject it at the door.
+        if timestamp > env.ledger().timestamp() {
+            panic_with_error!(&env, Error::TimestampInFuture);
         }
         env.storage().instance().set(&DataKey::Price, &value);
         env.storage()

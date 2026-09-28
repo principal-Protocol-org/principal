@@ -7,7 +7,7 @@ Scope for this branch (`feature/phase2-compliant-pt-yt-settlement` — the branc
 3. `Permissioning` checks extended to `SYWrapper.deposit`/`withdraw` and `PrincipalManager.redeem`. **Implemented.**
 4. **Authorization inheritance** — `SYWrapper`, `PrincipalManager`, `PTToken`, `YTToken` all check `underlying_SAC.authorized(account)` live, in addition to `Permissioning`. **Implemented.**
 5. **Market-creation gating** — `initialize` on `SYWrapper`, `PrincipalManager`, `PTToken`, `YTToken` requires `admin` to equal the underlying SAC's actual `admin()`. **Implemented.**
-6. **`RecoveryEscrow`** — replaces the original `SYWrapper.remediate()` with `seize_sy`/`seize_pt`/`seize_yt`, authenticated against the SAC's live `admin()` instead of a separate protocol admin key. **Implemented, including `finalize_pt`/`finalize_yt` (post-maturity unwind of a seized PT/YT position) — see §3.**
+6. **`RecoveryEscrow`** — replaces the original `SYWrapper.remediate()` with `seize_sy`/`seize_pt`/`seize_yt`, authenticated against the SAC's live `admin()` instead of a separate protocol admin key. **Implemented; the post-maturity unwind of a seized PT/YT position is now the per-record `finalize_record` (originally `finalize_pt`/`finalize_yt`) — see §3.**
 7. **Wiring `PrincipalManager` to actually call `SYWrapper`/`PTToken`/`YTToken`** — `mint` takes real SY custody and mints real PT/YT; `redeem` burns real PT/YT and releases real underlying. **Implemented — see §2.1.**
 8. `LiquidationAdapter` — a distinct mechanism from `RecoveryEscrow` (see §4); still design-only. **Not implemented.**
 

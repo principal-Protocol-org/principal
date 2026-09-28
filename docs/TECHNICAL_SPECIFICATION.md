@@ -2,7 +2,7 @@
 
 Version: 0.2 — Full Protocol Design  
 Chain: Stellar / Soroban  
-Language: Rust (`#![no_std]`, `wasm32-unknown-unknown`)
+Language: Rust (`#![no_std]`, `wasm32v1-none`)
 
 ---
 
@@ -112,7 +112,7 @@ Key properties:
 
 - Holds the raw USDY balance.
 - Issues **SY shares** at a rolling exchange rate that grows as yield accrues.
-- One SY share always represents a fixed claim on the pool of underlying USDY, with that claim increasing in value over time.
+- One SY share always represents a fixed claim on the pool of underlying USDY, (1:1 with the underlying in this release; appreciation is carried by the oracle rate).
 - No expiry: the wrapper is perpetual.
 
 Exchange rate formula:
@@ -373,7 +373,7 @@ fn seize_sy(env, caller, account, shares) -> i128           // seize + unwrap at
 fn seize_pt(env, caller, account, amount) -> i128           // held fully backed until maturity
 fn seize_yt(env, caller, account, amount) -> i128
 fn seize_lp(env, caller, account, amount) -> (i128, i128)   // burn in pool: SY leg unwrapped, PT leg held
-fn seize_batch(env, caller, requests: Vec<SeizeRequest>) -> Vec<u64>     // ≤ 10 accounts, all-or-nothing
+fn seize_batch(env, caller, requests: Vec<SeizeRequest>) -> Vec<u64>     // ≤ 3 accounts (ledger-entry footprint), all-or-nothing
 fn seize_all_positions(env, caller, accounts: Vec<Address>) -> Vec<u64>  // sweeps every position type
 fn finalize_record(env, caller, id: u64) -> (i128, i128)    // at/after maturity: settle a record's PT/YT
 fn get_record(env, id) -> RecoveryRecord
@@ -468,8 +468,8 @@ concentrated liquidity, no LP fee share (§15).
 
 `Router` is a stateless coordinator: it holds no funds, needs no standing on the underlying, and always
 acts **as the user**, so every downstream check is evaluated against the real user. Markets are named by
-their pool and must be registered by the router admin after a topology cross-check. Every flow takes a
-`deadline` (`DeadlineExpired`) and, where relevant, `min_*_out` (`SlippageExceeded`).
+their pool and must be registered by the router admin after a topology cross-check. Every flow except `redeem_at_maturity` and `claim_yield` takes a
+`deadline` (`DeadlineExpired`) and, where relevant, a minimum output (`SlippageExceeded`).
 
 ### 8.1 Operations
 
@@ -478,7 +478,7 @@ fn wrap_and_mint(env, from, pool, amount, min_pt_out, deadline) -> MintResult
 fn unwrap(env, from, pool, shares, min_underlying_out, deadline) -> i128
 fn swap_sy_for_pt(env, from, pool, sy_in, min_pt_out, deadline) -> i128
 fn swap_pt_for_sy(env, from, pool, pt_in, min_sy_out, deadline) -> i128
-fn swap_sy_for_yt(env, from, pool, sy_in, min_yt_out, deadline) -> (i128, i128)   // flash-mint
+fn swap_sy_for_yt(env, from, pool, sy_in, min_yt_out, max_net_cost, deadline) -> (i128, i128)   // flash-mint
 fn swap_yt_for_sy(env, from, pool, yt_in, min_sy_out, deadline) -> i128           // flash-redeem
 fn add_liquidity(env, from, pool, pt_in, sy_in, min_lp_out, deadline) -> (i128, i128, i128)
 fn add_liquidity_single_sy(env, from, pool, sy_in, min_lp_out, deadline) -> (i128, i128, i128)
@@ -487,6 +487,7 @@ fn recombine(env, from, pool, amount, min_sy_out, deadline) -> i128
 fn redeem_at_maturity(env, from, pool, pt_amount, yt_amount) -> RedeemResult
 fn claim_yield(env, from, pool) -> i128
 fn register_market(env, caller, pool) -> MarketInfo        // router admin
+fn unregister_market(env, caller, pool)                    // router admin
 ```
 
 ### 8.2 Flash-mint YT (`swap_sy_for_yt`)
@@ -495,8 +496,8 @@ Both steps are calls made *as the user* in one atomic transaction — no loan, n
 
 ```
 1. PrincipalManager.mint(user, sy_in)                → user receives PT + YT (net of tokenization fee)
-2. MarketPool.swap_pt_for_sy(user → user, pt_minted) → user receives sy_back SY
-3. require yt_minted ≥ min_yt_out
+2. require yt_minted ≥ min_yt_out
+3. MarketPool.swap_pt_for_sy(user → user, pt_minted, min_sy_out = sy_in − max_net_cost) → user receives sy_back SY
 ```
 
 Net cost of the YT = `sy_in − sy_back`. (100 SY into the pool of the guide's example 5: 100 YT for 1.87 SY.)
@@ -570,7 +571,7 @@ fn get_admin(env) -> Address
 
 ### 10.1 Role
 
-`Permissioning` is the optional, admin-controlled eligibility configuration surface for the protocol. Because USDY is a permissioned RWA, all derived instruments — SY, PT, YT, and LP once `MarketPool` ships — must preserve the same eligibility constraints, inherited from the underlying SAC. Every mint, transfer, and redemption checks the SAC floor, and optionally Permissioning, before executing.
+`Permissioning` is the optional, admin-controlled eligibility configuration surface for the protocol. Because USDY is a permissioned RWA, all derived instruments — SY, PT, YT, and LP — must preserve the same eligibility constraints, inherited from the underlying SAC. Every mint, transfer, and redemption checks the SAC floor, and optionally Permissioning, before executing.
 
 ### 10.2 Interface
 
@@ -692,7 +693,7 @@ Each contract has its own `#[contracterror]` enum; the codes are stable and list
 
 | Contract | Codes |
 |---|---|
-| OracleAdapter | AlreadyInitialized 1, Unauthorized 2, InvalidValue 3, TimestampTooOld 4, NotInitialized 5, ValueDecreased 6 |
+| OracleAdapter | AlreadyInitialized 1, Unauthorized 2, InvalidValue 3, TimestampTooOld 4, NotInitialized 5, ValueDecreased 6, TimestampInFuture 7 |
 | Permissioning | AlreadyInitialized 1, Unauthorized 2, NotInitialized 3 |
 | RiskControl | AlreadyInitialized 1, Unauthorized 2, NotInitialized 3, Paused 4, CircuitBreakerTripped 5, NotPauser 6, AlreadyPauser 7, NotConsumer 8, AlreadyConsumer 9, ZeroAmount 10, AssetLimitTripped 11, InvalidLimit 12, InvalidWindow 13 |
 | MarketConfig | AlreadyInitialized 1, NotInitialized 2, Unauthorized 3, IssuerMismatch 4, FeeTooHigh 5, InvalidShare 6, NotApplicable 7 |
@@ -721,7 +722,7 @@ Each contract has its own `#[contracterror]` enum; the codes are stable and list
 | `SECONDS_PER_YEAR` | `31_536_000` | MarketPool | 365-day year |
 | `DEFAULT_WINDOW_LEDGERS` | `17_280` | RiskControl | Default breaker window (~24 h at 5 s) |
 | `MAX_ORACLE_STALENESS_SECS` | `3_600` | PrincipalManager, YTToken, MarketPool | Oracle freshness window |
-| `MAX_BATCH` | `10` | RecoveryEscrow | Accounts per batch seizure |
+| `MAX_BATCH` | `3` | RecoveryEscrow | Accounts per batch seizure — bounded by Soroban's 100-entry ledger footprint with every position type held |
 | `MAX_TOKENIZATION_FEE_BPS` | `100` | MarketConfig | 1 % cap |
 | `MAX_YT_FEE_BPS` | `5_000` | MarketConfig | 50 % cap on claimed yield |
 | `MAX_SWAP_FEE_TIER_BPS` | `500` | MarketConfig | 5 % cap on the tier |
@@ -769,7 +770,7 @@ so calling the claim functions cannot redirect value. **LPs receive no swap fees
 
 ### 16.1 Authorization
 
-Every state-changing entrypoint uses `caller.require_auth()` before any state reads or writes. This integrates with Soroban's native auth framework, supporting multisig accounts and policy contracts on the admin side.
+Every state-changing entrypoint that acts on a named party uses `require_auth()` on that party before any state reads or writes. The exceptions are deliberate: the permissionless keeper calls (`settle_all`, `update_yield_index`, fee claims, `bump`) and the one-time `initialize` of `OracleAdapter`, `Permissioning`, `RiskControl`, `Router` and `RecoveryEscrow`, which are **first-caller-wins** and must therefore be deployed and initialized atomically (see DEPLOYMENT.md). This integrates with Soroban's native auth framework, supporting multisig accounts and policy contracts on the admin side.
 
 ### 16.2 Checks-effects-interactions
 
@@ -797,11 +798,11 @@ All Router functions accept a `min_out` parameter and a `deadline`; `SYWrapper.d
 
 ### 16.8 Rounding
 
-All division uses floor rounding. Residual values from settlement accumulate in `settlement_reserve` and are distributed according to governance rules, ensuring the protocol is never insolvent due to rounding.
+Rounding always favors the protocol: payouts and outputs round down, fees, costs and the YT index round up (with a direction-safe correction so the index difference can only round down). Residual dust stays in `PrincipalManager`'s SY custody; there is no separate reserve.
 
 ### 16.9 Integer overflow
 
-All arithmetic uses `checked_mul` / `checked_div` with explicit overflow handling. The Rust release profile sets `overflow-checks = true`.
+Arithmetic uses plain operators with `overflow-checks = true` in the release profile, so an overflow aborts the transaction (no typed error); the AMM math, `RiskControl` and the deposit cap use `checked_*` with typed errors.
 
 ### 16.10 Threat model summary
 
@@ -908,7 +909,7 @@ stellar contract deploy --wasm target/wasm32v1-none/release/principal_oracle_ada
   --source admin --network testnet --alias oracle_adapter
 ```
 
-`wasm32-unknown-unknown` no longer builds with Soroban SDK 26 on current Rust. All eleven artifacts are
+`wasm32v1-none` no longer builds with Soroban SDK 26 on current Rust. All eleven artifacts are
 < 128 KiB (largest: `principal_market_pool` 66 KB).
 
 ---

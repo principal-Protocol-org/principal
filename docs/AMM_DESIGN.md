@@ -126,10 +126,10 @@ resolution: it is accurate to the last day (0.1 % tier, 1 day out = 0.000274 %).
 * `add_liquidity(pt, sy, min_lp)`: the first deposit mints `isqrt(pt·sy) − 1000` LP and permanently
   locks 1000 LP to the pool; later deposits mint `min(pt/PT_res, sy/SY_res) × supply`, take
   `ceil` of each side, and leave the surplus with the caller.
-* `add_liquidity_single_sy(sy, min_lp)`: bisects (18 steps, ~2·10⁻⁵ of the input) for the swap size at
+* `add_liquidity_single_sy(sy, min_lp)`: bisects (18 steps, 2⁻¹⁸ ≈ 4·10⁻⁶ of the input) for the swap size at
   which the remaining SY and the PT bought exactly match the post-swap ratio, buys that much PT at the
   normal fee, deposits both, and refunds rounding leftovers.
-* `remove_liquidity` is pro-rata, always available, also after maturity.
+* `remove_liquidity` is pro-rata and works after maturity (the pool pause blocks it while the market is live, never after maturity).
 * LP is an internal ledger (`lp_balance`, `transfer_lp`), not a SEP-41 token. It is compliance-gated
   on both sides of every transfer and can be seized by the escrow (`seize_lp`).
 

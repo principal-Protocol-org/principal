@@ -117,6 +117,9 @@ pub trait OracleInterface {
 // Error codes
 // ---------------------------------------------------------------------------
 
+/// Instance-storage TTL applied by `bump` (~30 days at 5 s per ledger).
+const INSTANCE_TTL_LEDGERS: u32 = 518_400;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(u32)]
@@ -179,6 +182,16 @@ pub struct YTTokenContract;
 
 #[contractimpl]
 impl YTTokenContract {
+    /// Permissionless keeper call: extend this contract's *instance* storage (admin, config,
+    /// reserves, totals, settlement rate, fee buckets) for ~30 days. Soroban does not bump instance
+    /// TTL on ordinary reads or writes, so a long-dated market needs this called periodically (or
+    /// an archived instance restored) -- see docs/DEPLOYMENT.md.
+    pub fn bump(env: Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_LEDGERS, INSTANCE_TTL_LEDGERS);
+    }
+
     /// `admin` must be the underlying SAC's actual admin and must authorize this call.
     pub fn initialize(
         env: Env,
@@ -275,6 +288,7 @@ impl YTTokenContract {
         if from_balance < amount {
             panic_with_error!(&env, Error::InsufficientBalance);
         }
+        Self::sync_index(&env);
         Self::settle(&env, &from);
         Self::settle(&env, &to);
 
@@ -304,6 +318,8 @@ impl YTTokenContract {
         if from_balance < amount {
             panic_with_error!(&env, Error::InsufficientBalance);
         }
+        Self::sync_index(&env);
+        Self::sync_index(&env);
         Self::settle(&env, &from);
         Self::settle(&env, &to);
 
@@ -379,6 +395,7 @@ impl YTTokenContract {
         }
         Self::assert_sac_authorized(&env, &to);
         Self::assert_permitted(&env, &to);
+        Self::sync_index(&env);
         Self::settle(&env, &to);
 
         let bal = Self::get_balance(&env, &to);
@@ -405,6 +422,7 @@ impl YTTokenContract {
         if bal < amount {
             panic_with_error!(&env, Error::InsufficientBalance);
         }
+        Self::sync_index(&env);
         Self::settle(&env, &from);
 
         Self::set_balance(&env, &from, bal - amount);
@@ -442,12 +460,28 @@ impl YTTokenContract {
         if bal < amount {
             panic_with_error!(&env, Error::InsufficientBalance);
         }
+        Self::sync_index(&env);
         Self::settle(&env, &account);
         Self::settle(&env, &caller);
 
         Self::set_balance(&env, &account, bal - amount);
         let to_balance = Self::get_balance(&env, &caller);
         Self::set_balance(&env, &caller, to_balance + amount);
+
+        // The flagged account's accrued-but-unclaimed yield moves with the position. It is backed
+        // by SY in `PrincipalManager`'s custody, and a deauthorized account can never claim it, so
+        // leaving it behind would strand it.
+        let pc_from = DataKey::PendingClaim(account.clone());
+        let moved: i128 = env.storage().persistent().get(&pc_from).unwrap_or(0);
+        if moved > 0 {
+            let pc_to = DataKey::PendingClaim(caller.clone());
+            let held: i128 = env.storage().persistent().get(&pc_to).unwrap_or(0);
+            env.storage().persistent().set(&pc_from, &0_i128);
+            env.storage().persistent().set(&pc_to, &(held + moved));
+            env.storage()
+                .persistent()
+                .extend_ttl(&pc_to, BALANCE_TTL_LEDGERS, BALANCE_TTL_LEDGERS);
+        }
 
         env.events()
             .publish((symbol_short!("seize"),), (caller, account, amount));
@@ -462,53 +496,7 @@ impl YTTokenContract {
     /// closed form of the current rate, the number of intermediate calls cannot change any
     /// holder's total -- see this module's doc comment.
     pub fn update_yield_index(env: Env) {
-        if env
-            .storage()
-            .instance()
-            .get(&DataKey::Frozen)
-            .unwrap_or(false)
-        {
-            return;
-        }
-        let oracle_addr: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Oracle)
-            .unwrap_or_else(|| panic_with_error!(&env, Error::NotInitialized));
-        let oracle = OracleClient::new(&env, &oracle_addr);
-        if !oracle.is_fresh(&MAX_ORACLE_STALENESS_SECS) {
-            panic_with_error!(&env, Error::OracleStale);
-        }
-        let now_rate = oracle.get_reference_value();
-        let last_rate: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::LastOracleRate)
-            .unwrap_or(SCALE);
-
-        if now_rate > last_rate {
-            let new_index = Self::index_for(now_rate);
-            env.storage()
-                .instance()
-                .set(&DataKey::YieldIndex, &new_index);
-            env.storage()
-                .instance()
-                .set(&DataKey::LastOracleRate, &now_rate);
-            env.events()
-                .publish((symbol_short!("idx_up"),), (new_index, now_rate));
-        }
-
-        // At or after maturity this update is the last one: freeze the index.
-        let maturity: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::Maturity)
-            .unwrap_or(u64::MAX);
-        if env.ledger().timestamp() >= maturity {
-            env.storage().instance().set(&DataKey::Frozen, &true);
-            env.events()
-                .publish((symbol_short!("frozen"),), now_rate.max(last_rate));
-        }
+        Self::advance(&env, true);
     }
 
     /// True once the yield index has been frozen at maturity.
@@ -622,6 +610,78 @@ impl YTTokenContract {
 
     // --- internal helpers ---
 
+    /// Advance the index to the oracle's current value; freeze it at/after maturity.
+    /// `require_fresh` demands a fresh oracle observation (always true for the public entrypoint
+    /// and for anything that could freeze the index).
+    fn advance(env: &Env, require_fresh: bool) {
+        if env
+            .storage()
+            .instance()
+            .get(&DataKey::Frozen)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let oracle_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Oracle)
+            .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
+        let oracle = OracleClient::new(env, &oracle_addr);
+        if require_fresh && !oracle.is_fresh(&MAX_ORACLE_STALENESS_SECS) {
+            panic_with_error!(env, Error::OracleStale);
+        }
+        let now_rate = oracle.get_reference_value();
+        let last_rate: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LastOracleRate)
+            .unwrap_or(SCALE);
+
+        if now_rate > last_rate {
+            let new_index = Self::index_for(now_rate);
+            env.storage()
+                .instance()
+                .set(&DataKey::YieldIndex, &new_index);
+            env.storage()
+                .instance()
+                .set(&DataKey::LastOracleRate, &now_rate);
+            env.events()
+                .publish((symbol_short!("idx_up"),), (new_index, now_rate));
+        }
+
+        // At or after maturity this update is the last one: freeze the index.
+        let maturity: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Maturity)
+            .unwrap_or(u64::MAX);
+        if env.ledger().timestamp() >= maturity {
+            env.storage().instance().set(&DataKey::Frozen, &true);
+            env.events()
+                .publish((symbol_short!("frozen"),), now_rate.max(last_rate));
+        }
+    }
+
+    /// Bring the index up to the oracle's latest value *before any balance moves*, so every
+    /// `settle` compares against the current index and not a stale one. Without this a plain
+    /// transfer hands the yield accrued since the last `update_yield_index` from the sender to the
+    /// receiver (and `MarketPool.swap_yt_for_sy` strands it in the pool).
+    ///
+    /// Before maturity the oracle's stored value is used as is: its freshness matters for the
+    /// operations that price against it, not for correctly attributing yield it already reports.
+    /// At or after maturity the index must freeze at a *fresh* observation, so an unfrozen matured
+    /// market requires one -- `PrincipalManager.settle_all` or any `update_yield_index` supplies it.
+    fn sync_index(env: &Env) {
+        let maturity: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Maturity)
+            .unwrap_or(u64::MAX);
+        let matured = env.ledger().timestamp() >= maturity;
+        Self::advance(env, matured);
+    }
+
     /// Settle `account`'s pending yield at its balance *before* any change, against the
     /// current index, then advance its snapshot to the current index. Must be called on every path
     /// that mutates a balance (mint/burn/transfer/seize, both sides), before the balance itself
@@ -640,10 +700,13 @@ impl YTTokenContract {
         // An account that never held YT has nothing pending; its first snapshot is "now".
         let last: i128 = env.storage().persistent().get(&last_key).unwrap_or(index);
 
+        // `last - index` is a difference of two round-ups, so it can exceed the true difference by
+        // one index unit; subtracting that unit makes the payout direction-safe (it can only round
+        // down), at a cost of at most 2e-12 of the balance.
         if index < last {
             let bal = Self::get_balance(env, account);
-            if bal > 0 {
-                let pending = bal * (last - index) / INDEX_SCALE;
+            if bal > 0 && last - index > 1 {
+                let pending = bal * (last - index - 1) / INDEX_SCALE;
                 if pending > 0 {
                     let pc_key = DataKey::PendingClaim(account.clone());
                     let acc: i128 = env.storage().persistent().get(&pc_key).unwrap_or(0);

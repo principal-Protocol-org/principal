@@ -54,6 +54,9 @@ pub const MAX_SWAP_FEE_TIER_BPS: u32 = 500; // 5%
 /// Cap on the *effective* swap fee after the time factor (10%, at `FEE_SCALE`).
 pub const MAX_SWAP_FEE_RATE: i128 = FEE_SCALE / 10;
 
+/// Instance-storage TTL applied by `bump` (~30 days at 5 s per ledger).
+const INSTANCE_TTL_LEDGERS: u32 = 518_400;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(u32)]
@@ -86,6 +89,16 @@ pub struct MarketConfigContract;
 
 #[contractimpl]
 impl MarketConfigContract {
+    /// Permissionless keeper call: extend this contract's *instance* storage (admin, config,
+    /// reserves, totals, settlement rate, fee buckets) for ~30 days. Soroban does not bump instance
+    /// TTL on ordinary reads or writes, so a long-dated market needs this called periodically (or
+    /// an archived instance restored) -- see docs/DEPLOYMENT.md.
+    pub fn bump(env: Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_LEDGERS, INSTANCE_TTL_LEDGERS);
+    }
+
     /// Create the market configuration. `admin` must be the underlying's issuer authority (for a
     /// SAC: `admin()`, read live) and must authorize this call.
     #[allow(clippy::too_many_arguments)]

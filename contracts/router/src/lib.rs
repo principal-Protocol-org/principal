@@ -121,6 +121,11 @@ pub trait SYInterface {
 // Errors / storage
 // ---------------------------------------------------------------------------
 
+/// Instance-storage TTL applied by `bump` (~30 days at 5 s per ledger).
+const INSTANCE_TTL_LEDGERS: u32 = 518_400;
+/// TTL applied to a market listing each time it is used or registered.
+const MARKET_TTL_LEDGERS: u32 = 518_400;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(u32)]
@@ -158,6 +163,16 @@ pub struct RouterContract;
 
 #[contractimpl]
 impl RouterContract {
+    /// Permissionless keeper call: extend this contract's *instance* storage (admin, config,
+    /// reserves, totals, settlement rate, fee buckets) for ~30 days. Soroban does not bump instance
+    /// TTL on ordinary reads or writes, so a long-dated market needs this called periodically (or
+    /// an archived instance restored) -- see docs/DEPLOYMENT.md.
+    pub fn bump(env: Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_LEDGERS, INSTANCE_TTL_LEDGERS);
+    }
+
     pub fn initialize(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic_with_error!(&env, Error::AlreadyInitialized);
@@ -201,6 +216,23 @@ impl RouterContract {
             .set(&DataKey::Market(pool.clone()), &info);
         env.events().publish((symbol_short!("mkt_reg"),), pool);
         info
+    }
+
+    /// Remove a market from the registry (a mistaken or retired listing). Admin-only; users can no
+    /// longer route through it, existing positions are unaffected.
+    pub fn unregister_market(env: Env, caller: Address, pool: Address) {
+        Self::assert_admin(&env, &caller);
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Market(pool.clone()))
+        {
+            panic_with_error!(&env, Error::MarketNotRegistered);
+        }
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Market(pool.clone()));
+        env.events().publish((symbol_short!("mkt_unreg"),), pool);
     }
 
     pub fn is_registered(env: Env, pool: Address) -> bool {
@@ -292,15 +324,21 @@ impl RouterContract {
 
     /// **Flash-mint** buy of YT. Tokenizes `sy_in` SY into PT + YT, sells all of the PT back into
     /// the pool in the same transaction, and leaves the user with the YT plus the SY the PT
-    /// fetched. Net cost of the YT is `sy_in - sy_back` SY. Returns `(yt_out, sy_back)`; reverts
-    /// `SlippageExceeded` if `yt_out < min_yt_out`. No loan is involved: it is two synchronous
-    /// calls in one atomic transaction, both made as the user.
+    /// fetched. Net cost of the YT is `sy_in - sy_back` SY. Returns `(yt_out, sy_back)`.
+    ///
+    /// Two guards: `min_yt_out` on the YT minted (fixed by the oracle rate and the tokenization
+    /// fee -- it protects against a fee or rate change between quote and inclusion) and
+    /// `max_net_cost` on the **price** the PT sale achieves: the call reverts `SlippageExceeded` if
+    /// `sy_in - sy_back > max_net_cost`. Without the second guard the pool leg would run
+    /// unprotected and could be sandwiched. No loan is involved: it is two synchronous calls in one
+    /// atomic transaction, both made as the user.
     pub fn swap_sy_for_yt(
         env: Env,
         from: Address,
         pool: Address,
         sy_in: i128,
         min_yt_out: i128,
+        max_net_cost: i128,
         deadline: u64,
     ) -> (i128, i128) {
         from.require_auth();
@@ -310,8 +348,18 @@ impl RouterContract {
         if minted.yt_minted < min_yt_out {
             panic_with_error!(&env, Error::SlippageExceeded);
         }
-        let sy_back =
-            PoolClient::new(&env, &pool).swap_pt_for_sy(&from, &from, &minted.pt_minted, &0);
+        // The PT must fetch at least `sy_in - max_net_cost` SY, or the YT costs more than allowed.
+        let min_sy_back = if max_net_cost >= sy_in {
+            0
+        } else {
+            sy_in - max_net_cost
+        };
+        let sy_back = PoolClient::new(&env, &pool).swap_pt_for_sy(
+            &from,
+            &from,
+            &minted.pt_minted,
+            &min_sy_back,
+        );
         (minted.yt_minted, sy_back)
     }
 
@@ -427,10 +475,17 @@ impl RouterContract {
 
 impl RouterContract {
     fn info(env: &Env, pool: &Address) -> MarketInfo {
+        let key = DataKey::Market(pool.clone());
+        let info: MarketInfo = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .unwrap_or_else(|| panic_with_error!(env, Error::MarketNotRegistered));
+        // A listing that is being used stays alive.
         env.storage()
             .persistent()
-            .get(&DataKey::Market(pool.clone()))
-            .unwrap_or_else(|| panic_with_error!(env, Error::MarketNotRegistered))
+            .extend_ttl(&key, MARKET_TTL_LEDGERS, MARKET_TTL_LEDGERS);
+        info
     }
 
     fn assert_deadline(env: &Env, deadline: u64) {

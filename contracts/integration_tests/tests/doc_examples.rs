@@ -146,9 +146,14 @@ fn example_6_flash_mint_and_flash_redeem_yt() {
     seed_pool(&s, 1_000 * SCALE, 950 * SCALE);
     let b = s.new_user();
     deposit_sy(&s, &b, 100 * SCALE);
-    let (yt, sy_back) = s
-        .router
-        .swap_sy_for_yt(&b, &s.pool.address, &(100 * SCALE), &0, &u64::MAX);
+    let (yt, sy_back) = s.router.swap_sy_for_yt(
+        &b,
+        &s.pool.address,
+        &(100 * SCALE),
+        &0,
+        &(100 * SCALE),
+        &u64::MAX,
+    );
     assert_eq!(yt, 1_000_000_000); // 100 YT
                                    // The 100 PT sell for 98.13 SY (this trade is 10% of the pool, so it moves the price):
                                    // the YT costs 1.87 SY, i.e. 1.87 cents per YT.

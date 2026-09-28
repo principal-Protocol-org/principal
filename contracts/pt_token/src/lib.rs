@@ -54,6 +54,9 @@ pub trait PermissioningInterface {
 // Error codes
 // ---------------------------------------------------------------------------
 
+/// Instance-storage TTL applied by `bump` (~30 days at 5 s per ledger).
+const INSTANCE_TTL_LEDGERS: u32 = 518_400;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(u32)]
@@ -109,6 +112,16 @@ pub struct PTTokenContract;
 
 #[contractimpl]
 impl PTTokenContract {
+    /// Permissionless keeper call: extend this contract's *instance* storage (admin, config,
+    /// reserves, totals, settlement rate, fee buckets) for ~30 days. Soroban does not bump instance
+    /// TTL on ordinary reads or writes, so a long-dated market needs this called periodically (or
+    /// an archived instance restored) -- see docs/DEPLOYMENT.md.
+    pub fn bump(env: Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_LEDGERS, INSTANCE_TTL_LEDGERS);
+    }
+
     /// One-time initialization. `minter` is NOT set here — call `set_minter` once
     /// PrincipalManager is deployed, breaking the circular init dependency. `admin` must be
     /// the underlying SAC's actual admin and must authorize this call.

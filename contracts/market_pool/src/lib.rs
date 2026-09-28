@@ -28,7 +28,7 @@
 //! LP positions are internal balances (`lp_balance`, `transfer_lp`), priced from the pool's
 //! *internal* reserves, never from live token balances, so a direct donation cannot skew
 //! `add_liquidity`. The first deposit fixes the opening price (implied rate) and permanently locks
-//! `MINIMUM_LIQUIDITY` LP. `remove_liquidity` is always available, including after maturity.
+//! `MINIMUM_LIQUIDITY` LP. `remove_liquidity` works before and after maturity (the pool pause halts it only while the market is live).
 //!
 //! # YT trading (flash-mint / flash-redeem)
 //! * **Buy YT** is `Router.swap_sy_for_yt`: mint PT + YT from the user's SY, then sell the PT into
@@ -122,6 +122,9 @@ pub trait ConfigInterface {
 // Errors / storage
 // ---------------------------------------------------------------------------
 
+/// Instance-storage TTL applied by `bump` (~30 days at 5 s per ledger).
+const INSTANCE_TTL_LEDGERS: u32 = 518_400;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[repr(u32)]
@@ -205,6 +208,16 @@ pub struct MarketPoolContract;
 
 #[contractimpl]
 impl MarketPoolContract {
+    /// Permissionless keeper call: extend this contract's *instance* storage (admin, config,
+    /// reserves, totals, settlement rate, fee buckets) for ~30 days. Soroban does not bump instance
+    /// TTL on ordinary reads or writes, so a long-dated market needs this called periodically (or
+    /// an archived instance restored) -- see docs/DEPLOYMENT.md.
+    pub fn bump(env: Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_TTL_LEDGERS, INSTANCE_TTL_LEDGERS);
+    }
+
     /// Create the pool for the market run by `principal_manager`. `admin` must be the underlying's
     /// issuer authority and must authorize the call. Everything else -- underlying, SY, PT, YT,
     /// oracle, config, permissioning, maturity -- is read from the manager, so the pool cannot be
@@ -495,8 +508,8 @@ impl MarketPoolContract {
         (pt_used, split + sy_used, lp)
     }
 
-    /// Burn `lp` and send the proportional PT and SY to `to`. Always available (also after
-    /// maturity, when it is the only way out). Reverts `SlippageExceeded` below the minimums.
+    /// Burn `lp` and send the proportional PT and SY to `to`. Available after maturity even while
+    /// paused (when it is the only way out); before maturity the pool pause applies. Reverts `SlippageExceeded` below the minimums.
     pub fn remove_liquidity(
         env: Env,
         from: Address,
@@ -506,7 +519,11 @@ impl MarketPoolContract {
         min_sy_out: i128,
     ) -> (i128, i128) {
         from.require_auth();
-        Self::assert_not_paused(&env);
+        // The pause halts liquidity exits while the market is live, but never after maturity:
+        // once trading has closed, LPs' only way out must not depend on an admin switch.
+        if env.ledger().timestamp() < Self::maturity(env.clone()) {
+            Self::assert_not_paused(&env);
+        }
         Self::assert_trader(&env, &from);
         Self::remove_liquidity_inner(&env, &from, &to, lp, min_pt_out, min_sy_out)
     }

@@ -4,7 +4,7 @@
 
 | Tool | Version | Purpose |
 |---|---|---|
-| Rust | stable (≥ 1.84) | Contract compilation |
+| Rust | stable (≥ 1.91) | Contract compilation |
 | `wasm32v1-none` target | — | WASM builds |
 | Stellar CLI | ≥ 22.0 | Deploy and invoke contracts |
 | `cargo-test` | bundled | Unit tests |
@@ -74,7 +74,7 @@ Unit tests use `env.mock_all_auths()`; the integration suite additionally drops 
 ## Code style
 
 * `cargo fmt --all` before every commit.
-* `cargo clippy --all -- -D warnings` must pass with zero warnings.
+* `cargo clippy --workspace --all-targets --locked -- -D warnings` must pass with zero warnings.
 * No `unwrap()` on external inputs — use `panic_with_error!` with a typed `#[contracterror]` value.
 * Storage keys must be variants of a `#[contracttype]` enum, never raw strings.
 * Use `instance()` storage for contract configuration; `persistent()` for per-user data.
