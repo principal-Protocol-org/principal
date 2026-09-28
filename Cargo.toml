@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
 members = [
+    "contracts/compliance",
+    "contracts/market_config",
+    "contracts/market_pool",
+    "contracts/router",
     "contracts/oracle_adapter",
     "contracts/permissioning",
     "contracts/sy_wrapper",

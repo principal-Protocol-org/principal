@@ -9,26 +9,44 @@
 //!   be shared across multiple callers, so it's an allow-list rather than a single address.
 //!
 //! # Circuit breaker
-//! A deposit circuit breaker tracks the cumulative underlying deposited within a rolling
-//! `CB_WINDOW_SECS` window. If the total exceeds `cb_limit`, new deposits are blocked until
-//! the window resets or the admin raises the limit.
+//! Two independent limits are enforced on every `check_deposit`:
 //!
-//! External contracts (SYWrapper, PrincipalManager) call `check_deposit` before processing
-//! each deposit. This contract is the single source of truth for protocol-level risk state.
+//! * a **protocol-wide** limit (`cb_limit`) on the cumulative underlying deposited across every
+//!   asset in the current window, and
+//! * an optional **per-asset** limit (`set_asset_limit`) on the cumulative underlying deposited
+//!   for one asset in that asset's current window.
+//!
+//! A limit of `0` disables that limit. If either would be exceeded the call reverts, so an
+//! over-limit deposit or mint fails atomically inside the transaction that attempted it -- there
+//! is no separate manual call.
+//!
+//! # Window measured in ledgers, not wall-clock time
+//! Windows are measured in Stellar **ledger sequence numbers** (`env.ledger().sequence()`), not
+//! `env.ledger().timestamp()`. The sequence advances by exactly one per closed ledger and cannot
+//! be nudged by a validator's close-time choice the way a timestamp can, so a window cannot be
+//! stretched or shrunk to squeeze an extra allowance through. The default window is
+//! `DEFAULT_WINDOW_LEDGERS` (17,280 ledgers, about 24 hours at the ~5 s ledger close time); the
+//! admin can change it with `set_window_ledgers`. A window starts at the first counted deposit
+//! after the previous one lapsed and resets once `window_ledgers` ledgers have elapsed.
+//!
+//! External contracts (SYWrapper, PrincipalManager) call `check_deposit` from inside their own
+//! `deposit`/`mint`, so the breaker is wired directly into the protocol operations. This contract
+//! is the single source of truth for protocol-level risk state.
 //! `check_deposit` requires the caller to be a registered consumer -- without this, anyone
 //! could call it directly for an arbitrary amount to exhaust a day's circuit-breaker budget
 //! and block every legitimate depositor, at zero cost beyond a transaction fee. Found during a
 //! post-implementation audit, before this contract was ever wired into a real deposit path.
 
 #![no_std]
+#![allow(deprecated)] // `env.events().publish` / `register_contract`: migration to `#[contractevent]` is tracked separately; event topics are kept stable for indexers.
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
     Env,
 };
 
-/// Length of the circuit-breaker rolling window in seconds.
-pub const CB_WINDOW_SECS: u64 = 86_400; // 24 hours
+/// Default length of a circuit-breaker window in ledgers (~24 h at 5 s per ledger).
+pub const DEFAULT_WINDOW_LEDGERS: u32 = 17_280;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -44,6 +62,9 @@ pub enum Error {
     NotConsumer = 8,
     AlreadyConsumer = 9,
     ZeroAmount = 10,
+    AssetLimitTripped = 11,
+    InvalidLimit = 12,
+    InvalidWindow = 13,
 }
 
 #[contracttype]
@@ -55,10 +76,16 @@ pub enum DataKey {
     Consumer(Address),
     /// Circuit breaker: max cumulative deposit in one window (underlying units, 0 = disabled).
     CbLimit,
-    /// Cumulative deposit volume in the current window.
+    /// Cumulative deposit volume, across all assets, in the current window.
     CbVolume,
-    /// Ledger timestamp when the current window started.
+    /// Ledger sequence at which the current protocol-wide window started.
     CbWindowStart,
+    /// Window length in ledgers.
+    WindowLedgers,
+    /// Per-asset limit (underlying units, 0 = none).
+    AssetLimit(Address),
+    /// Per-asset window: (start ledger, cumulative volume).
+    AssetWindow(Address),
 }
 
 #[contract]
@@ -76,7 +103,10 @@ impl RiskControlContract {
         env.storage().instance().set(&DataKey::CbVolume, &0_i128);
         env.storage()
             .instance()
-            .set(&DataKey::CbWindowStart, &env.ledger().timestamp());
+            .set(&DataKey::CbWindowStart, &env.ledger().sequence());
+        env.storage()
+            .instance()
+            .set(&DataKey::WindowLedgers, &DEFAULT_WINDOW_LEDGERS);
     }
 
     // --- pause controls ---
@@ -192,15 +222,15 @@ impl RiskControlContract {
 
     // --- circuit breaker ---
 
-    /// Called by a registered consumer (SYWrapper/PrincipalManager) before processing a
-    /// deposit. Reverts if the caller isn't registered, if paused, or if the circuit breaker
-    /// limit would be exceeded. Records the deposit volume against the current window.
+    /// Called by a registered consumer (SYWrapper/PrincipalManager) from inside its own
+    /// `deposit`/`mint`. Reverts if the caller isn't registered, if paused, if `amount <= 0`, if
+    /// the protocol-wide limit would be exceeded, or if `asset`'s own limit would be exceeded.
+    /// Records the volume against both windows.
     ///
     /// `caller` must be a registered consumer, not just any authenticated address -- without
-    /// this, anyone could call this directly with an arbitrary amount to exhaust the day's
-    /// circuit-breaker budget and block every legitimate depositor, at zero cost beyond a
-    /// transaction fee.
-    pub fn check_deposit(env: Env, caller: Address, amount: i128) {
+    /// this, anyone could call this directly with an arbitrary amount to exhaust the window's
+    /// budget and block every legitimate depositor, at zero cost beyond a transaction fee.
+    pub fn check_deposit(env: Env, caller: Address, asset: Address, amount: i128) {
         caller.require_auth();
         if !env
             .storage()
@@ -224,57 +254,124 @@ impl RiskControlContract {
             panic_with_error!(&env, Error::ZeroAmount);
         }
 
+        let now = env.ledger().sequence();
+        let window = Self::window_ledgers(&env);
+
+        // Evaluate both limits before writing either, so a trip leaves no partial state.
         let limit: i128 = env.storage().instance().get(&DataKey::CbLimit).unwrap_or(0);
-        if limit == 0 {
-            return; // circuit breaker disabled
-        }
-
-        let now = env.ledger().timestamp();
-        let window_start: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::CbWindowStart)
-            .unwrap_or(now);
-
-        let (volume, start) = if now - window_start >= CB_WINDOW_SECS {
-            // Window has rolled over — reset.
-            (0_i128, now)
+        let global = if limit > 0 {
+            let (volume, start) = Self::current_global_window(&env, now, window);
+            let total = volume
+                .checked_add(amount)
+                .unwrap_or_else(|| panic_with_error!(&env, Error::CircuitBreakerTripped));
+            if total > limit {
+                panic_with_error!(&env, Error::CircuitBreakerTripped);
+            }
+            Some((total, start))
         } else {
-            let v: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::CbVolume)
-                .unwrap_or(0);
-            (v, window_start)
+            None
         };
 
-        if volume + amount > limit {
-            panic_with_error!(&env, Error::CircuitBreakerTripped);
-        }
+        let asset_limit: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::AssetLimit(asset.clone()))
+            .unwrap_or(0);
+        let per_asset = if asset_limit > 0 {
+            let (start, volume) = Self::current_asset_window(&env, &asset, now, window);
+            let total = volume
+                .checked_add(amount)
+                .unwrap_or_else(|| panic_with_error!(&env, Error::AssetLimitTripped));
+            if total > asset_limit {
+                panic_with_error!(&env, Error::AssetLimitTripped);
+            }
+            Some((start, total))
+        } else {
+            None
+        };
 
-        env.storage()
-            .instance()
-            .set(&DataKey::CbVolume, &(volume + amount));
-        env.storage()
-            .instance()
-            .set(&DataKey::CbWindowStart, &start);
+        if let Some((total, start)) = global {
+            env.storage().instance().set(&DataKey::CbVolume, &total);
+            env.storage()
+                .instance()
+                .set(&DataKey::CbWindowStart, &start);
+        }
+        if let Some(w) = per_asset {
+            env.storage()
+                .instance()
+                .set(&DataKey::AssetWindow(asset), &w);
+        }
     }
 
+    /// Set the protocol-wide window limit (underlying units); `0` disables it.
     pub fn set_cb_limit(env: Env, caller: Address, new_limit: i128) {
         Self::assert_admin(&env, &caller);
+        if new_limit < 0 {
+            panic_with_error!(&env, Error::InvalidLimit);
+        }
         env.storage().instance().set(&DataKey::CbLimit, &new_limit);
         env.events()
             .publish((symbol_short!("cb_limit"),), (caller, new_limit));
+    }
+
+    /// Set the limit for one underlying asset (underlying units); `0` disables it.
+    pub fn set_asset_limit(env: Env, caller: Address, asset: Address, new_limit: i128) {
+        Self::assert_admin(&env, &caller);
+        if new_limit < 0 {
+            panic_with_error!(&env, Error::InvalidLimit);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::AssetLimit(asset.clone()), &new_limit);
+        env.events()
+            .publish((symbol_short!("ast_limit"),), (caller, asset, new_limit));
+    }
+
+    /// Change the window length, in ledgers. Takes effect for the next `check_deposit`.
+    pub fn set_window_ledgers(env: Env, caller: Address, ledgers: u32) {
+        Self::assert_admin(&env, &caller);
+        if ledgers == 0 {
+            panic_with_error!(&env, Error::InvalidWindow);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::WindowLedgers, &ledgers);
+        env.events()
+            .publish((symbol_short!("cb_window"),), (caller, ledgers));
     }
 
     pub fn get_cb_limit(env: Env) -> i128 {
         env.storage().instance().get(&DataKey::CbLimit).unwrap_or(0)
     }
 
+    /// Volume counted in the current protocol-wide window (`0` once that window has lapsed).
     pub fn get_cb_volume(env: Env) -> i128 {
+        let now = env.ledger().sequence();
+        Self::current_global_window(&env, now, Self::window_ledgers(&env)).0
+    }
+
+    pub fn get_asset_limit(env: Env, asset: Address) -> i128 {
         env.storage()
             .instance()
-            .get(&DataKey::CbVolume)
+            .get(&DataKey::AssetLimit(asset))
+            .unwrap_or(0)
+    }
+
+    /// Volume counted in `asset`'s current window (`0` once that window has lapsed).
+    pub fn get_asset_volume(env: Env, asset: Address) -> i128 {
+        let now = env.ledger().sequence();
+        Self::current_asset_window(&env, &asset, now, Self::window_ledgers(&env)).1
+    }
+
+    pub fn get_window_ledgers(env: Env) -> u32 {
+        Self::window_ledgers(&env)
+    }
+
+    /// Ledger sequence at which the current protocol-wide window started.
+    pub fn get_window_start(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::CbWindowStart)
             .unwrap_or(0)
     }
 
@@ -293,6 +390,47 @@ impl RiskControlContract {
 
     // --- internal helpers ---
 
+    fn window_ledgers(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::WindowLedgers)
+            .unwrap_or(DEFAULT_WINDOW_LEDGERS)
+    }
+
+    /// (volume, start) of the protocol-wide window as of ledger `now`: a lapsed window reads as
+    /// empty and restarts at `now`.
+    fn current_global_window(env: &Env, now: u32, window: u32) -> (i128, u32) {
+        let start: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CbWindowStart)
+            .unwrap_or(now);
+        if now.saturating_sub(start) >= window {
+            (0, now)
+        } else {
+            let v: i128 = env
+                .storage()
+                .instance()
+                .get(&DataKey::CbVolume)
+                .unwrap_or(0);
+            (v, start)
+        }
+    }
+
+    /// (start, volume) of `asset`'s window as of ledger `now`.
+    fn current_asset_window(env: &Env, asset: &Address, now: u32, window: u32) -> (u32, i128) {
+        let (start, volume): (u32, i128) = env
+            .storage()
+            .instance()
+            .get(&DataKey::AssetWindow(asset.clone()))
+            .unwrap_or((now, 0));
+        if now.saturating_sub(start) >= window {
+            (now, 0)
+        } else {
+            (start, volume)
+        }
+    }
+
     fn require_admin(env: &Env) -> Address {
         env.storage()
             .instance()
@@ -309,187 +447,4 @@ impl RiskControlContract {
 }
 
 #[cfg(test)]
-mod test {
-    use soroban_sdk::{
-        testutils::{Address as _, Ledger as _},
-        Address, Env,
-    };
-
-    use super::{RiskControlContract, RiskControlContractClient, CB_WINDOW_SECS};
-
-    /// Returns (env, client, admin, consumer) with `consumer` already registered, since almost
-    /// every `check_deposit` test needs one.
-    fn setup(cb_limit: i128) -> (Env, RiskControlContractClient<'static>, Address, Address) {
-        let env = Env::default();
-        env.mock_all_auths();
-        let id = env.register_contract(None, RiskControlContract);
-        let client = RiskControlContractClient::new(&env, &id);
-        let admin = Address::generate(&env);
-        client.initialize(&admin, &cb_limit);
-        let consumer = Address::generate(&env);
-        client.add_consumer(&admin, &consumer);
-        (env, client, admin, consumer)
-    }
-
-    #[test]
-    fn pause_and_unpause() {
-        let (_env, client, admin, _consumer) = setup(0);
-        assert!(!client.is_paused());
-        client.pause(&admin);
-        assert!(client.is_paused());
-        client.unpause(&admin);
-        assert!(!client.is_paused());
-    }
-
-    #[test]
-    fn pauser_can_pause_but_not_unpause() {
-        let (env, client, admin, _consumer) = setup(0);
-        let pauser = Address::generate(&env);
-        client.add_pauser(&admin, &pauser);
-        client.pause(&pauser);
-        assert!(client.is_paused());
-    }
-
-    #[test]
-    #[should_panic]
-    fn non_pauser_cannot_pause() {
-        let (env, client, _admin, _consumer) = setup(0);
-        let rando = Address::generate(&env);
-        client.pause(&rando);
-    }
-
-    #[test]
-    fn circuit_breaker_blocks_over_limit() {
-        let (_env, client, _admin, consumer) = setup(1_000_000);
-        client.check_deposit(&consumer, &500_000_i128); // ok: 500k
-        client.check_deposit(&consumer, &499_999_i128); // ok: 999_999k
-                                             // next deposit would exceed the 1M limit
-                                             // (panics)
-    }
-
-    #[test]
-    #[should_panic]
-    fn circuit_breaker_trips_on_excess() {
-        let (_env, client, _admin, consumer) = setup(1_000_000);
-        client.check_deposit(&consumer, &500_000_i128);
-        client.check_deposit(&consumer, &600_000_i128); // trips
-    }
-
-    #[test]
-    fn circuit_breaker_disabled_when_limit_zero() {
-        let (_env, client, _admin, consumer) = setup(0);
-        // Should not trip even for a huge deposit.
-        client.check_deposit(&consumer, &(i128::MAX / 2));
-    }
-
-    #[test]
-    #[should_panic]
-    fn check_deposit_rejects_zero_amount() {
-        // A registered consumer passing amount <= 0 could otherwise reduce or no-op the
-        // recorded circuit-breaker volume without moving any real value.
-        let (_env, client, _admin, consumer) = setup(1_000_000);
-        client.check_deposit(&consumer, &0_i128);
-    }
-
-    #[test]
-    #[should_panic]
-    fn check_deposit_rejects_negative_amount() {
-        let (_env, client, _admin, consumer) = setup(1_000_000);
-        client.check_deposit(&consumer, &(-1_i128));
-    }
-
-    #[test]
-    #[should_panic]
-    fn check_deposit_fails_when_paused() {
-        let (_env, client, admin, consumer) = setup(0);
-        client.pause(&admin);
-        client.check_deposit(&consumer, &1_i128);
-    }
-
-    #[test]
-    #[should_panic]
-    fn check_deposit_requires_registered_consumer() {
-        // The audit finding this closes: without this check, anyone could call check_deposit
-        // directly to exhaust the circuit breaker budget and block real depositors.
-        let (env, client, _admin, _consumer) = setup(1_000_000);
-        let rando = Address::generate(&env);
-        client.check_deposit(&rando, &1_i128);
-    }
-
-    #[test]
-    #[should_panic]
-    fn removed_consumer_loses_check_deposit_access() {
-        let (_env, client, admin, consumer) = setup(1_000_000);
-        client.remove_consumer(&admin, &consumer);
-        client.check_deposit(&consumer, &1_i128);
-    }
-
-    #[test]
-    #[should_panic]
-    fn add_duplicate_consumer_panics() {
-        let (env, client, admin, _consumer) = setup(0);
-        let other = Address::generate(&env);
-        client.add_consumer(&admin, &other);
-        client.add_consumer(&admin, &other); // AlreadyConsumer
-    }
-
-    #[test]
-    #[should_panic]
-    fn non_admin_cannot_unpause() {
-        let (env, client, admin, _consumer) = setup(0);
-        client.pause(&admin);
-        let rando = Address::generate(&env);
-        client.unpause(&rando); // only admin may unpause
-    }
-
-    #[test]
-    fn circuit_breaker_window_resets_after_24h() {
-        let (env, client, _admin, consumer) = setup(1_000_000);
-        // Consume 900k in the first window.
-        client.check_deposit(&consumer, &900_000_i128);
-        assert_eq!(client.get_cb_volume(), 900_000);
-
-        // Advance past the 24-hour window; volume should reset.
-        env.ledger()
-            .with_mut(|li| li.timestamp = li.timestamp + CB_WINDOW_SECS + 1);
-
-        // A fresh 900k deposit should be accepted (new window, volume = 0).
-        client.check_deposit(&consumer, &900_000_i128);
-        assert_eq!(client.get_cb_volume(), 900_000); // restarted at 900k, not 1_800_000
-    }
-
-    #[test]
-    #[should_panic]
-    fn remove_pauser_revokes_pause_permission() {
-        let (env, client, admin, _consumer) = setup(0);
-        let pauser = Address::generate(&env);
-        client.add_pauser(&admin, &pauser);
-        // After removal the address is no longer a pauser — pause must panic.
-        client.remove_pauser(&admin, &pauser);
-        client.pause(&pauser);
-    }
-
-    #[test]
-    #[should_panic]
-    fn add_duplicate_pauser_panics() {
-        let (env, client, admin, _consumer) = setup(0);
-        let pauser = Address::generate(&env);
-        client.add_pauser(&admin, &pauser);
-        client.add_pauser(&admin, &pauser); // AlreadyPauser
-    }
-
-    #[test]
-    fn admin_transfer() {
-        let (env, client, admin, _consumer) = setup(0);
-        let new_admin = Address::generate(&env);
-        client.transfer_admin(&admin, &new_admin);
-        assert_eq!(client.get_admin(), new_admin);
-    }
-
-    #[test]
-    #[should_panic]
-    fn double_initialize_panics() {
-        let (_env, client, admin, _consumer) = setup(0);
-        client.initialize(&admin, &0_i128);
-    }
-}
+mod test;

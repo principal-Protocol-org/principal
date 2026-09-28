@@ -2,11 +2,21 @@
 
 This document describes the current state of the Principal Protocol implementation — a Soroban-native yield tokenization protocol for regulated RWAs on Stellar, with a native compliance layer: eight Soroban smart contracts that form the infrastructure, tokenization, standalone-token, and compliance-recovery layers of the protocol and demonstrate the core yield-tokenization mechanics on Stellar.
 
+> **Status update (Tranche 1).** This document is the implementation-history and Testnet-evidence record for the
+> first eight contracts. All eleven contracts are now implemented — `MarketConfig`, `MarketPool` (the AMM) and
+> `Router` were added, `RiskControl` is wired into `SYWrapper.deposit`/`PrincipalManager.mint`, and
+> `RecoveryEscrow` covers LP, batch seizure and per-account records. The current, authoritative documents are
+> [TRANCHE_1_DELIVERABLES.md](TRANCHE_1_DELIVERABLES.md), [API_REFERENCE.md](API_REFERENCE.md),
+> [TECHNICAL_SPECIFICATION.md](TECHNICAL_SPECIFICATION.md) and [COMPLIANCE_ARCHITECTURE.md](COMPLIANCE_ARCHITECTURE.md).
+> The Testnet deployments and transaction evidence below were made **before** Tranche 1 and describe the contracts
+> as they were then (e.g. `finalize_pt`/`finalize_yt`, a 24-hour wall-clock breaker); they remain accurate as
+> history but do not describe the current code. The build target is `wasm32v1-none`.
+
 ---
 
 ## Scope
 
-Eight of ten contracts are implemented:
+Eight of the eleven current contracts existed at the time of this proof of concept:
 
 | Contract | Crate | Status |
 |---|---|---|
@@ -19,7 +29,7 @@ Eight of ten contracts are implemented:
 | `YTToken` | `principal_yt_token` | Complete |
 | `RecoveryEscrow` | `principal_recovery_escrow` | Complete for all three position types — `seize_sy` unwraps immediately; `seize_pt`/`seize_yt` seize, `finalize_pt`/`finalize_yt` redeem through `PrincipalManager` at or after maturity |
 
-`MarketPool` and `Router` are not yet implemented. `PrincipalManager.mint` takes real custody of the caller's `SYWrapper` shares (via a new `transfer` function added to `SYWrapper` for this) and mints real `PTToken`/`YTToken` balances; `redeem` burns those real balances and releases real underlying via `SYWrapper.withdraw`. PT and YT minted through the protocol are genuine SEP-41 balances, holdable in any wallet. Compliance recovery is complete for all three position types: `RecoveryEscrow.seize_sy` unwraps immediately, and `seize_pt`/`seize_yt` plus `finalize_pt`/`finalize_yt` seize and then redeem a flagged PT/YT position through `PrincipalManager` at or after maturity — see [Known Limitations](#known-limitations) below for what's still outstanding (`MarketPool`, `Router`).
+`MarketConfig`, `MarketPool` and `Router` were added in Tranche 1. `PrincipalManager.mint` takes real custody of the caller's `SYWrapper` shares (via a new `transfer` function added to `SYWrapper` for this) and mints real `PTToken`/`YTToken` balances; `redeem` burns those real balances and releases real underlying via `SYWrapper.withdraw`. PT and YT minted through the protocol are genuine SEP-41 balances, holdable in any wallet. Compliance recovery is complete for all three position types: `RecoveryEscrow.seize_sy` unwraps immediately, and `seize_pt`/`seize_yt` plus `finalize_pt`/`finalize_yt` seize and then redeem a flagged PT/YT position through `PrincipalManager` at or after maturity — see [Known Limitations](#known-limitations) below for what's still outstanding (`MarketPool`, `Router`).
 
 `SYWrapper`, `PrincipalManager`, `PTToken`, and `YTToken` all inherit compliance from the underlying Stellar Asset Contract (`underlying_SAC.authorized()`, checked live) as a mandatory floor beneath `Permissioning`'s optional additional layer, and all gate market creation on the underlying SAC's real, live `admin()`. `RecoveryEscrow` gives the issuer a way to recover a deauthorized account's position without a native SAC clawback haircutting every other holder. See [COMPLIANT_SETTLEMENT_DESIGN.md](COMPLIANT_SETTLEMENT_DESIGN.md) for the full design rationale.
 
@@ -995,16 +1005,10 @@ This table describes what the historical deployment above proved about the contr
 
 ## Known Limitations
 
-The following are the current, honest scope boundaries — each is either genuinely outstanding work or a nuance worth being precise about:
+Resolved by Tranche 1 (see [TRANCHE_1_DELIVERABLES.md](TRANCHE_1_DELIVERABLES.md)): the missing **AMM** (`MarketPool`), the missing **Router**, **recombination** (`PrincipalManager.recombine`), and the **RiskControl wiring** (`SYWrapper.deposit` and `PrincipalManager.mint` now call `check_deposit` themselves, over a ledger-sequence window with a per-asset limit).
 
-1. **No AMM.** `MarketPool` is not implemented. There is no on-chain market for PT or YT trading.
+Still open:
 
-2. **No Router.** Users interact with each contract individually. Single-transaction flows (wrap + mint, swap, recombine) require a `Router` contract that doesn't exist yet.
-
-3. ~~Standalone `claim_yield()` doesn't dispatch a real transfer on its own.~~ **Fixed.** `YTToken.claim_yield` is now minter-gated (only `PrincipalManager` can call it, the same way `mint`/`burn` already were), and `PrincipalManager.claim_yield(from)` is the sole path that reaches it: it brings the index current, settles through `YTToken`, and pays the result out via `SYWrapper.withdraw` in the same call — so a YT holder can now claim accrued yield in underlying *without* redeeming (burning) the position or waiting for maturity, and a settled claim can never go unpaid. `redeem()` and `RecoveryEscrow.finalize_yt` are unaffected, since both already went through `PrincipalManager`.
-
-4. **No recombination.** PT + YT → SY recombination before maturity is not implemented.
-
-5. **Single oracle submitter.** A single admin-controlled oracle is implemented. Multi-source aggregation and quorum oracle are not.
-
-6. **`RiskControl` is not cross-contract-wired.** `RiskControl.check_deposit` is invoked directly by a registered consumer (e.g. a test harness or admin script standing in for `SYWrapper`/`PrincipalManager` today) rather than being called automatically by those contracts. The risk control logic and interface are fully implemented and tested in isolation, including the consumer-registration gate (`add_consumer`/`remove_consumer`) that prevents an arbitrary caller from griefing the circuit breaker directly; wiring `check_deposit` into the actual deposit and mint call paths, and registering `SYWrapper`/`PrincipalManager` as consumers at deployment time, remains outstanding.
+1. **Single oracle submitter.** A single admin-controlled, monotonic oracle is implemented; multi-source aggregation and a quorum oracle are not.
+2. **No fee-change timelock, no implied-rate TWAP, no LP fee share, no `LiquidationAdapter`, no third-party audit** — see the open-items list in TRANCHE_1_DELIVERABLES.md.
+3. **Historical Testnet deployments predate Tranche 1** and must be redeployed with the new contracts and initialization arguments (Tranche 2).

@@ -1,0 +1,26 @@
+[package]
+name = "principal_market_pool"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = { version = "26.0.1" }
+principal_compliance = { path = "../compliance" }
+
+[dev-dependencies]
+soroban-sdk = { version = "26.0.1", features = ["testutils"] }
+principal_compliance = { path = "../compliance", features = ["testutils"] }
+principal_oracle_adapter = { path = "../oracle_adapter", features = ["testutils"] }
+principal_permissioning = { path = "../permissioning", features = ["testutils"] }
+principal_sy_wrapper = { path = "../sy_wrapper", features = ["testutils"] }
+principal_pt_token = { path = "../pt_token", features = ["testutils"] }
+principal_yt_token = { path = "../yt_token", features = ["testutils"] }
+principal_manager = { path = "../principal_manager", features = ["testutils"] }
+principal_market_config = { path = "../market_config", features = ["testutils"] }
+principal_risk_control = { path = "../risk_control", features = ["testutils"] }
+
+[features]
+testutils = ["soroban-sdk/testutils"]

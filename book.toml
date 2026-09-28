@@ -1,0 +1,11 @@
+[book]
+title = "Principal Protocol"
+authors = ["Principal Protocol contributors"]
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "book"
+
+[output.html]
+git-repository-url = "https://github.com/principal-Protocol-org/principal"

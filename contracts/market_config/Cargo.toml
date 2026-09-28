@@ -1,0 +1,18 @@
+[package]
+name = "principal_market_config"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = { version = "26.0.1" }
+principal_compliance = { path = "../compliance" }
+
+[dev-dependencies]
+soroban-sdk = { version = "26.0.1", features = ["testutils"] }
+principal_compliance = { path = "../compliance", features = ["testutils"] }
+
+[features]
+testutils = ["soroban-sdk/testutils"]

@@ -1981,7 +1981,7 @@
               },
               "durability": "persistent",
               "val": {
-                "i128": "7692294"
+                "i128": "769230769231"
               }
             }
           },
@@ -2053,6 +2053,22 @@
                       },
                       "val": {
                         "u32": 7
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "Kind"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "vec": [
+                          {
+                            "symbol": "Sac"
+                          }
+                        ]
                       }
                     },
                     {
@@ -2172,7 +2188,7 @@
                         ]
                       },
                       "val": {
-                        "i128": "7692294"
+                        "i128": "769230769231"
                       }
                     }
                   ]
@@ -2414,7 +2430,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAATYON"
                 },
                 {
-                  "i128": "2307706000"
+                  "i128": "2307692307"
                 }
               ]
             }

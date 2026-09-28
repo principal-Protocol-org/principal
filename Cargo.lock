@@ -1058,15 +1058,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "principal_compliance"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "principal_integration_tests"
 version = "0.1.0"
 dependencies = [
+ "principal_compliance",
  "principal_manager",
+ "principal_market_config",
+ "principal_market_pool",
  "principal_oracle_adapter",
  "principal_permissioning",
  "principal_pt_token",
  "principal_recovery_escrow",
  "principal_risk_control",
+ "principal_router",
  "principal_sy_wrapper",
  "principal_yt_token",
  "soroban-sdk",
@@ -1076,9 +1087,36 @@ dependencies = [
 name = "principal_manager"
 version = "0.1.0"
 dependencies = [
+ "principal_compliance",
+ "principal_market_config",
  "principal_oracle_adapter",
  "principal_permissioning",
  "principal_pt_token",
+ "principal_risk_control",
+ "principal_sy_wrapper",
+ "principal_yt_token",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "principal_market_config"
+version = "0.1.0"
+dependencies = [
+ "principal_compliance",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "principal_market_pool"
+version = "0.1.0"
+dependencies = [
+ "principal_compliance",
+ "principal_manager",
+ "principal_market_config",
+ "principal_oracle_adapter",
+ "principal_permissioning",
+ "principal_pt_token",
+ "principal_risk_control",
  "principal_sy_wrapper",
  "principal_yt_token",
  "soroban-sdk",
@@ -1102,6 +1140,7 @@ dependencies = [
 name = "principal_pt_token"
 version = "0.1.0"
 dependencies = [
+ "principal_compliance",
  "principal_permissioning",
  "soroban-sdk",
 ]
@@ -1110,12 +1149,7 @@ dependencies = [
 name = "principal_recovery_escrow"
 version = "0.1.0"
 dependencies = [
- "principal_manager",
- "principal_oracle_adapter",
- "principal_permissioning",
- "principal_pt_token",
- "principal_sy_wrapper",
- "principal_yt_token",
+ "principal_compliance",
  "soroban-sdk",
 ]
 
@@ -1127,10 +1161,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "principal_router"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "principal_sy_wrapper"
 version = "0.1.0"
 dependencies = [
+ "principal_compliance",
  "principal_permissioning",
+ "principal_risk_control",
  "soroban-sdk",
 ]
 
@@ -1138,6 +1181,7 @@ dependencies = [
 name = "principal_yt_token"
 version = "0.1.0"
 dependencies = [
+ "principal_compliance",
  "principal_oracle_adapter",
  "principal_permissioning",
  "soroban-sdk",
