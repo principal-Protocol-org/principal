@@ -14,7 +14,7 @@ cargo fmt --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-The same steps run on every pull request in [ci.yml](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/.github/workflows/ci.yml). The documentation site is built and deployed by [docs.yml](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/.github/workflows/docs.yml).
+The same steps run on every push and pull request in [ci.yml](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/.github/workflows/ci.yml). The documentation site is built on every pull request and deployed from `main` by [docs.yml](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/.github/workflows/docs.yml).
 
 ## Results of the re-check on 3 October 2026
 
@@ -29,7 +29,7 @@ The same steps run on every pull request in [ci.yml](https://github.com/principa
 | Testnet account addresses cited | 8, each exists on Horizon |
 | Source and document paths cited in the Word review | all exist at commit `6cf257a` |
 
-Not checked in this pass: the GitHub Actions run on GitHub's own runners, and the live GitHub Pages site. Neither has been observed yet, because no pull request has been opened from this branch.
+Checked on 4 October 2026: the CI workflow has run on GitHub's runners for every push to this branch. For the reviewed commit `6cf257a` all five jobs passed (run [36476556170](https://github.com/principal-Protocol-org/principal/actions/runs/36476556170)). `mdbook build` completes without errors, and `cargo audit` exits 0 with no vulnerabilities and two allowed warnings: the unmaintained crate `paste` and the yanked crate `spin` 0.9.8. Not yet checked: the live GitHub Pages site, which is deployed only from `main`, and which currently returns not-found.
 
 ## Summary
 
@@ -270,7 +270,7 @@ Budget: $7,600. Weeks 4–5. 76 hours.
 - Tests pass locally on this commit: 328 of 328, re-run 3 October 2026.
 - The CI workflow is [ci.yml](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/.github/workflows/ci.yml). It runs formatting, linting, the WASM build with a size check, the full test suite, the coverage report and a dependency audit on every pull request.
 - The same steps were reproduced locally against the same commit. `cargo fmt --check`, the clippy command, the WASM build, `cargo test --workspace`, `cargo llvm-cov` and `cargo audit` each passed.
-- **Not yet shown:** a CI run on GitHub's runners. That needs a pull request from this branch: [open it here](https://github.com/principal-Protocol-org/principal/pull/new/feat/tranche-1-mvp).
+- **Observed:** the CI workflow ran on GitHub's runners for each push to this branch, and all five jobs passed for `6cf257a` (run [36476556170](https://github.com/principal-Protocol-org/principal/actions/runs/36476556170)).
 
 **Criterion B: documentation is published.**
 - Documentation is committed under [docs/](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/), with 17 files.
@@ -296,9 +296,9 @@ Budget: $7,600. Weeks 4–5. 76 hours.
 
 ### Assessment
 
-Partly evidenced, and this review does not round it up. The test suite and documentation content satisfy the funded description. The success criterion has two parts still open:
-1. The tests have passed locally, but not yet in CI on GitHub's runners, because no pull request has been opened.
-2. The documentation is committed, but the live GitHub Pages site has not been checked.
+Met on the test suite and on CI, with one part still open. CI has run on GitHub for the reviewed commit and all five jobs passed. The part still open is the published site: it deploys only from `main`, which has not received this branch, so the criterion is not yet fully met.
+1. CI on GitHub's runners passed for the reviewed commit (observed); the live documentation site has not been published
+2. The documentation is committed and its build passes locally, but the live GitHub Pages site has not been published (its deployment runs only on `main`).
 
 Opening the pull request and checking the published site would close this deliverable.
 
@@ -309,9 +309,9 @@ Opening the pull request and checking the published site would close this delive
 | Criterion | Status |
 |---|---|
 | Contracts merged to `main` under a tagged release | **Pending.** Code is complete and tested. The merge and `v*` tag are the maintainers' step. |
-| Test suite passing in public CI with a coverage report published | **Partly evidenced.** Workflows are committed. 328 of 328 pass locally, and coverage is 97.67%. CI on GitHub has not yet been observed. |
+| Test suite passing in public CI with a coverage report published | **Met (observed).** CI ran on GitHub for the reviewed commit and all five jobs passed (run [36476556170](https://github.com/principal-Protocol-org/principal/actions/runs/36476556170)). The coverage report is produced by the `coverage` job. |
 | RiskControl demonstrably blocks an oversized deposit in an integration test | Met. [`an_over_limit_deposit_reverts_automatically_with_no_manual_call`](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/risk_control.rs#L27) |
-| Documentation published in the repository | Met in the repository. The live GitHub Pages site has not been checked. |
+| Documentation published in the repository | **Met in the repository; live site not yet published.** The mdBook build passes locally. The site deploys from `main`, which has not received this branch. |
 
 ---
 
@@ -333,5 +333,5 @@ Writing the acceptance tests found real defects in code that was already marked 
 - **Router registry is admin-only**, by design. It is an allow-list against phishing, not market creation, which stays gated on the underlying's issuer authority.
 - **SEP-57 is a Draft (v0.4.0).** The adapter isolates every assumption in one crate. See [COMPLIANCE_ARCHITECTURE.md §3](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/COMPLIANCE_ARCHITECTURE.md).
 - **Not built, outside Tranche 1:** fee-change timelock, implied-rate TWAP oracle, `LiquidationAdapter`, a third-party audit, and deployment scripts for the new contracts. [DEPLOYMENT.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/DEPLOYMENT.md) documents the steps.
-- **Documentation defect in the earlier evidence file.** [TESTNET_DEPLOYMENT_EVIDENCE.md §6.1](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/TESTNET_DEPLOYMENT_EVIDENCE.md) has a garbled paragraph about Alice's STA balance. The transactions are correct, but the prose should be rewritten. This is not yet fixed.
+- **Documentation defect in the earlier evidence file, now fixed.** [TESTNET_DEPLOYMENT_EVIDENCE.md §6.1](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/TESTNET_DEPLOYMENT_EVIDENCE.md) had a garbled paragraph about Alice's STA balance. The transactions were correct, and the paragraph now states only the values the file records.
 - **Test-snapshot files** for the new crates and the integration suite are git-ignored and regenerated on each run.

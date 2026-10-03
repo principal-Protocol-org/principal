@@ -151,11 +151,7 @@ All calls in this section are signed by the issuer (`sta-testnet-deployer`) unle
 | 5 | `OracleAdapter.set_reference_value` — rate 1.08 → 1.10 | [f537ddca…](https://stellar.expert/explorer/testnet/tx/f537ddca936369445bbf83af20bbded9a7a7b1d0a70e03fd816c72b6c53d61b7) | also serves as the freshness refresh needed for redeem |
 | 6 | `PrincipalManager.redeem(from=Alice, pt_amount=500, yt_amount=500)` | [9ae67f42…](https://stellar.expert/explorer/testnet/tx/9ae67f429e2fda7978ae76c72fc5ae02f893dcddc42a8e23415db5de0627f957) | 454.5454545 STA (principal) + 9.0909542 STA (yield accrued since the mid-life claim) |
 
-Alice's STA balance across this sequence: `500.5` (start) → `5.0` deposited leaves `500.5`
-(actually recorded on-chain as `500.5` before deposit, `500.5` after — deposit moves STA into
-SYWrapper's custody, not out of existence) → `537.53705` (after claim) → `1001.1734587` (final,
-after redemption). Every step is independently checkable against the balances quoted in the
-transaction result events above.
+Alice's STA balance at the end is 1,001.1734587 STA (section 7). Her wallet changes in this sequence were: 500 STA deposited into SYWrapper; a mid-life claim of 37.03705 STA; and a redemption paying 454.5454545 STA of principal plus 9.0909542 STA of yield. Her starting and intermediate wallet balances are not recorded in this file, so they are not restated here.
 
 ### 6.2 Thread 2 — Bob (issuer-initiated compliance recovery)
 
