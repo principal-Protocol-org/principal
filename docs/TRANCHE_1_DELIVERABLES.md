@@ -1,187 +1,352 @@
-# Tranche 1 (MVP) — Deliverables, Evidence and Verification
+# Tranche 1 (MVP): Deliverables, Evidence and Verification
 
-Status as of 2026-09-28. This is the acceptance document for Tranche 1: for each deliverable it states
-what was built, where the code is, which tests prove it, and how to re-run the proof. Nothing here is
-self-reported: every claim names a test or CI job that fails if it stops being true.
+Status as of 3 October 2026. This is the acceptance record for Tranche 1. For each deliverable it gives the original funded description and success criteria word for word, then the evidence that each success criterion is met, with full links to source code, tests, documents and Stellar Testnet transactions.
 
-**Reproduce everything**
+Reviewed commit: [6cf257afb588](https://github.com/principal-Protocol-org/principal/commit/6cf257afb588c63d694f2262d8b289d4809be8ee) on branch `feat/tranche-1-mvp`. Every source link below is pinned to this commit, so it does not move when the branch changes.
+
+## How to reproduce the checks
 
 ```bash
-cargo build --release --target wasm32v1-none -p principal_market_pool   # once, for the CPU-budget test
-cargo test --workspace                       # 328 tests, ~45 s
+cargo build --workspace --release --target wasm32v1-none   # builds all 11 contracts
+cargo test --workspace                                      # 328 tests
 cargo llvm-cov --workspace --ignore-filename-regex '(/test\.rs|_test\.rs|/tests/|integration_tests|mock_rwa)' --summary-only
-cargo build --workspace --release --target wasm32v1-none   # all 11 contracts
+cargo fmt --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-In CI the same steps run on every pull request (`.github/workflows/ci.yml`: `lint`, `wasm`, `test`,
-`coverage`, `audit`), with the coverage report uploaded as a build artifact and printed in the job
-summary. Documentation is built and published by `.github/workflows/docs.yml`.
+The same steps run on every pull request in [ci.yml](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/.github/workflows/ci.yml). The documentation site is built and deployed by [docs.yml](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/.github/workflows/docs.yml).
+
+## Results of the re-check on 3 October 2026
+
+| Check | Result |
+|---|---|
+| Tests, whole workspace | 328 passed, 0 failed |
+| Line coverage, production code | 97.67% (3,810 of 3,901 lines) |
+| Lowest single file, line coverage | `compliance` at 95.65%; every other file is higher |
+| Region coverage, production code | 96.65% |
+| Testnet transaction hashes cited in the two evidence files | 65 unique, all report a successful result on the public Testnet ledger |
+| Testnet contract addresses cited | 17, each returns a creation record from the Stellar Expert API |
+| Testnet account addresses cited | 8, each exists on Horizon |
+| Source and document paths cited in the Word review | all exist at commit `6cf257a` |
+
+Not checked in this pass: the GitHub Actions run on GitHub's own runners, and the live GitHub Pages site. Neither has been observed yet, because no pull request has been opened from this branch.
 
 ## Summary
 
-| | |
+| Item | Value |
 |---|---|
-| Contracts | **11** (was 8): + `MarketConfig`, `MarketPool` (AMM), `Router`, and the shared `principal_compliance` adapter crate (not a contract) |
-| Internal audit | 5-reviewer pass after the initial build; 2 High + 9 Medium/Low findings fixed, rest documented — see [TRANCHE_1_AUDIT.md](TRANCHE_1_AUDIT.md) |
-| Rust | 14.3 k lines (was 7.2 k); all new code covered below |
-| Tests | **328**: 217 unit + 111 cross-contract integration, all passing |
-| Coverage (production code) | **97.7 % of lines** (3 810 / 3 901), 96.7 % of regions; every file ≥ 93.9 % |
-| Contract sizes | all under Soroban's 128 KiB limit; largest `market_pool` 66 KB |
-| AMM cost | swap ≈ 4.6 M CPU instructions (4.6 % of the 100 M limit), measured on the real WASM |
-| Static checks | `cargo fmt --check` and `cargo clippy --workspace --all-targets -D warnings` clean |
-
-## Response to the review
-
-| Review point | Response | Where |
-|---|---|---|
-| *D1's ">95 % coverage, all tests pass" criterion is already met at 98.5 % and does not test the deliverable. Replace it with functional AMM assertions: time-decay curve, PT convergence to par, flash-mint and flash-redeem.* | **Replaced** — see [Deliverable 1 success criteria](#deliverable-1-success-criteria-revised). Coverage remains as a CI floor (95 %), not as the acceptance test. | below |
-| *Address SEP-57 (T-REX): compliance reads the SAC's `authorized()`, so a SEP-57 `RWAToken` has no SAC admin to attach to.* | **Fixed in code, not only described.** A compliance adapter detects an RWA underlying and maps it onto the same two questions (may this account hold it? who is the issuer authority?) using `is_frozen` + `IdentityVerifier` and an operator-role capability probe. Every recovery scenario runs over both a SAC and a SEP-57 token. | [COMPLIANCE_ARCHITECTURE.md §3](COMPLIANCE_ARCHITECTURE.md#3-sep-57-t-rex-rwa-tokens-why-inheritance-broke-and-how-it-is-restored), `contracts/compliance`, `recovery.rs` |
-| *Address SEP-8 (Regulated Assets, Final): PT/YT inheritance on SEP-8 issuers must be described.* | **Described precisely, including what cannot be inherited** (the authorize→pay→deauthorize sandwich cannot wrap a single-operation Soroban transaction; off-chain approval criteria are invisible to contracts) and what a SEP-8 issuer must do. Tested. | [COMPLIANCE_ARCHITECTURE.md §2](COMPLIANCE_ARCHITECTURE.md#2-sep-8-regulated-assets-what-ptyt-inherit-and-what-they-cannot), `sep8_style_asset_needs_persistent_authorization_at_rest` |
-| *Every commit since 16 August has been docs-only; restart shipping code.* | This change set is code: +7.0 k lines of Rust across 11 contracts, plus CI. It also found and fixed three real defects in code that was already "done" (see [Defects found](#defects-found-while-building-this)). | this document |
+| Contracts | 11 (was 8): adds `MarketConfig`, `MarketPool` (AMM), `Router`, and the shared `principal_compliance` adapter crate (a library, not a contract) |
+| Internal audit | Five-reviewer pass on this commit. 2 High and 11 Medium/Low findings. All High findings fixed. See [TRANCHE_1_AUDIT.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/TRANCHE_1_AUDIT.md) for the disposition of each finding. |
+| Rust | About 14.3k lines (was 7.2k) |
+| Contract sizes | All under Soroban's 128 KiB limit. Largest `market_pool` at about 66 KB. |
+| AMM cost | A swap uses about 4.6M CPU instructions, against a 100M limit, measured on the real WASM. |
+| Static checks | `cargo fmt --check` and `cargo clippy -D warnings` pass. |
 
 ---
 
-## Deliverable 1 — Core Yield Tokenization Contracts
+## Deliverable 1: Core Yield Tokenization Contracts
 
-Budget $23,200 · Weeks 1–3.
+Budget: $23,200. Weeks 1–3. 186 hours.
 
-### What was built
+### Original description (as funded, verbatim)
 
-| Component | Requirement | Implementation | Proof |
+> Complete the core yield tokenization and trading contracts:
+>
+> SYWrapper — wraps the underlying yield-bearing asset and tracks each depositor's share via an exchange rate. Main features: slippage-protected deposit/withdraw, a per-address deposit cap, and operations gated by the underlying asset's Stellar compliance rules.
+>
+> PrincipalManager — coordinates the split between PT and YT. Main features: two-phase initialization that resolves the circular dependency with the token contracts, per-user entry-rate tracking at mint, yield accounting, and maturity settlement.
+>
+> PT (Principal Token) — a fixed-value claim redeemable at par at maturity. Main features: a standard SEP-41 token, mintable/burnable only by PrincipalManager, plus a seize function reserved for compliance recovery.
+>
+> YT (Yield Token) — captures the variable yield generated between issuance and maturity. Main features: an accruing yield index letting holders claim earned yield anytime before maturity, plus the same SEP-41 base and compliance-recovery seize function as PT.
+>
+> AMM trading layer — implements the PT/SY liquidity market, PT swaps, liquidity deposits and withdrawals, and LP positions. Compliance controls inherited from the underlying Stellar Asset also apply to trading and LP positions.
+>
+> Router — coordinates the user flows across wrapping, PT/YT issuance, trading, liquidity operations, and redemption.
+>
+> Market configuration — the current administrator of the underlying SAC controls market creation and configures the market maturity and fees. Each market supports a configurable tokenization fee (for example, 5 bps), YT fee (for example, 10%), and swap Fee Tier (for example, 0.1%). Swap fees decrease as maturity approaches following Trading Fee = Fee Tier x Days to Maturity / 365. Principal's protocol share is also configurable and is initially set at 20% of the tokenization, YT, and swap fees collected by each market, with the remaining 80% allocated to the market creator, i.e. the current administrator of the underlying SAC.
+
+### Success criteria (as funded, verbatim)
+
+> All contracts compile and pass their full unit and integration test suites with test coverage exceeding 95%.
+
+**Reviewer's note.** An earlier build of this branch already exceeded 95% coverage while the AMM was materially unfinished. Coverage alone cannot show that the trading system works. The review therefore keeps 95% as a floor that must hold, and adds four functional tests that the AMM must pass. This replacement criterion was proposed in the funder's review of the earlier draft.
+
+Replacement functional criteria, each shown by a named test:
+
+| # | Behaviour | Test | What the test checks, in plain words |
 |---|---|---|---|
-| **SYWrapper** | tracks each depositor's share via an exchange rate | `exchange_rate = total_underlying × SCALE / total_shares` | unit tests `deposit_and_exchange_rate`, `withdraw_returns_underlying` |
-| | slippage-protected deposit/withdraw | `deposit(from, amount, min_shares_out)`, `withdraw(from, shares, to, min_underlying_out)` → `SlippageExceeded` | `slippage_boundary_min_equals_exact_output_passes_and_one_more_reverts` |
-| | per-address deposit cap | `set_deposit_cap`, `net_deposited(account)` (net of withdrawals) | `deposit_cap_boundary_exactly_at_the_cap_passes_and_one_unit_over_reverts` |
-| | operations gated by the underlying's Stellar compliance rules | `principal_compliance::is_authorized` on both sides of every deposit/withdraw/transfer | `compliance_matrix_deauthorized_accounts_are_blocked_on_every_position_type` (SAC **and** SEP-57) |
-| **PrincipalManager** | two-phase initialization that resolves the circular dependency | PT/YT deployed first → `PrincipalManager.initialize` (topology-checked: same underlying, permissioning, maturity, oracle, config) → one-time `set_minter` | `initialize_rejects_mismatched_{underlying,permissioning,maturity,oracle}` |
-| | per-user entry-rate tracking at mint | every account snapshots the YT index at its own mint/transfer (`LastClaimedIndex`), so it earns only from when it held the position | `late_minter_does_not_receive_prior_yield`, `multi_user_late_mint_does_not_dilute_early_holder_yield` |
-| | yield accounting | `claim_yield` (pre-maturity, paid in the same call) and the YT leg of `redeem` | `allowance_transfer_and_mid_life_claim_then_redeem`, `pt_plus_yt_claims_never_exceed_the_deposited_shares_at_any_mint_rate` |
-| | maturity settlement | `settle_all()` freezes one settlement rate for PT and YT; yield stops at maturity | `yt_stops_accruing_at_maturity_and_pt_uses_the_frozen_rate`, `settle_all_requires_maturity_and_a_fresh_oracle` |
-| | (extra) recombination | `recombine` PT + YT → SY before maturity | `recombine_returns_sy_at_the_current_rate_…` |
-| **PT** | standard SEP-41, mint/burn only by PrincipalManager, `seize` for compliance recovery | `contracts/pt_token` | 29 unit tests; `only_the_manager_can_mint_and_burn_pt_and_yt_…` |
-| **YT** | accruing yield index, claim anytime, SEP-41, same seize | `contracts/yt_token`; index `G = 1e12·SCALE/rate` | 36 unit tests incl. solvency at any mint rate |
-| **AMM trading layer** | PT/SY market, PT swaps, liquidity deposit/withdraw, LP positions, compliance inherited | `contracts/market_pool` — time-aware Yield Space curve; LP ledger with compliance-gated `transfer_lp` and `seize_lp` | `amm.rs` (22), `liquidity_and_router.rs` (22) |
-| **Router** | coordinates wrapping, PT/YT issuance, trading, liquidity, redemption | `contracts/router` — stateless, acts as the user, registry, deadline + min-out on every flow | `liquidity_and_router.rs`: `router_*` |
-| **Market configuration** | the SAC's *current* administrator controls market creation, maturity and fees; tokenization fee (e.g. 5 bps), YT fee (e.g. 10 %), swap Fee Tier (e.g. 0.1 %); `Trading Fee = Fee Tier × Days to Maturity / 365`; protocol share configurable, initially 20 % / 80 % to the creator | `contracts/market_config`; fee accrual in `PrincipalManager` and `MarketPool`; permissionless `claim_protocol_fees` / `claim_creator_fees` pay the treasury and the **live** `SAC.admin()` | `only_the_live_sac_admin_may_set_fees`, `swap_fee_follows_fee_tier_times_days_to_maturity_over_365`, `swap_fees_split_twenty_eighty_…`, `creator_fee_share_follows_a_sac_admin_rotation`, `tokenization_fee_is_withheld_accrued_and_claimable_…` |
+| 1 | Time-decay price curve | `time_decay_curve_pt_price_rises_monotonically_toward_par_with_no_trades` ([source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/amm.rs#L62)) | With no trades, PT's price rises at every 15-day sample over 180 days, stays below par before maturity, and the pool's reserves do not change. |
+| 2 | PT converges to par at maturity | `pt_converges_to_par_at_maturity` ([source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/amm.rs#L92)) | One minute before maturity the price is within a millionth of par. At maturity, trading stops and PT redeems one-for-one through PrincipalManager. |
+| 3 | Flash-mint (buy YT in one transaction) | `flash_mint_buys_yt_by_minting_and_selling_the_pt_in_one_transaction` ([source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/amm.rs#L457)) | The buyer deposits SY, the protocol mints PT and YT, the PT is sold to the pool, and the buyer ends with only YT. Companion test `flash_mint_enforces_min_yt_out_and_the_deadline` checks the minimum-output and deadline guards. |
+| 4 | Flash-redeem (sell YT in one transaction) | `flash_redeem_sells_yt_for_sy_by_recombining_with_pool_pt` ([source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/amm.rs#L525)) | The seller's YT is combined with PT from the pool's reserve, and the seller receives the difference, atomically. Companion tests cover the round trip, a revert when YT cannot cover the PT it consumes, and the exact minimum-output floor. |
 
-### Deliverable 1 success criteria (revised)
+### Evidence and proof
 
-*Replaces "all contracts compile and pass their full unit and integration test suites with test coverage
-exceeding 95 %", which the codebase already satisfied and which says nothing about whether the AMM
-works.* The deliverable is accepted when **all** of the following functional assertions hold, each proven
-by a named test running against the real contracts:
+**Compile.** The eleven contracts build for `wasm32v1-none`. This was confirmed in the earlier audit session. The build target is `wasm32v1-none` rather than `wasm32-unknown-unknown`, which does not build with soroban-sdk 26 on current Rust. The target change is recorded under [Defects found](#defects-found-while-building-this).
 
-| # | Functional assertion | Test(s) | What is asserted |
-|---|---|---|---|
-| **1** | **Time-decay yield curve.** With no trades at all, PT's price rises monotonically toward par as maturity approaches, following the closed form `(x/y)^(τ/S)`, while the reserves never move. | `time_decay_curve_pt_price_rises_monotonically_toward_par_with_no_trades`; guide example 5 (`doc_examples.rs`) | Price strictly increases at every 15-day sample over 180 days, stays below 1 before maturity, matches `0.95^(τ/4y)` to 2·10⁻⁶ at each step, the exponent rises toward 1, and `reserves()` is byte-identical at the end. Implied fixed rate stays ≈ 1.27 %. |
-| **2** | **PT converges to par at maturity.** | `pt_converges_to_par_at_maturity`; `sweeping_the_oracle_rate_keeps_the_curve_in_value_units` | One minute before maturity: price within 10⁻⁶ of 1, exponent > 0.999999, 10 SY buys 10 PT to within 100 raw units. At maturity: swaps revert `Expired`, the exponent is exactly 1, LPs exit, and **PT redeems 1:1 at par** through `PrincipalManager`. Repeated at oracle rates 1.00 / 1.01 / 1.05 / 1.10 (value-unit correctness). |
-| **3** | **Flash-mint path** (buy YT). | `flash_mint_buys_yt_by_minting_and_selling_the_pt_in_one_transaction`; `flash_mint_enforces_min_yt_out_and_the_deadline` | 100 SY → exactly 100 YT to the buyer, 0 PT retained, SY back = the pool's quote for the minted PT, PT and YT supplies grow together, `min_yt_out` and `deadline` (boundary inclusive) enforced. |
-| **4** | **Flash-redeem path** (sell YT). | `flash_redeem_sells_yt_for_sy_by_recombining_with_pool_pt`; `flash_mint_then_flash_redeem_round_trip_returns_the_capital_minus_impact`; `flash_redeem_reverts_when_the_yt_cannot_cover_the_pt_it_consumes`; `flash_redeem_min_out_is_a_hard_floor_at_the_exact_payout` | Payout = recombined SY − the curve price of the PT consumed, exactly; pool PT falls by exactly `yt_in`, SY reserve rises by the net cost, PT and YT supplies burn together; a full mint→redeem round trip never returns more than it started with; near maturity (YT ≈ worthless) the call **reverts atomically** with nothing moved. |
-| 5 | The curve's arithmetic is correct and safe. | `math_test.rs` (11); `invariant_never_decreases_across_a_pseudo_random_swap_sequence`; `fee_free_round_trips_never_profit_at_any_pool_size` | `ln`/`exp`/`pow`/`solve` match an `f64` reference across 20 orders of magnitude; `k` never falls; no profitable round trip from 10⁸ to 10¹⁷ raw units. |
-| 6 | The AMM fits Soroban's resource limits. | `budget.rs` (real WASM) | Every operation < 100 M CPU instructions; a swap is ~4.6 M. |
-| 7 | Solvency: PT + YT never claim more than the SY held. | `deposit_tokenize_trade_claim_settle_redeem_with_fees_stays_solvent`; YT `pt_plus_yt_claims_never_exceed_…` | After a full multi-user lifecycle with fees, every holder is paid and `PrincipalManager` holds only rounding dust. |
+**Tests pass.** 328 tests passed on 3 October 2026 with `cargo test --workspace`. The number includes unit tests inside each contract and the cross-contract integration tests in [contracts/integration_tests/tests/](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/).
 
-Coverage stays as a **CI floor** (95 % lines, `MIN_LINE_COVERAGE` in `ci.yml`) to catch silent erosion;
-it is not an acceptance criterion.
+**Coverage above 95%.** 97.67% of production lines are covered. The per-file lowest is [compliance](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/compliance/src/lib.rs) at 95.65%. The coverage exclusion rule is the one in the command above.
+
+**Components.**
+
+SYWrapper:
+- Exchange-rate accounting: [sy_wrapper/src/lib.rs lines 345–361](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/sy_wrapper/src/lib.rs#L345-L361).
+- Slippage-protected deposit, which reverts with `SlippageExceeded`: [lines 207–249](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/sy_wrapper/src/lib.rs#L207-L249). Slippage-protected withdraw: [lines 276–317](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/sy_wrapper/src/lib.rs#L276-L317).
+- Per-address deposit cap: [lines 396–436](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/sy_wrapper/src/lib.rs#L396-L436).
+- Compliance gate on every transfer: [lines 628–636](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/sy_wrapper/src/lib.rs#L628-L636).
+- Test `deposit_cap_boundary_exactly_at_the_cap_passes_and_one_unit_over_reverts`: deposits exactly the cap (must succeed), then one base unit more (must be rejected). It checks the exact edge, not a value well inside the limit. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/edge_cases.rs#L176).
+- Test `slippage_boundary_min_equals_exact_output_passes_and_one_more_reverts`: a minimum-output setting equal to the amount received succeeds, and one unit higher is rejected. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/edge_cases.rs#L209).
+
+PrincipalManager:
+- Two-phase setup. In plain words: PT and YT are deployed first with no minter. PrincipalManager is then registered as the only minter. This breaks the deadlock in which each contract needs the other's address before either can be configured. `initialize` is at [principal_manager/src/lib.rs lines 290–341](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/principal_manager/src/lib.rs#L290-L341). `set_minter` on YT is at [yt_token/src/lib.rs lines 252–258](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/yt_token/src/lib.rs#L252-L258), and it reverts `MinterAlreadySet` on a second call.
+- Test `initialize_rejects_mismatched_underlying`: PrincipalManager refuses to start if PT or YT uses a different underlying asset. Sibling tests cover mismatched permissioning, maturity and oracle. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/principal_manager/src/test.rs#L594).
+- Per-user entry rate: each account stores the yield index at its last mint or transfer, so it earns only from the time it held the position. Code: [yt_token/src/lib.rs lines 677–712](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/yt_token/src/lib.rs#L677-L712).
+- Test `late_minter_does_not_receive_prior_yield`: an account that mints after yield has accrued gets none of that yield. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/principal_manager/src/test.rs#L430).
+- Test `multi_user_late_mint_does_not_dilute_early_holder_yield`: a later minter at a higher rate does not reduce the early holder's accrued yield. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/full_lifecycle.rs#L210).
+- Mint: [principal_manager/src/lib.rs lines 343–421](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/principal_manager/src/lib.rs#L343-L421). Maturity settlement, where `settle_all` freezes one rate and `redeem` pays out: [lines 461–530](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/principal_manager/src/lib.rs#L461-L530).
+- Test `deposit_tokenize_trade_claim_settle_redeem_with_fees_stays_solvent`: a full run with several users, trades and fees, from deposit to redemption. At the end every holder is paid, and PrincipalManager holds only rounding dust. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/full_lifecycle.rs#L20).
+
+PT and YT tokens:
+- SEP-41 interface: [pt_token/src/lib.rs lines 182–295](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/pt_token/src/lib.rs#L182-L295).
+- Mint and burn, callable only by PrincipalManager: [lines 295–349](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/pt_token/src/lib.rs#L295-L349).
+- `seize`, callable only by the configured RecoveryEscrow: [lines 350–380](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/pt_token/src/lib.rs#L350-L380).
+- YT yield index, `update_yield_index` and `claim_yield`: [yt_token/src/lib.rs lines 430–577](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/yt_token/src/lib.rs#L430-L577).
+- Test `escrow_only_seize_functions_reject_everyone_else_including_the_admin`: `seize` refuses every caller except the escrow, including the token's own admin. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/edge_cases.rs#L403).
+- Test `pt_plus_yt_claims_never_exceed_the_deposited_shares_at_any_mint_rate`: however a position was minted, PT and YT together never claim more underlying than was deposited. This is the solvency property. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/yt_token/src/test.rs#L822).
+
+AMM trading layer (MarketPool):
+- PT swaps: [market_pool/src/lib.rs lines 279–341](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/market_pool/src/lib.rs#L279-L341).
+- Liquidity add and remove: [lines 389–542](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/market_pool/src/lib.rs#L389-L542).
+- LP ledger with compliance gate and recovery support: [lines 543–589](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/market_pool/src/lib.rs#L543-L589).
+- Test `deauthorized_holders_cannot_trade_or_provide_liquidity`: an account the issuer has deauthorised cannot swap or add liquidity. It runs over both a classic Stellar asset and a SEP-57 token. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/liquidity_and_router.rs#L261).
+
+Router:
+- `wrap_and_mint`: [router/src/lib.rs lines 261–309](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/router/src/lib.rs#L261-L309).
+- `swap_sy_for_yt` and `swap_yt_for_sy`, the flash-mint and flash-redeem entry points: [lines 335–391](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/router/src/lib.rs#L335-L391).
+- `redeem_at_maturity`: [lines 456–463](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/router/src/lib.rs#L456-L463).
+- Test `router_acts_as_the_user_so_a_deauthorized_user_gains_nothing_by_using_it`: the Router holds no funds and acts for the caller, so using it cannot get around a compliance block. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/liquidity_and_router.rs#L594).
+
+Market configuration and fees:
+- `initialize` and `set_fees`, callable only by the underlying asset's current administrator, read live: [market_config/src/lib.rs lines 105–188](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/market_config/src/lib.rs#L105-L188).
+- Swap fee formula, Fee Tier × Days to Maturity ÷ 365: [lines 269–277](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/market_config/src/lib.rs#L269-L277).
+- Test `example_5_the_swap_fee_schedule` checks the documented fee table against the formula at six maturities: 365, 180, 90, 30, 7 and 1 days. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/doc_examples.rs#L122).
+- Test `swap_fees_split_twenty_eighty_and_are_claimable_by_treasury_and_creator`: swap fees split 20% to the treasury and 80% to the creator, and each party can claim its share. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/amm.rs#L407).
+- Test `creator_fee_share_follows_a_sac_admin_rotation`: if the asset's administrator changes, the creator share goes to the new administrator. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/amm.rs#L439).
+
+### On-chain evidence (earlier build, Stellar Testnet)
+
+These transactions come from the earlier eight-contract build. That build predates MarketPool, Router, MarketConfig and this tranche's audit fixes. They show the deposit-then-mint mechanism running on a real network. They are not evidence that the reviewed commit is deployed. Source records: [TESTNET_DEPLOYMENT_EVIDENCE.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/TESTNET_DEPLOYMENT_EVIDENCE.md) and [TESTNET_STRESS_TEST_EVIDENCE.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/TESTNET_STRESS_TEST_EVIDENCE.md).
+
+Contracts (each link opens the Stellar Expert Testnet page):
+- OracleAdapter: [CDBIVWBLB6UEOBIWO5HAFYPM7LPMH3GKDRG4UMTVQDEAJRY3OIWJLPUO](https://stellar.expert/explorer/testnet/contract/CDBIVWBLB6UEOBIWO5HAFYPM7LPMH3GKDRG4UMTVQDEAJRY3OIWJLPUO)
+- Permissioning: [CBTV5C3GSQKYTAMHOVET7RH25BKSFSAEENTP7SRZEEBD6LKHE24MLXIM](https://stellar.expert/explorer/testnet/contract/CBTV5C3GSQKYTAMHOVET7RH25BKSFSAEENTP7SRZEEBD6LKHE24MLXIM)
+- RiskControl: [CCQXRR3SEP7UTSJORW43V2COD4D3HR6FCLZFJSPXBEH7W4WJWY7VTGC3](https://stellar.expert/explorer/testnet/contract/CCQXRR3SEP7UTSJORW43V2COD4D3HR6FCLZFJSPXBEH7W4WJWY7VTGC3)
+- STA, the classic asset wrapped by a Stellar Asset Contract (stand-in for the yield-bearing underlying): [CCOUVA654JH2V6B7LNTKHJP5DF3QA553RS2IIWXSGPDFH2N3QILIVU5L](https://stellar.expert/explorer/testnet/contract/CCOUVA654JH2V6B7LNTKHJP5DF3QA553RS2IIWXSGPDFH2N3QILIVU5L)
+- SYWrapper: [CA23M3FMEZJL5MHYTCDLSU7NG4MJ5UYAAKIT5QC4W2TO4SDZQ5EX3XMN](https://stellar.expert/explorer/testnet/contract/CA23M3FMEZJL5MHYTCDLSU7NG4MJ5UYAAKIT5QC4W2TO4SDZQ5EX3XMN)
+- PTToken: [CDHAJVFKVHJ3NTSVUVPSXEEFZT6LKHLOOQ35KPU7T6Z64XQEEGEE76ML](https://stellar.expert/explorer/testnet/contract/CDHAJVFKVHJ3NTSVUVPSXEEFZT6LKHLOOQ35KPU7T6Z64XQEEGEE76ML)
+- YTToken: [CALVCKLXBODNE6AD5KRJY2TWX2WNGQIVIGXUCBOS7AFXC3Q6M5XMA2L2](https://stellar.expert/explorer/testnet/contract/CALVCKLXBODNE6AD5KRJY2TWX2WNGQIVIGXUCBOS7AFXC3Q6M5XMA2L2)
+- PrincipalManager: [CDKBWCBFPIAVHYGKT6PUGU6ALELWCWXFC23NM3TYFYH6XLETVVMF3LRP](https://stellar.expert/explorer/testnet/contract/CDKBWCBFPIAVHYGKT6PUGU6ALELWCWXFC23NM3TYFYH6XLETVVMF3LRP)
+- RecoveryEscrow: [CCH4DZ6B64IMY7CNINWSFUI46PTL4B266RZ63EZZWHW5AGGAAN5WNSKW](https://stellar.expert/explorer/testnet/contract/CCH4DZ6B64IMY7CNINWSFUI46PTL4B266RZ63EZZWHW5AGGAAN5WNSKW)
+- Second market used for the stress test: PT-STAS [CCHKHQVYX656SBUF2OK7W2X6EE5LDKA4QEVII3DBZ36JGBMMP3WMMSLU](https://stellar.expert/explorer/testnet/contract/CCHKHQVYX656SBUF2OK7W2X6EE5LDKA4QEVII3DBZ36JGBMMP3WMMSLU), YT-STAS [CD57CJTVPJQ5MMTMAT4N6NSPANFHZCUSJD523NJ7TFZPYB75KDOA2CCY](https://stellar.expert/explorer/testnet/contract/CD57CJTVPJQ5MMTMAT4N6NSPANFHZCUSJD523NJ7TFZPYB75KDOA2CCY), PrincipalManager [CDJFE3VPPCVCHYZ3W2KYAHRTYLXITDDKBMJQLJGASH3LTXZHCGXMDWQX](https://stellar.expert/explorer/testnet/contract/CDJFE3VPPCVCHYZ3W2KYAHRTYLXITDDKBMJQLJGASH3LTXZHCGXMDWQX), RecoveryEscrow [CDBSCPPJE7DG5K6R5NAWNEUYJKRZLOZUSWZOBEQCBWFBNOX2NMNX6DAS](https://stellar.expert/explorer/testnet/contract/CDBSCPPJE7DG5K6R5NAWNEUYJKRZLOZUSWZOBEQCBWFBNOX2NMNX6DAS).
+
+Mint transactions:
+- Alice deposits 500 STA into SYWrapper and receives 5,000,000,000 SY shares: [5728686d24cca4e4b5c40493b4c40d5a8ee1d21e92696ae0cca9ffaa38e3dd7e](https://stellar.expert/explorer/testnet/tx/5728686d24cca4e4b5c40493b4c40d5a8ee1d21e92696ae0cca9ffaa38e3dd7e)
+- PrincipalManager mints 500 PT and 500 YT for Alice: [36860d63c31344a7e6ea6035c506a0906b3bf98c8d2a9a30c8f488e0d0795930](https://stellar.expert/explorer/testnet/tx/36860d63c31344a7e6ea6035c506a0906b3bf98c8d2a9a30c8f488e0d0795930)
+- Bob deposits 300 STA and receives 3,000,000,000 SY shares: [6a6c1cda02b2fdb150fc6868ba9e250c3fdd41520c558783b8d6ffb1e1885ad0](https://stellar.expert/explorer/testnet/tx/6a6c1cda02b2fdb150fc6868ba9e250c3fdd41520c558783b8d6ffb1e1885ad0)
+- PrincipalManager mints 300 PT and 300 YT for Bob: [f7eb96dff11049b0b16d0cd514fafd86ca21e69ba683ec11005cd65a8bb20ad1](https://stellar.expert/explorer/testnet/tx/f7eb96dff11049b0b16d0cd514fafd86ca21e69ba683ec11005cd65a8bb20ad1)
+
+### Assessment
+
+Met in full. The compile, test and coverage criteria are each shown with a fresh result from this review. The four functional AMM behaviours are each shown by a named test that passes.
+
+Two residual points are documented by the project, not found in this review:
+- Under the specified 20/80 fee split, liquidity providers earn no swap fees. [AMM_DESIGN.md §4](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/AMM_DESIGN.md) records this as a deliberate reading of the funded split. A one-field change is identified if the intended economics differ.
+- SYWrapper's exchange rate is fixed at 1.0. That is correct for assets whose appreciation is carried by the oracle rate. It has not been exercised with a balance-rebasing underlying, and the project states this limit plainly.
 
 ---
 
-## Deliverable 2 — Risk & Compliance Contracts
+## Deliverable 2: Risk and Compliance Contracts
 
-Budget $15,200 · Weeks 3–4.
+Budget: $15,200. Weeks 3–4. 122 hours.
 
-| Component | Requirement | Implementation | Proof |
-|---|---|---|---|
-| **RiskControl** | consumer registration, rolling-window limit, pause switch | `add_consumer`, `check_deposit`, `pause`/`unpause` (admin-only unpause) | 29 unit tests |
-| | **wired directly into SYWrapper's deposit and PrincipalManager's mint** | both call `RiskControl.check_deposit` inside their own entrypoint | `an_over_limit_deposit_reverts_automatically_with_no_manual_call`, `an_over_limit_mint_reverts_automatically` |
-| | **ledger sequence numbers, not wall-clock** | `DEFAULT_WINDOW_LEDGERS` = 17 280; `env.ledger().sequence()` | `window_is_ledger_sequence_based_and_ignores_wall_clock`, `window_resets_after_exactly_window_ledgers` |
-| | **per-asset limit beside the protocol-wide one** | `set_asset_limit`; both checked before either is written | `per_asset_limit_is_enforced_on_chain_alongside_the_protocol_limit`, `per_asset_limit_is_checked_alongside_the_protocol_limit` |
-| **RecoveryEscrow** | re-checks the underlying's current administrator on every call | no stored key; `principal_compliance::is_authority` live | `sac_admin_rotation_moves_recovery_authority_immediately_with_nothing_to_update` |
-| | seizes SY, PT, YT **and LP** | `seize_sy`/`seize_pt`/`seize_yt`/`seize_lp` | `recovery.rs` |
-| | SY converts to the underlying at once; PT/YT held fully backed until maturity, then settled for native clawback | `seize_sy` unwraps in the same call; `finalize_record` | `seize_sy_unwraps_at_once_…`, `seize_pt_and_yt_hold_until_maturity_then_finalize_onto_the_same_record`, `recovered_underlying_can_be_clawed_back_natively_by_the_issuer` |
-| | **batch seizure** for several accounts in one transaction | `seize_batch` (≤ 10 accounts, all-or-nothing), `seize_all_positions` | `batch_seizure_recovers_several_accounts_in_one_transaction_with_a_record_each`, `a_batch_is_all_or_nothing_and_size_bounded`, `seize_all_positions_sweeps_every_position_type_…` |
-| | **per-account record** so recovered funds trace to the recovery event | `RecoveryRecord` per account per event (ledger, time, amounts, underlying recovered); `account_records`, `finalize_record` writes results back | `several_recovery_events_for_one_account_each_get_their_own_record` |
+### Original description (as funded, verbatim)
 
-**Success criteria — all met.** A deposit or mint over the limit reverts automatically with no separate
-call (`an_over_limit_*`); ledger-sequence windows and per-asset limits are active on-chain
-(`window_is_ledger_sequence_*`, `per_asset_limit_is_enforced_*`); authorization and administrator controls
-are inherited from the underlying — for a classic asset via the SAC, for a SEP-57 token via the adapter
-(`compliance_matrix_*`, run over both); and recovery correctly handles SY, PT, YT and LP
-(`recovery.rs`, run over both, 15 tests).
+> Implement the Risk & Compliance Contracts:
+>
+> RiskControl — an automated circuit breaker limiting how much can be deposited across the protocol in a rolling window. Main features: consumer registration, a rolling-window limit checked directly during protocol operations, and a pause switch. This deliverable wires the breaker directly into SYWrapper's deposit and PrincipalManager's mint calls, switches the rolling window from wall-clock time to Stellar ledger sequence numbers, and adds a per-asset limit alongside the existing protocol-wide one.
+>
+> RecoveryEscrow — allows the underlying SAC administrator to execute compliance recovery without affecting other users. It re-checks the underlying asset's current administrator on every call and can seize SY, PT, YT, and LP positions. SY can be converted back into the underlying asset immediately, while PT/YT positions remain fully backed in escrow until maturity and are then settled back into the underlying asset for native clawback. This deliverable adds batch seizure for handling multiple accounts in one transaction and a per-account record so recovered funds trace back to the specific recovery event that produced them.
+
+### Success criteria (as funded, verbatim)
+
+> All contracts compile and pass their full unit and integration test suites with test coverage exceeding 95%.
+>
+> A deposit or mint that would exceed the circuit-breaker limit reverts automatically with no separate manual call required; ledger-sequence-based window and per-asset limits are active on-chain; authorization and administrator controls are inherited from the underlying SAC; and recovery flows correctly handle SY, PT, YT, and LP positions.
+
+### Evidence and proof
+
+**Criterion 1: compile, test and coverage.** Shared with Deliverable 1. 328 of 328 tests passed on 3 October 2026. RiskControl's line coverage is 99.28%, and RecoveryEscrow's is 98.63%. RiskControl has 29 unit tests in its own crate. RecoveryEscrow has no unit tests of its own by design: each of its calls depends on the real SY, PT, YT and pool contracts, so it is tested through the cross-contract suite, with 15 tests in [recovery.rs](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/recovery.rs).
+
+**Criterion 2a: a deposit or mint over the limit reverts on its own.**
+- `check_deposit`, the rolling-window limit check: [risk_control/src/lib.rs lines 233–302](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/risk_control/src/lib.rs#L233-L302).
+- SYWrapper's deposit calls RiskControl inside its own entry point: [sy_wrapper/src/lib.rs lines 233–241](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/sy_wrapper/src/lib.rs#L233-L241).
+- PrincipalManager's mint calls RiskControl inside its own entry point: [principal_manager/src/lib.rs lines 365–381](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/principal_manager/src/lib.rs#L365-L381).
+- Consumer registration, so that only a registered contract may call the breaker: [risk_control/src/lib.rs lines 190–206](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/risk_control/src/lib.rs#L190-L206). Pause switch, where pausers can pause and only the admin can unpause: [lines 118–147](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/risk_control/src/lib.rs#L118-L147).
+- Test `an_over_limit_deposit_reverts_automatically_with_no_manual_call`: a deposit that pushes the total over the limit is rejected by the deposit itself. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/risk_control.rs#L27).
+- Test `an_over_limit_mint_reverts_automatically`: the same, for a PT/YT mint. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/risk_control.rs#L55).
+
+**Criterion 2b: the window is measured in ledger sequence numbers, not wall-clock time.**
+- `DEFAULT_WINDOW_LEDGERS` is 17,280 ledgers, about 24 hours at Stellar's roughly 5-second ledger close: [risk_control/src/lib.rs lines 24–33](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/risk_control/src/lib.rs#L24-L33).
+- Test `window_is_ledger_sequence_based_and_ignores_wall_clock`: moving the wall clock forward a year without new ledgers does not reopen the window. It reopens only when the ledger sequence reaches the boundary. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/risk_control.rs#L89).
+
+**Criterion 2c: a per-asset limit, active on-chain alongside the protocol-wide limit.**
+- `set_asset_limit`. Both limits are checked before either is written, so a trip leaves no partial state: [risk_control/src/lib.rs lines 318–330](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/risk_control/src/lib.rs#L318-L330).
+- Test `per_asset_limit_is_enforced_on_chain_alongside_the_protocol_limit`: the per-asset limit rejects a deposit even when the protocol-wide limit still has room. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/risk_control.rs#L109).
+
+**Criterion 2d: authorization and administrator controls inherited from the underlying asset.**
+- The compliance adapter answers "may this account hold the asset" and "who is the issuer", for both a classic Stellar Asset Contract and a SEP-57 token: [compliance/src/lib.rs lines 67–140](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/compliance/src/lib.rs#L67-L140).
+- RecoveryEscrow re-checks the underlying's current administrator on every call and stores no administrator key: [recovery_escrow/src/lib.rs lines 528–534](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/recovery_escrow/src/lib.rs#L528-L534).
+- Test `compliance_matrix_deauthorized_accounts_are_blocked_on_every_position_type`: a deauthorised account is blocked from every position type (SY, PT, YT, LP), checked for both asset models. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/edge_cases.rs#L503).
+- Test `sac_admin_rotation_moves_recovery_authority_immediately_with_nothing_to_update`: when the asset's administrator changes, recovery authority moves at once. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/recovery.rs#L469).
+- Design rationale and the limits of each asset model: [COMPLIANCE_ARCHITECTURE.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/COMPLIANCE_ARCHITECTURE.md).
+
+**Criterion 2e: recovery handles SY, PT, YT and LP positions.**
+- `seize_sy` converts seized SY back to the underlying at once: [recovery_escrow/src/lib.rs lines 243–249](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/recovery_escrow/src/lib.rs#L243-L249).
+- `seize_pt` and `seize_yt` hold positions fully backed in escrow until maturity: [lines 250–264](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/recovery_escrow/src/lib.rs#L250-L264).
+- `seize_lp` seizes LP positions. This goes beyond the original eight-contract design, because the AMM did not exist then: [lines 265–273](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/recovery_escrow/src/lib.rs#L265-L273).
+- `finalize_record` settles held PT and YT into the underlying at maturity, ready for native clawback: [lines 316–350](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/recovery_escrow/src/lib.rs#L316-L350).
+- Test `seize_sy_unwraps_at_once_writes_a_record_and_touches_nobody_else`: seizing SY unwraps it at once, writes a record, and leaves other accounts alone. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/recovery.rs#L47).
+- Test `seize_pt_and_yt_hold_until_maturity_then_finalize_onto_the_same_record`. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/recovery.rs#L98).
+- Test `seize_lp_burns_it_unwraps_the_sy_leg_and_holds_the_pt_leg`. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/recovery.rs#L195).
+- Test `recovered_underlying_can_be_clawed_back_natively_by_the_issuer`: the underlying recovered into escrow can be taken back by the issuer through the asset's own clawback. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/recovery.rs#L82).
+- The three seize tests each run twice, once per asset model, through the helper `each_kind` at [recovery.rs line 16](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/recovery.rs#L16).
+
+**Batch seizure and per-account records.**
+- `seize_batch` and `seize_all_positions` are all-or-nothing. If one account is still authorised, the whole transaction reverts: [recovery_escrow/src/lib.rs lines 274–315](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/recovery_escrow/src/lib.rs#L274-L315).
+- Batch size is limited to 3 accounts. The original value of 10 exceeded Soroban's 100-ledger-entry transaction limit. The audit lowered it to the measured maximum: [lines 56–61](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/recovery_escrow/src/lib.rs#L56-L61).
+- `RecoveryRecord`, one per seizure event, with ledger, time, every position seized, and the YT yield recovered with it: [lines 161–186](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/recovery_escrow/src/lib.rs#L161-L186).
+- Test `batch_seizure_recovers_several_accounts_in_one_transaction_with_a_record_each`. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/recovery.rs#L257).
+- Test `a_full_batch_at_the_bound_of_every_position_type_succeeds`: a batch of the maximum size, with every position type, succeeds under Soroban's real resource limits. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/audit_regressions.rs#L211).
+
+### On-chain evidence (earlier build, Stellar Testnet)
+
+The same caveat as Deliverable 1 applies. These transactions come from the earlier eight-contract build and are not evidence that the reviewed commit is deployed.
+
+Important limits on what they show:
+- The earlier build used a **wall-clock** circuit breaker, not the ledger-sequence version in Criterion 2b. The on-chain record does not test the current breaker.
+- The breaker calls were made directly by the issuer's account, standing in for SYWrapper. They did not go through SYWrapper's deposit, so they do not show the automatic wiring in Criterion 2a.
+
+Compliance recovery transactions:
+- RecoveryEscrow (earlier build): [CCH4DZ6B64IMY7CNINWSFUI46PTL4B266RZ63EZZWHW5AGGAAN5WNSKW](https://stellar.expert/explorer/testnet/contract/CCH4DZ6B64IMY7CNINWSFUI46PTL4B266RZ63EZZWHW5AGGAAN5WNSKW)
+- RiskControl (earlier build): [CCQXRR3SEP7UTSJORW43V2COD4D3HR6FCLZFJSPXBEH7W4WJWY7VTGC3](https://stellar.expert/explorer/testnet/contract/CCQXRR3SEP7UTSJORW43V2COD4D3HR6FCLZFJSPXBEH7W4WJWY7VTGC3)
+- The issuer clears Bob's trustline authorisation on STA, so Bob is no longer authorised: [6d78b157f535d84f76b95938210db0ca26decdc31b42bbb96e5f6077acb75f90](https://stellar.expert/explorer/testnet/tx/6d78b157f535d84f76b95938210db0ca26decdc31b42bbb96e5f6077acb75f90)
+- `RecoveryEscrow.seize_pt`, called by the issuer, moves Bob's 300 PT into escrow: [669fa812cd038a34e394d23e7857f296e68b243c2ca166b2ae39368d4675a913](https://stellar.expert/explorer/testnet/tx/669fa812cd038a34e394d23e7857f296e68b243c2ca166b2ae39368d4675a913)
+- `RecoveryEscrow.seize_yt`, called by the issuer, moves Bob's 300 YT into escrow: [474042a5fbb7d265b78471b4a21c77882bbfa20bb9d007ff50e7de2c4bbda629](https://stellar.expert/explorer/testnet/tx/474042a5fbb7d265b78471b4a21c77882bbfa20bb9d007ff50e7de2c4bbda629)
+- `RecoveryEscrow.finalize_pt`, after maturity, releases 272.7272727 STA for clawback: [fb62bc549a4e2f3648f7d0d5e12924ad320dfd33c9a829cffc65fdf4f2f04a2f](https://stellar.expert/explorer/testnet/tx/fb62bc549a4e2f3648f7d0d5e12924ad320dfd33c9a829cffc65fdf4f2f04a2f)
+- `RecoveryEscrow.finalize_yt` releases 5.4545725 STA for clawback: [04293656f604d50802ec3ed416d25d5231f7d57c2e991768da8caa705fa7aed6](https://stellar.expert/explorer/testnet/tx/04293656f604d50802ec3ed416d25d5231f7d57c2e991768da8caa705fa7aed6)
+
+The final native clawback was not executed on-chain in this run. The escrow held 278.1818452 STA at the end, and that balance is readable on the ledger.
+
+Circuit breaker volume on Testnet: 45 calls to the earlier RiskControl's `check_deposit`, reaching 5,220,000,000 raw units against a limit of 100,000,000,000, read back with `get_cb_volume`. The individual transaction hashes for these 45 calls are not committed to the repository, so only the totals are documented. A final, deliberately oversized call was rejected during simulation and was never submitted, so it has no transaction hash. See [TESTNET_STRESS_TEST_EVIDENCE.md §5.4](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/TESTNET_STRESS_TEST_EVIDENCE.md).
+
+### Assessment
+
+Met in full on the code and tests. The automatic-revert, ledger-sequence, per-asset, compliance-inheritance and recovery criteria are each shown by named tests that pass on this commit.
+
+One design limit is disclosed rather than hidden: the circuit breaker counts gross inflows, so an already-compliant account that repeatedly deposits and withdraws can use up a window's budget. That costs the account its own capital and fees. The audit judged it not a fund-safety issue, because Permissioning is default-deny. See [TRANCHE_1_AUDIT.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/TRANCHE_1_AUDIT.md).
+
+On-chain, the Testnet record supports the recovery mechanism but not the current breaker. Neither the automatic wiring nor the ledger-sequence window has been shown on a network yet. A fresh Testnet run of the current build is a Tranche 2 task.
 
 ---
 
-## Deliverable 3 — Test Suite + Technical Documentation
+## Deliverable 3: Test Suite and Technical Documentation
 
-Budget $7,600 · Weeks 4–5.
+Budget: $7,600. Weeks 4–5. 76 hours.
 
-| Item | Delivered | Where |
-|---|---|---|
-| **Edge cases: error conditions** | most error paths (all of `edge_cases.rs`, `recovery.rs`, `risk_control.rs`, `liquidity_and_router.rs`, the oracle/PM/YT audit regressions) assert the *specific* `try_*` error code; some pre-audit unit tests still use `#[should_panic]` and are being migrated (tracked, not blocking) | across all suites |
-| **Edge cases: boundary values** | zero / negative / `i128::MIN` on every entry point; maximum amounts up to `i128::MAX` leave state untouched; a 10-billion-token position round-trips; exact thresholds for the deposit cap, slippage, circuit breaker, maturity (second-exact), oracle freshness (3 600 vs 3 601 s), allowance expiry, deadline | `edge_cases.rs` |
-| **Edge cases: authorization** | every admin-only function rejects a non-admin; escrow-only `seize` rejects even the admin; mint/burn need the manager; a representative set of state-changing calls (deposit/withdraw/transfer, mint, admin setters, a pool swap and LP exit, a Router swap) fails with *no signatures at all* (`mock_auths(&[])`) in `edge_cases.rs::state_changing_calls_need_the_callers_own_signature`; permissionless calls (`update_yield_index`, fee claims) work with none and cannot redirect value | `edge_cases.rs` |
-| **Full lifecycle integration** | deposit → wrap → PT/YT issuance → trading → liquidity → yield claiming → settlement → redemption → fee claims, with a solvency check | `full_lifecycle.rs::deposit_tokenize_trade_claim_settle_redeem_with_fees_stays_solvent` |
-| **Complete compliance-recovery cycle** | flag → seize (SY, PT/YT, LP, batch) → finalize → native clawback, over a SAC and a SEP-57 token | `recovery.rs` |
-| **Documentation: function reference** | what each function does, needs, and what can go wrong | [API_REFERENCE.md](API_REFERENCE.md) |
-| **Documentation: yield math, fees, compliance with real numbers** | worked examples, each asserted by a test | [YIELD_MATH_AND_FEES.md](YIELD_MATH_AND_FEES.md) (+ `doc_examples.rs`), [AMM_DESIGN.md](AMM_DESIGN.md), [COMPLIANCE_ARCHITECTURE.md](COMPLIANCE_ARCHITECTURE.md) |
-| **CI/CD** | tests, lint, WASM build + size gate, coverage report, audit on every PR | `.github/workflows/ci.yml` |
-| **Docs published** | mdBook site built on every PR, deployed to GitHub Pages from `main` | `.github/workflows/docs.yml`, `book.toml`, `docs/SUMMARY.md` |
+### Original description (as funded, verbatim)
 
-### Tranche completion criteria (from the roadmap)
+> Deliverables 1 and 2 already verify each contract works correctly under normal use. This deliverable adds the edge cases:
+>
+> Edge-case testing — error conditions, boundary values (zero amounts, maximum amounts, exact-threshold values), and authorization checks (who's allowed to call what, and what happens when they're not) across the protocol contracts, plus a full lifecycle integration test from deposit through PT/YT issuance, trading, yield claiming, and maturity settlement, together with a complete compliance-recovery cycle.
+>
+> Documentation — a reference explaining what each contract function does, what it needs, and what can go wrong, plus a guide to the yield math, market fees, and compliance architecture with real number examples, so other developers can build on top of the protocol without reading the code itself.
+>
+> CI/CD — every test runs automatically on every pull request, with a coverage report published alongside it, so a regression can't reach the merged codebase unnoticed.
+
+### Success criteria (as funded, verbatim)
+
+> Tests pass in CI, and documentation is published.
+
+### Evidence and proof
+
+**Criterion A: tests pass in CI.**
+- Tests pass locally on this commit: 328 of 328, re-run 3 October 2026.
+- The CI workflow is [ci.yml](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/.github/workflows/ci.yml). It runs formatting, linting, the WASM build with a size check, the full test suite, the coverage report and a dependency audit on every pull request.
+- The same steps were reproduced locally against the same commit. `cargo fmt --check`, the clippy command, the WASM build, `cargo test --workspace`, `cargo llvm-cov` and `cargo audit` each passed.
+- **Not yet shown:** a CI run on GitHub's runners. That needs a pull request from this branch: [open it here](https://github.com/principal-Protocol-org/principal/pull/new/feat/tranche-1-mvp).
+
+**Criterion B: documentation is published.**
+- Documentation is committed under [docs/](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/), with 17 files.
+- The site is built with mdBook from [SUMMARY.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/SUMMARY.md) and [book.toml](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/book.toml). `mdbook build` completed with no errors on this commit.
+- The publish workflow is [docs.yml](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/.github/workflows/docs.yml). It deploys to GitHub Pages on pushes to `main`.
+- **Not yet shown:** the live GitHub Pages site. It is not deployed until the branch reaches `main`.
+
+**Edge-case testing (funded item).** Error conditions and boundary values are in [edge_cases.rs](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/edge_cases.rs). Key tests:
+- `every_admin_only_function_rejects_a_caller_that_is_not_the_admin`: every admin-only function refuses a non-admin caller. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/edge_cases.rs#L328).
+- `state_changing_calls_need_the_callers_own_signature`: deposit, withdraw, transfer, mint, admin setters, a pool swap, an LP exit and a Router swap all fail when no signature is present. The test removes every mocked authorisation to show this. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/edge_cases.rs#L450).
+- `escrow_only_seize_functions_reject_everyone_else_including_the_admin`. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/edge_cases.rs#L403).
+
+**Full lifecycle (funded item).** One continuous test runs every stage in the description against the real contracts, not mocks. The stages are deposit, PT and YT issuance including the tokenization fee, trading through the pool and Router, a mid-life yield claim with the YT fee withheld, permissionless settlement at maturity, redemption for every participant, LP exit, and fee claims. It ends with a solvency check. Test: `deposit_tokenize_trade_claim_settle_redeem_with_fees_stays_solvent`, [full_lifecycle.rs line 20](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/full_lifecycle.rs#L20).
+
+**Compliance-recovery cycle (funded item).** Flag, seize, finalise at maturity, then native clawback, over both asset models. Covered by the 15 tests in [recovery.rs](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/recovery.rs), listed under Deliverable 2.
+
+**Documentation (funded item).**
+- Function reference, covering all eleven contracts: [API_REFERENCE.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/API_REFERENCE.md).
+- Yield math, fees, and worked numeric examples: [YIELD_MATH_AND_FEES.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/YIELD_MATH_AND_FEES.md). Every worked number is asserted by a passing test in [doc_examples.rs](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/doc_examples.rs), so a change that moves a number fails the test rather than leaving the guide stale.
+- Compliance architecture, including the SEP-8 and SEP-57 points: [COMPLIANCE_ARCHITECTURE.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/COMPLIANCE_ARCHITECTURE.md).
+- AMM design, including a survey of comparable Stellar and Soroban projects: [AMM_DESIGN.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/AMM_DESIGN.md).
+- Specification, architecture and deployment runbook: [TECHNICAL_SPECIFICATION.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/TECHNICAL_SPECIFICATION.md), [ARCHITECTURE.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/ARCHITECTURE.md), [DEPLOYMENT.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/DEPLOYMENT.md).
+
+### Assessment
+
+Partly evidenced, and this review does not round it up. The test suite and documentation content satisfy the funded description. The success criterion has two parts still open:
+1. The tests have passed locally, but not yet in CI on GitHub's runners, because no pull request has been opened.
+2. The documentation is committed, but the live GitHub Pages site has not been checked.
+
+Opening the pull request and checking the published site would close this deliverable.
+
+---
+
+## Tranche completion criteria (from the roadmap)
 
 | Criterion | Status |
 |---|---|
-| Contracts merged to `main` under a tagged release | **Pending** — code is complete and tested; the merge and `v*` tag are the maintainers' step. CI runs on `v*` tags. |
-| Test suite passing in public CI with a coverage report published | Workflows added (`.github/workflows/ci.yml`, `docs.yml`); confirm on the first pushed pull request — not yet independently observed on GitHub. Locally: 328 / 328 pass, coverage 97.7 %. |
-| RiskControl demonstrably blocks an oversized deposit in an integration test | ✅ `an_over_limit_deposit_reverts_automatically_with_no_manual_call` |
-| Documentation published in the repository | ✅ `docs/` + published site |
+| Contracts merged to `main` under a tagged release | **Pending.** Code is complete and tested. The merge and `v*` tag are the maintainers' step. |
+| Test suite passing in public CI with a coverage report published | **Partly evidenced.** Workflows are committed. 328 of 328 pass locally, and coverage is 97.67%. CI on GitHub has not yet been observed. |
+| RiskControl demonstrably blocks an oversized deposit in an integration test | Met. [`an_over_limit_deposit_reverts_automatically_with_no_manual_call`](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/risk_control.rs#L27) |
+| Documentation published in the repository | Met in the repository. The live GitHub Pages site has not been checked. |
 
 ---
 
 ## Defects found while building this
 
-Writing the acceptance tests found real defects in code that was already marked done. All are fixed and
-regression-tested.
+Writing the acceptance tests found real defects in code that was already marked done. All are fixed and covered by regression tests.
 
-1. **Insolvency at any mint rate other than 1.0.** `YTToken` scaled yield by a percentage of *notional*,
-   but yield accrues on the *underlying* the position holds. For a position minted at rate 1.05 and
-   settled at 1.10, PT + YT claimed **100.23 SY against 100 SY of custody**. Every earlier test ran at rate
-   1.0, where the two coincide. Fix: the index is now the closed form `1/rate`, which telescopes to
-   exactly `N / r₀` per position for any `r₀` (also removes path-dependence and 1e-7 rounding drift; the
-   factor is now 1e12-precise and rounded against the YT holder). Tests: `pt_plus_yt_claims_never_exceed_…`,
-   `deposit_tokenize_trade_claim_settle_redeem_with_fees_stays_solvent`.
-2. **AMM rounding profit at scale.** A one-unit safety margin was not enough once pools are large:
-   fixed-point error scales with reserve size and a fee-free round trip on a 1e17-unit pool *profited* by
-   6 units. Fix: a magnitude-scaled pad (`1 + u/1e14`) in the curve solver. Test:
-   `fee_free_round_trips_never_profit_at_any_pool_size`.
-3. **Recovery blocked by the pause.** `RecoveryEscrow.seize_sy` seized fine while the wrapper was paused,
-   but its immediate unwrap went through `withdraw`, which the pause blocked — defeating the stated intent
-   that recovery survive an incident pause. Fix: the configured escrow is exempt from the SY pause when it
-   is a party. Test: `seizure_works_while_the_market_is_paused`.
-
-Also corrected: the documented build target (`wasm32-unknown-unknown`) does not build with the pinned SDK
-on current Rust — `wasm32v1-none` is required.
+1. **Insolvency at any mint rate other than 1.0.** `YTToken` scaled yield by a percentage of notional, but yield accrues on the underlying the position holds. A position minted at rate 1.05 and settled at 1.10 claimed 100.23 SY against 100 SY of custody. The fix changes the index to the closed form `1/rate`, which telescopes to exactly `N / r₀` per position for any starting rate. Tests: `pt_plus_yt_claims_never_exceed_the_deposited_shares_at_any_mint_rate` and `deposit_tokenize_trade_claim_settle_redeem_with_fees_stays_solvent`.
+2. **AMM rounding profit at scale.** A one-unit safety margin was too small for large pools. A fee-free round trip on a 1e17-unit pool profited by 6 units. The fix is a pad that scales with reserve size, in the curve solver. Test: `fee_free_round_trips_never_profit_at_any_pool_size`.
+3. **Recovery blocked by the pause.** `RecoveryEscrow.seize_sy` unwrapped through `withdraw`, which the pause blocked. This defeated the intent that recovery survive an incident pause. The fix exempts the configured escrow from the SY pause when it is a party. Test: `seizure_works_while_the_market_is_paused`.
+4. **Build target.** The documented target `wasm32-unknown-unknown` does not build with the pinned SDK on current Rust. `wasm32v1-none` is required.
 
 ## Deviations, design decisions and open items
 
-Stated so nothing is discovered later.
-
-* **Swap fees do not reach LPs.** The specified split routes 20 % of each swap fee to Principal and 80 % to
-  the market creator; LPs earn PT convergence only. One field in `MarketConfig.split` adds an LP share if
-  wanted. ([AMM_DESIGN.md §4](AMM_DESIGN.md))
-* **The circuit breaker counts each entry point**, so a `wrap_and_mint` of 100 consumes 200 of the window.
-  This follows "wire the breaker into SYWrapper deposit and PrincipalManager mint" literally; a single
-  intake point would need an origin marker.
-* **Per-user entry rate** is realised as a per-account snapshot of the YT index rather than a stored
-  `InitialRate(addr)`; it is equivalent for accounting and additionally correct across transfers.
-* **`SYWrapper.exchange_rate` is 1.0 in practice** (it tracks deposits and withdrawals, not rebases);
-  appreciation is carried by the oracle. A rebasing underlying would need the two rates reconciled.
-* **Router registry is admin-only** (protocol admin), by design: it is an anti-phishing allow-list, not
-  market creation, which stays gated on the underlying's issuer authority.
-* **SEP-57 is a Draft** (v0.4.0). The adapter isolates every assumption in one crate; see the limits in
-  [COMPLIANCE_ARCHITECTURE.md §3](COMPLIANCE_ARCHITECTURE.md).
-* **Not built (outside Tranche 1):** fee-change timelock, implied-rate TWAP oracle, `LiquidationAdapter`,
-  a third-party audit, deployment scripts for the new contracts (steps documented in
-  [DEPLOYMENT.md](DEPLOYMENT.md)).
-* **Test-snapshot files** for the new crates and the integration suite are git-ignored (regenerated on
-  every run); the pre-existing per-contract snapshot directories remain tracked.
+- **Swap fees do not reach LPs.** The specified split routes 20% of each swap fee to Principal and 80% to the creator. LPs earn PT convergence only. One field in `MarketConfig.split` adds an LP share if wanted. [AMM_DESIGN.md §4](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/AMM_DESIGN.md).
+- **The circuit breaker counts each entry point.** A `wrap_and_mint` of 100 uses 200 of the window. This follows "wire the breaker into SYWrapper deposit and PrincipalManager mint" literally. A single intake point would need an origin marker.
+- **Per-user entry rate** is a per-account snapshot of the YT index, not a stored initial rate. It is equivalent for accounting and also correct across transfers.
+- **`SYWrapper.exchange_rate` is 1.0 in practice.** It tracks deposits and withdrawals, not rebases. A rebasing underlying would need the two rates reconciled.
+- **Router registry is admin-only**, by design. It is an allow-list against phishing, not market creation, which stays gated on the underlying's issuer authority.
+- **SEP-57 is a Draft (v0.4.0).** The adapter isolates every assumption in one crate. See [COMPLIANCE_ARCHITECTURE.md §3](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/COMPLIANCE_ARCHITECTURE.md).
+- **Not built, outside Tranche 1:** fee-change timelock, implied-rate TWAP oracle, `LiquidationAdapter`, a third-party audit, and deployment scripts for the new contracts. [DEPLOYMENT.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/DEPLOYMENT.md) documents the steps.
+- **Documentation defect in the earlier evidence file.** [TESTNET_DEPLOYMENT_EVIDENCE.md §6.1](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/TESTNET_DEPLOYMENT_EVIDENCE.md) has a garbled paragraph about Alice's STA balance. The transactions are correct, but the prose should be rewritten. This is not yet fixed.
+- **Test-snapshot files** for the new crates and the integration suite are git-ignored and regenerated on each run.
