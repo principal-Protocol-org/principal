@@ -336,6 +336,14 @@ an approved classic transaction is unauthorized to Principal and every operation
 it unfrozen) instead of `set_authorized`; without it the first deposit reverts inside the token's own transfer.
 Details: [COMPLIANCE_ARCHITECTURE.md](COMPLIANCE_ARCHITECTURE.md).
 
+## Lessons from the 4 October 2026 Testnet run
+
+The run is recorded in [TESTNET_CURRENT_DEPLOYMENT_EVIDENCE.md](TESTNET_CURRENT_DEPLOYMENT_EVIDENCE.md), section 6. Three points change the procedure above.
+
+- Escrow wiring is one-time. `set_recovery_escrow` on SYWrapper, PT, YT and MarketPool reverts `RecoveryEscrowAlreadySet` once set, and PrincipalManager stores its SYWrapper address at initialization. Choose the escrow before first use. A replacement escrow means a new SYWrapper and a full redeploy of every dependent contract.
+- Choose maturity with the whole run in mind. Maturity is fixed at initialization for PT, YT, MarketConfig and PrincipalManager. Each setup step takes tens of seconds on Testnet, so allow well over an hour between the first deployment and the first mint.
+- Timestamps come from the ledger. The oracle rejects a timestamp later than the ledger's close time. Use the latest ledger close time minus a few seconds, not the local clock.
+
 ## Post-deployment checklist
 
 - [ ] Grant admin key to a multisig or hardware key before mainnet.

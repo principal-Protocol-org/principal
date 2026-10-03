@@ -1,6 +1,6 @@
 # Tranche 1 (MVP): Deliverables, Evidence and Verification
 
-Status as of 3 October 2026. This is the acceptance record for Tranche 1. For each deliverable it gives the original funded description and success criteria word for word, then the evidence that each success criterion is met, with full links to source code, tests, documents and Stellar Testnet transactions.
+Status as of 4 October 2026. The current contracts are deployed to Stellar Testnet and exercised on-chain; see the on-chain sections of Deliverables 1 and 2. This is the acceptance record for Tranche 1. For each deliverable it gives the original funded description and success criteria word for word, then the evidence that each success criterion is met, with full links to source code, tests, documents and Stellar Testnet transactions.
 
 Reviewed commit: [6cf257afb588](https://github.com/principal-Protocol-org/principal/commit/6cf257afb588c63d694f2262d8b289d4809be8ee) on branch `feat/tranche-1-mvp`. Every source link below is pinned to this commit, so it does not move when the branch changes.
 
@@ -135,27 +135,19 @@ Market configuration and fees:
 - Test `swap_fees_split_twenty_eighty_and_are_claimable_by_treasury_and_creator`: swap fees split 20% to the treasury and 80% to the creator, and each party can claim its share. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/amm.rs#L407).
 - Test `creator_fee_share_follows_a_sac_admin_rotation`: if the asset's administrator changes, the creator share goes to the new administrator. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/amm.rs#L439).
 
-### On-chain evidence (earlier build, Stellar Testnet)
+### On-chain evidence (current contracts, Stellar Testnet, 4 October 2026)
 
-These transactions come from the earlier eight-contract build. That build predates MarketPool, Router, MarketConfig and this tranche's audit fixes. They show the deposit-then-mint mechanism running on a real network. They are not evidence that the reviewed commit is deployed. Source records: [TESTNET_DEPLOYMENT_EVIDENCE.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/TESTNET_DEPLOYMENT_EVIDENCE.md) and [TESTNET_STRESS_TEST_EVIDENCE.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/TESTNET_STRESS_TEST_EVIDENCE.md).
+The current contracts were deployed to Stellar Testnet on 4 October 2026, from source identical to commit 6cf257a, and exercised end to end. The full record, with every contract address, account, and transaction, is in [TESTNET_CURRENT_DEPLOYMENT_EVIDENCE.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/TESTNET_CURRENT_DEPLOYMENT_EVIDENCE.md). All 159 unique transaction hashes were checked on Horizon and all report success.
 
-Contracts (each link opens the Stellar Expert Testnet page):
-- OracleAdapter: [CDBIVWBLB6UEOBIWO5HAFYPM7LPMH3GKDRG4UMTVQDEAJRY3OIWJLPUO](https://stellar.expert/explorer/testnet/contract/CDBIVWBLB6UEOBIWO5HAFYPM7LPMH3GKDRG4UMTVQDEAJRY3OIWJLPUO)
-- Permissioning: [CBTV5C3GSQKYTAMHOVET7RH25BKSFSAEENTP7SRZEEBD6LKHE24MLXIM](https://stellar.expert/explorer/testnet/contract/CBTV5C3GSQKYTAMHOVET7RH25BKSFSAEENTP7SRZEEBD6LKHE24MLXIM)
-- RiskControl: [CCQXRR3SEP7UTSJORW43V2COD4D3HR6FCLZFJSPXBEH7W4WJWY7VTGC3](https://stellar.expert/explorer/testnet/contract/CCQXRR3SEP7UTSJORW43V2COD4D3HR6FCLZFJSPXBEH7W4WJWY7VTGC3)
-- STA, the classic asset wrapped by a Stellar Asset Contract (stand-in for the yield-bearing underlying): [CCOUVA654JH2V6B7LNTKHJP5DF3QA553RS2IIWXSGPDFH2N3QILIVU5L](https://stellar.expert/explorer/testnet/contract/CCOUVA654JH2V6B7LNTKHJP5DF3QA553RS2IIWXSGPDFH2N3QILIVU5L)
-- SYWrapper: [CA23M3FMEZJL5MHYTCDLSU7NG4MJ5UYAAKIT5QC4W2TO4SDZQ5EX3XMN](https://stellar.expert/explorer/testnet/contract/CA23M3FMEZJL5MHYTCDLSU7NG4MJ5UYAAKIT5QC4W2TO4SDZQ5EX3XMN)
-- PTToken: [CDHAJVFKVHJ3NTSVUVPSXEEFZT6LKHLOOQ35KPU7T6Z64XQEEGEE76ML](https://stellar.expert/explorer/testnet/contract/CDHAJVFKVHJ3NTSVUVPSXEEFZT6LKHLOOQ35KPU7T6Z64XQEEGEE76ML)
-- YTToken: [CALVCKLXBODNE6AD5KRJY2TWX2WNGQIVIGXUCBOS7AFXC3Q6M5XMA2L2](https://stellar.expert/explorer/testnet/contract/CALVCKLXBODNE6AD5KRJY2TWX2WNGQIVIGXUCBOS7AFXC3Q6M5XMA2L2)
-- PrincipalManager: [CDKBWCBFPIAVHYGKT6PUGU6ALELWCWXFC23NM3TYFYH6XLETVVMF3LRP](https://stellar.expert/explorer/testnet/contract/CDKBWCBFPIAVHYGKT6PUGU6ALELWCWXFC23NM3TYFYH6XLETVVMF3LRP)
-- RecoveryEscrow: [CCH4DZ6B64IMY7CNINWSFUI46PTL4B266RZ63EZZWHW5AGGAAN5WNSKW](https://stellar.expert/explorer/testnet/contract/CCH4DZ6B64IMY7CNINWSFUI46PTL4B266RZ63EZZWHW5AGGAAN5WNSKW)
-- Second market used for the stress test: PT-STAS [CCHKHQVYX656SBUF2OK7W2X6EE5LDKA4QEVII3DBZ36JGBMMP3WMMSLU](https://stellar.expert/explorer/testnet/contract/CCHKHQVYX656SBUF2OK7W2X6EE5LDKA4QEVII3DBZ36JGBMMP3WMMSLU), YT-STAS [CD57CJTVPJQ5MMTMAT4N6NSPANFHZCUSJD523NJ7TFZPYB75KDOA2CCY](https://stellar.expert/explorer/testnet/contract/CD57CJTVPJQ5MMTMAT4N6NSPANFHZCUSJD523NJ7TFZPYB75KDOA2CCY), PrincipalManager [CDJFE3VPPCVCHYZ3W2KYAHRTYLXITDDKBMJQLJGASH3LTXZHCGXMDWQX](https://stellar.expert/explorer/testnet/contract/CDJFE3VPPCVCHYZ3W2KYAHRTYLXITDDKBMJQLJGASH3LTXZHCGXMDWQX), RecoveryEscrow [CDBSCPPJE7DG5K6R5NAWNEUYJKRZLOZUSWZOBEQCBWFBNOX2NMNX6DAS](https://stellar.expert/explorer/testnet/contract/CDBSCPPJE7DG5K6R5NAWNEUYJKRZLOZUSWZOBEQCBWFBNOX2NMNX6DAS).
+For Deliverable 1, the on-chain record shows these points:
+- Deposit into SYWrapper and mint of PT and YT by PrincipalManager, with the 0.05% tokenization fee visible in the balances (Alice minted 4,997,500,000 raw PT and YT from a 5,000,000,000 raw deposit).
+- Liquidity added and removed, PT swapped for SY, and SY swapped for PT on the pool.
+- Flash-mint through the Router (SY to YT in one transaction).
+- Mid-life yield claim after the oracle moved from 1.00 to 1.05.
+- Settlement at maturity by `settle_all`, followed by redemption of both PT and YT.
+- Trading refused after maturity, shown by a simulation error with no transaction.
 
-Mint transactions:
-- Alice deposits 500 STA into SYWrapper and receives 5,000,000,000 SY shares: [5728686d24cca4e4b5c40493b4c40d5a8ee1d21e92696ae0cca9ffaa38e3dd7e](https://stellar.expert/explorer/testnet/tx/5728686d24cca4e4b5c40493b4c40d5a8ee1d21e92696ae0cca9ffaa38e3dd7e)
-- PrincipalManager mints 500 PT and 500 YT for Alice: [36860d63c31344a7e6ea6035c506a0906b3bf98c8d2a9a30c8f488e0d0795930](https://stellar.expert/explorer/testnet/tx/36860d63c31344a7e6ea6035c506a0906b3bf98c8d2a9a30c8f488e0d0795930)
-- Bob deposits 300 STA and receives 3,000,000,000 SY shares: [6a6c1cda02b2fdb150fc6868ba9e250c3fdd41520c558783b8d6ffb1e1885ad0](https://stellar.expert/explorer/testnet/tx/6a6c1cda02b2fdb150fc6868ba9e250c3fdd41520c558783b8d6ffb1e1885ad0)
-- PrincipalManager mints 300 PT and 300 YT for Bob: [f7eb96dff11049b0b16d0cd514fafd86ca21e69ba683ec11005cd65a8bb20ad1](https://stellar.expert/explorer/testnet/tx/f7eb96dff11049b0b16d0cd514fafd86ca21e69ba683ec11005cd65a8bb20ad1)
+Transactions for the PT and YT mint, the flash-mint, the claim and the redemption are in the evidence record, section 7, and each one links to the Stellar Expert page for that transaction. Flash-redeem on-chain is not in this run; it is covered by the named tests above.
 
 ### Assessment
 
@@ -230,26 +222,19 @@ Budget: $15,200. Weeks 3–4. 122 hours.
 - Test `batch_seizure_recovers_several_accounts_in_one_transaction_with_a_record_each`. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/recovery.rs#L257).
 - Test `a_full_batch_at_the_bound_of_every_position_type_succeeds`: a batch of the maximum size, with every position type, succeeds under Soroban's real resource limits. [Source](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/contracts/integration_tests/tests/audit_regressions.rs#L211).
 
-### On-chain evidence (earlier build, Stellar Testnet)
+### On-chain evidence (current contracts, Stellar Testnet, 4 October 2026)
 
-The same caveat as Deliverable 1 applies. These transactions come from the earlier eight-contract build and are not evidence that the reviewed commit is deployed.
+The current RecoveryEscrow and RiskControl were exercised on Testnet on 4 October 2026. The full record is in [TESTNET_CURRENT_DEPLOYMENT_EVIDENCE.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/TESTNET_CURRENT_DEPLOYMENT_EVIDENCE.md).
 
-Important limits on what they show:
-- The earlier build used a **wall-clock** circuit breaker, not the ledger-sequence version in Criterion 2b. The on-chain record does not test the current breaker.
-- The breaker calls were made directly by the issuer's account, standing in for SYWrapper. They did not go through SYWrapper's deposit, so they do not show the automatic wiring in Criterion 2a.
+What the on-chain record shows:
+- A single batch transaction, `seize_all_positions`, moved a deauthorised account's PT and YT into the escrow and wrote record 0.
+- `finalize_record` at maturity settled the seized positions into the escrow: 2,855,714,285 raw units from the PT leg and 128,507,142 raw units from the YT leg, with 142,785,714 raw units of yield attributed to the seizure.
+- RiskControl's protocol-wide volume is cumulative on-chain (27,200,000,000 raw units). SYWrapper and PrincipalManager call it from inside their own entry points, so the deposits and mints in this run were counted without any separate call.
 
-Compliance recovery transactions:
-- RecoveryEscrow (earlier build): [CCH4DZ6B64IMY7CNINWSFUI46PTL4B266RZ63EZZWHW5AGGAAN5WNSKW](https://stellar.expert/explorer/testnet/contract/CCH4DZ6B64IMY7CNINWSFUI46PTL4B266RZ63EZZWHW5AGGAAN5WNSKW)
-- RiskControl (earlier build): [CCQXRR3SEP7UTSJORW43V2COD4D3HR6FCLZFJSPXBEH7W4WJWY7VTGC3](https://stellar.expert/explorer/testnet/contract/CCQXRR3SEP7UTSJORW43V2COD4D3HR6FCLZFJSPXBEH7W4WJWY7VTGC3)
-- The issuer clears Bob's trustline authorisation on STA, so Bob is no longer authorised: [6d78b157f535d84f76b95938210db0ca26decdc31b42bbb96e5f6077acb75f90](https://stellar.expert/explorer/testnet/tx/6d78b157f535d84f76b95938210db0ca26decdc31b42bbb96e5f6077acb75f90)
-- `RecoveryEscrow.seize_pt`, called by the issuer, moves Bob's 300 PT into escrow: [669fa812cd038a34e394d23e7857f296e68b243c2ca166b2ae39368d4675a913](https://stellar.expert/explorer/testnet/tx/669fa812cd038a34e394d23e7857f296e68b243c2ca166b2ae39368d4675a913)
-- `RecoveryEscrow.seize_yt`, called by the issuer, moves Bob's 300 YT into escrow: [474042a5fbb7d265b78471b4a21c77882bbfa20bb9d007ff50e7de2c4bbda629](https://stellar.expert/explorer/testnet/tx/474042a5fbb7d265b78471b4a21c77882bbfa20bb9d007ff50e7de2c4bbda629)
-- `RecoveryEscrow.finalize_pt`, after maturity, releases 272.7272727 STA for clawback: [fb62bc549a4e2f3648f7d0d5e12924ad320dfd33c9a829cffc65fdf4f2f04a2f](https://stellar.expert/explorer/testnet/tx/fb62bc549a4e2f3648f7d0d5e12924ad320dfd33c9a829cffc65fdf4f2f04a2f)
-- `RecoveryEscrow.finalize_yt` releases 5.4545725 STA for clawback: [04293656f604d50802ec3ed416d25d5231f7d57c2e991768da8caa705fa7aed6](https://stellar.expert/explorer/testnet/tx/04293656f604d50802ec3ed416d25d5231f7d57c2e991768da8caa705fa7aed6)
-
-The final native clawback was not executed on-chain in this run. The escrow held 278.1818452 STA at the end, and that balance is readable on the ledger.
-
-Circuit breaker volume on Testnet: 45 calls to the earlier RiskControl's `check_deposit`, reaching 5,220,000,000 raw units against a limit of 100,000,000,000, read back with `get_cb_volume`. The individual transaction hashes for these 45 calls are not committed to the repository, so only the totals are documented. A final, deliberately oversized call was rejected during simulation and was never submitted, so it has no transaction hash. See [TESTNET_STRESS_TEST_EVIDENCE.md §5.4](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/TESTNET_STRESS_TEST_EVIDENCE.md).
+What the on-chain record does not show, stated plainly:
+- A refused deposit over the limit. No such transaction exists in this run. The automatic revert is covered by the named tests above.
+- The ledger-sequence window reopening. The window is 17,280 ledgers and the run lasted far less than that.
+- A native clawback of the recovered STA. The STA asset has clawback disabled (`auth_clawback_enabled: false`), so this step cannot be run on this asset as configured. The recovered amount sits in the escrow.
 
 ### Assessment
 

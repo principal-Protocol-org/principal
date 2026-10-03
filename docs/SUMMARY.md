@@ -26,5 +26,6 @@
 
 - [Proof of concept](PROOF_OF_CONCEPT.md)
 - [Compliant settlement design](COMPLIANT_SETTLEMENT_DESIGN.md)
-- [Testnet deployment evidence](TESTNET_DEPLOYMENT_EVIDENCE.md)
+- [Testnet deployment evidence: current contracts (4 Oct 2026)](TESTNET_CURRENT_DEPLOYMENT_EVIDENCE.md)
+- [Testnet deployment evidence: earlier eight-contract build](TESTNET_DEPLOYMENT_EVIDENCE.md)
 - [Testnet stress test evidence](TESTNET_STRESS_TEST_EVIDENCE.md)
