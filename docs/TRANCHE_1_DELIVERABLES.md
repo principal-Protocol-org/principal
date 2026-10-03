@@ -137,7 +137,7 @@ Market configuration and fees:
 
 ### On-chain evidence (current contracts, Stellar Testnet, 4 October 2026)
 
-The current contracts were deployed to Stellar Testnet on 4 October 2026, from source identical to commit 6cf257a, and exercised end to end. The full record, with every contract address, account, and transaction, is in [TESTNET_CURRENT_DEPLOYMENT_EVIDENCE.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/TESTNET_CURRENT_DEPLOYMENT_EVIDENCE.md). All 159 unique transaction hashes were checked on Horizon and all report success.
+The current contracts were deployed to Stellar Testnet on 4 October 2026, from source identical to commit 6cf257a, and exercised end to end. The full record, with every contract address, account, and transaction, is in [TESTNET_CURRENT_DEPLOYMENT_EVIDENCE.md](https://github.com/principal-Protocol-org/principal/blob/e985b3ecfb3192705c5896274b820e31c2ccbaed/docs/TESTNET_CURRENT_DEPLOYMENT_EVIDENCE.md). All 159 unique transaction hashes were checked on Horizon and all report success.
 
 For Deliverable 1, the on-chain record shows these points:
 - Deposit into SYWrapper and mint of PT and YT by PrincipalManager, with the 0.05% tokenization fee visible in the balances (Alice minted 4,997,500,000 raw PT and YT from a 5,000,000,000 raw deposit).
@@ -224,7 +224,7 @@ Budget: $15,200. Weeks 3–4. 122 hours.
 
 ### On-chain evidence (current contracts, Stellar Testnet, 4 October 2026)
 
-The current RecoveryEscrow and RiskControl were exercised on Testnet on 4 October 2026. The full record is in [TESTNET_CURRENT_DEPLOYMENT_EVIDENCE.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/TESTNET_CURRENT_DEPLOYMENT_EVIDENCE.md).
+The current RecoveryEscrow and RiskControl were exercised on Testnet on 4 October 2026. The full record is in [TESTNET_CURRENT_DEPLOYMENT_EVIDENCE.md](https://github.com/principal-Protocol-org/principal/blob/e985b3ecfb3192705c5896274b820e31c2ccbaed/docs/TESTNET_CURRENT_DEPLOYMENT_EVIDENCE.md).
 
 What the on-chain record shows:
 - A single batch transaction, `seize_all_positions`, moved a deauthorised account's PT and YT into the escrow and wrote record 0.
