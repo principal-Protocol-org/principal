@@ -258,7 +258,7 @@ Rows are grouped as follows. "Shared infrastructure" is used by the final market
 
 ## 8. Verification result
 
-All 159 unique transaction hashes were queried on the Horizon Testnet API on 4 October 2026. All 159 report `successful: true`, and none failed. The contract addresses in section 3 were queried on the Stellar Expert Testnet API, which returned a creation record for each one.
+All 159 unique transaction hashes were queried on the Horizon Testnet API on 4 October 2026. All 159 report `successful: true`, and none failed. Each contract address in section 3 was confirmed live on Testnet by reading its published command list from the ledger (`stellar contract invoke --send=no -- --help`), which returns the contract's interface only if the contract exists. Each account address was confirmed to exist on Horizon.
 
 ## 9. Reproduction
 
