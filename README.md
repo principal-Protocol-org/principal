@@ -63,7 +63,7 @@ At maturity:
 
 ## Protocol Architecture
 
-The protocol is composed of **eleven Soroban contracts** organized in three layers, plus one shared library crate (`principal_compliance`). See [docs/TECHNICAL_SPECIFICATION.md](docs/TECHNICAL_SPECIFICATION.md) for the full spec and [docs/API_REFERENCE.md](docs/API_REFERENCE.md) for every function.
+The protocol is composed of **twelve Soroban contracts** organized in three layers, plus one shared library crate (`principal_compliance`). See [docs/TECHNICAL_SPECIFICATION.md](docs/TECHNICAL_SPECIFICATION.md) for the full spec, [docs/MARKET_FACTORY.md](docs/MARKET_FACTORY.md) for market creation, and [docs/API_REFERENCE.md](docs/API_REFERENCE.md) for every function.
 
 ### Infrastructure layer (shared across all markets)
 
@@ -72,6 +72,7 @@ The protocol is composed of **eleven Soroban contracts** organized in three laye
 | `OracleAdapter` | Monotonic reference-value feed (USDC per underlying) with freshness checks. For the USDY market, fed from the RedStone USDY/USD SEP-40 feed by a relay. |
 | `Permissioning` | An optional, narrower eligibility configuration surface — administered by the market's operator, never a Principal-controlled registry (see below) |
 | `RiskControl` | Global pause, multi-pauser roles, and a circuit breaker on deposit volume: a protocol-wide **and** a per-asset limit over a window counted in **ledger sequence numbers**. Wired directly into `SYWrapper.deposit` and `PrincipalManager.mint`, so an over-limit call reverts by itself. |
+| `MarketFactory` | Stateless atomic market creation: deploys and wires a new market's seven contracts from already-uploaded Wasm in three transactions, each internally all-or-nothing, so no half-wired market is ever left on-chain. See [docs/MARKET_FACTORY.md](docs/MARKET_FACTORY.md). |
 | `principal_compliance` (library) | The adapter every contract uses to ask "may this account hold the underlying?" and "who is the issuer authority?" — for a classic/SEP-8 asset via its SAC, for a SEP-57 RWA token via frozen-flag + identity verifier + operator role. |
 
 ### Tokenization layer (per underlying asset)
@@ -208,6 +209,7 @@ contracts/
   market_pool/           — the PT/SY yield-curve AMM (+ fixed-point math in src/math.rs)
   router/                — stateless one-transaction user flows
   recovery_escrow/       — seize SY/PT/YT/LP, batch, per-account records
+  market_factory/        — stateless atomic market creation (three transactions, each all-or-nothing)
   integration_tests/     — full-stack fixture (src/stack.rs) and the cross-contract test suite
 
 Cargo.toml               — workspace (Soroban SDK 26.x, Rust 2021)
@@ -264,6 +266,7 @@ See [docs/TRANCHE_1_DELIVERABLES.md](docs/TRANCHE_1_DELIVERABLES.md) for the acc
 | [docs/COMPLIANCE_ARCHITECTURE.md](docs/COMPLIANCE_ARCHITECTURE.md) | Inheritance for SAC, **SEP-8** and **SEP-57** underlyings; what each cannot express; recovery |
 | [docs/AMM_DESIGN.md](docs/AMM_DESIGN.md) | The yield-curve AMM: survey of existing Stellar projects, curve, fixed-point math, rounding, resource use |
 | [docs/TECHNICAL_SPECIFICATION.md](docs/TECHNICAL_SPECIFICATION.md) | Full protocol spec: all contracts, settlement math, fee structure, storage, error codes, constants |
+| [docs/MARKET_FACTORY.md](docs/MARKET_FACTORY.md) | Atomic market creation: design, the real Testnet resource-limit finding that shaped it, API, and live transaction evidence |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Contract interaction diagrams, sequence flows, deployment order |
 | [docs/PROOF_OF_CONCEPT.md](docs/PROOF_OF_CONCEPT.md) | Implementation history and Testnet evidence |
 | [docs/SECURITY.md](docs/SECURITY.md) | Threat model, per-contract security properties, incident response |

@@ -38,7 +38,7 @@ Checked on 4 October 2026: the CI workflow has run on GitHub's runners for every
 | Contracts | 11 (was 8): adds `MarketConfig`, `MarketPool` (AMM), `Router`, and the shared `principal_compliance` adapter crate (a library, not a contract) |
 | Internal audit | Five-reviewer pass on this commit. 2 High and 11 Medium/Low findings. All High findings fixed. See [TRANCHE_1_AUDIT.md](https://github.com/principal-Protocol-org/principal/blob/6cf257afb588c63d694f2262d8b289d4809be8ee/docs/TRANCHE_1_AUDIT.md) for the disposition of each finding. |
 | Rust | About 14.3k lines (was 7.2k) |
-| Contract sizes | All under Soroban's 128 KiB limit. Largest `market_pool` at about 66 KB. |
+| Contract sizes | All under Soroban's 128 KiB limit. Largest `market_pool` at about 66 KB. Supplementary: the network's own setting, read from the Stellar Testnet and mainnet ledgers on 4 October 2026, is 131,072 bytes (128 KiB) on both networks. |
 | AMM cost | A swap uses about 4.6M CPU instructions, against a 100M limit, measured on the real WASM. |
 | Static checks | `cargo fmt --check` and `cargo clippy -D warnings` pass. |
 

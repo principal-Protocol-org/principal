@@ -6,6 +6,7 @@
 
 - [Tranche 1 deliverables](TRANCHE_1_DELIVERABLES.md)
 - [Tranche 1 audit and fixes](TRANCHE_1_AUDIT.md)
+- [Tranche 2 and 3 technical specification](TRANCHE_2_3_TECHNICAL_SPECIFICATION.md)
 
 # Guides
 
@@ -17,6 +18,9 @@
 
 - [API reference](API_REFERENCE.md)
 - [Technical specification](TECHNICAL_SPECIFICATION.md)
+- [Dapp technical specification](DAPP_TECHNICAL_SPECIFICATION.md)
+- [Dapp integration and market creation](DAPP_INTEGRATION_AND_MARKET_CREATION.md)
+- [Market factory](MARKET_FACTORY.md)
 - [Architecture](ARCHITECTURE.md)
 - [Security](SECURITY.md)
 - [Deployment](DEPLOYMENT.md)

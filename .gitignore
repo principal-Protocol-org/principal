@@ -31,6 +31,7 @@ contracts/market_config/test_snapshots/
 contracts/market_pool/test_snapshots/
 contracts/router/test_snapshots/
 contracts/recovery_escrow/test_snapshots/
+contracts/market_factory/test_snapshots/
 
 # mdBook output
 /book/

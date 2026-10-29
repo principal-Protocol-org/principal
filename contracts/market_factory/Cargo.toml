@@ -1,0 +1,23 @@
+[package]
+name = "principal_market_factory"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = { version = "26.0.1" }
+
+[dev-dependencies]
+soroban-sdk = { version = "26.0.1", features = ["testutils"] }
+principal_integration_tests = { path = "../integration_tests" }
+principal_sy_wrapper = { path = "../sy_wrapper", features = ["testutils"] }
+principal_pt_token = { path = "../pt_token", features = ["testutils"] }
+principal_yt_token = { path = "../yt_token", features = ["testutils"] }
+principal_manager = { path = "../principal_manager", features = ["testutils"] }
+principal_market_pool = { path = "../market_pool", features = ["testutils"] }
+
+[features]
+testutils = ["soroban-sdk/testutils"]
