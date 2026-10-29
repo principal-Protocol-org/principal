@@ -37,10 +37,10 @@
 # ALIAS_PREFIX (default m_<unix time>), NETWORK (default testnet).
 set -euo pipefail
 
-: "${ISSUER_KEY:?set ISSUER_KEY to the stellar CLI identity for the underlying's issuer authority}"
-: "${UNDERLYING_ID:?set UNDERLYING_ID to the underlying asset's contract id}"
-: "${MATURITY_TS:?set MATURITY_TS to the market's maturity, a future Unix timestamp}"
-: "${PROTOCOL_ADMIN_ADDR:?set PROTOCOL_ADMIN_ADDR (Principal's MarketConfig protocol_admin)}"
+: "${ISSUER_KEY:?set ISSUER_KEY to the stellar CLI identity for the live issuer authority of the underlying asset}"
+: "${UNDERLYING_ID:?set UNDERLYING_ID to the underlying asset contract id}"
+: "${MATURITY_TS:?set MATURITY_TS to a future Unix timestamp for the market maturity}"
+: "${PROTOCOL_ADMIN_ADDR:?set PROTOCOL_ADMIN_ADDR to Principal MarketConfig protocol_admin}"
 : "${TREASURY_ADDR:?set TREASURY_ADDR (fee recipient address, must hold compliance standing)}"
 
 NETWORK="${NETWORK:-testnet}"
