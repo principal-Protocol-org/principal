@@ -368,13 +368,21 @@ USER_KEY=v11-carol DEPOSIT_AMOUNT=300000000 DO_SETTLE=0 \
 | 3b | `pool.add_liquidity(150,000,000 PT, ...)` | 150,000,000 PT + 68,504,731 SY used, 107,880,472 LP minted | [4d611b62...](https://stellar.expert/explorer/testnet/tx/4d611b62c70e63974420b379d25e906d8879640ec27a75e6e68f5ee423857c88) |
 | 4 | `pool.swap_pt_for_sy(50,000,000 PT)` | 47,618,669 SY received | [06c114d4...](https://stellar.expert/explorer/testnet/tx/06c114d495615c2d99396cc17b61abd377d28f2c9f9b2f6e420034cb058cb7bc) |
 
-Settlement and redemption (step 5, `DO_SETTLE=1`, only valid once `now >= maturity`) use the
-identical `PrincipalManager.settle_all()` / `.redeem(from, pt_amount, yt_amount)` calls already
-proven live on an earlier market created by this same factory in `docs/MARKET_FACTORY.md`'s
-"Live Testnet proof" table (`settle_all` froze the rate at 10,500,000; `redeem` paid out
-475,690,476 raw STA from the PT leg, 0 from the YT leg since the rate never moved between mint and
-settlement) — the mechanics are identical regardless of which market or which deployment path
-produced it.
+**Step 5 — settlement and redemption, on this exact market, once its maturity passed:**
+
+| Step | Call | Result | Transaction |
+|---|---|---|---|
+| 5a | `pm.settle_all()` | rate frozen at 10,500,000 | [d8a04fbd...](https://stellar.expert/explorer/testnet/tx/d8a04fbdcbdf037d317f2e5e3ef138696595fd4a5d1603d62e76462d513cb13c) |
+| 5b | `pm.redeem(594,317,500 PT, 1,364,317,500 YT)` | 566,016,666 raw STA from the PT leg, 0 from YT | [8dcb9659...](https://stellar.expert/explorer/testnet/tx/8dcb96599da4cab10507a0f76745fbdc56ca015ee86639b106535df754a3ea77) |
+
+Step 5b's amounts are larger than step 2's 314,842,500 because this redeemed Carol's *entire*
+accumulated position on this market — including PT/YT minted during an earlier, failed dry run of
+this same script against this same market (before the `InsufficientRefundableFee` fix below), not
+only the clean run shown in steps 1–4. The YT leg paying exactly 0 is correct, not a bug: the
+oracle rate never moved between any of those mints (1.05) and settlement (1.05), and
+`N_yt × (1/r_settle − 1/r_now)` is exactly zero when the two rates are equal — the identical result
+already shown on a different market in `docs/MARKET_FACTORY.md`'s "Live Testnet proof" table, now
+reconfirmed on this one.
 
 **A real failure hit and fixed while producing this example:** the first attempt at step 4 failed
 at submission with `InsufficientRefundableFee` (§2's second gotcha) — simulation had just run
@@ -450,6 +458,9 @@ This document was reviewed against the live network, not just reread. Specifical
      preceding `add_liquidity` call. `--inclusion-fee` (tried first) did not fix it;
      `--resource-fee` did. Verified by retrying the exact failing call manually with each flag.
 - `cargo fmt --all -- --check` and `cargo clippy -p principal_market_factory --all-targets --locked -- -D warnings` were not re-run for this document (it adds no Rust code), but `bash -n` was run on every modified/added script.
+- `settle_all`/`redeem` (§5.3 step 5) were added after this market's maturity actually passed
+  during the writing of this guide (not simulated, not assumed) — settled at 10,500,000, redeemed
+  594,317,500 PT and 1,364,317,500 YT for 566,016,666 raw STA, 0 from the YT leg.
 - What this guide does **not** verify live: `claim_yield`, `recombine`, the Router's flash-mint/flash-redeem paths (`swap_sy_for_yt`/`swap_yt_for_sy`), and `add_liquidity_single_sy`/`remove_liquidity` — these are documented from source (§4–§5) and are exercised in the repository's own Rust integration tests (`contracts/integration_tests/tests/`, `contracts/market_factory/tests/create_market.rs`), but not independently re-run against Testnet while writing this specific document. Treat §4's table as source-accurate and test-covered, not independently Testnet-verified the way §3.4/§5.3 are.
 - `principal-dApp`'s source was read directly (`src/lib/*.ts`, `src/types.ts`,
   `src/config/markets.ts`) to ground §2–§4 and the §3.5 gap analysis in what that codebase actually
