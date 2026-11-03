@@ -335,6 +335,11 @@ fn a_stale_oracle_blocks_swaps_but_never_blocks_an_lp_exit() {
     let (s, lp, lp_minted) = seeded(UnderlyingKind::Sac);
     let user = s.new_user();
     deposit_sy(&s, &user, 10 * SCALE);
+    // Narrow the oracle's own window to the production default (3_600 s) for this test -- the
+    // shared harness otherwise configures a 365-day window so no other test's oracle moves trip
+    // the guard by accident.
+    s.oracle
+        .set_safety_params(&s.admin, &3_600_u64, &ORACLE_MAX_DEVIATION_BPS);
     // Two hours later the oracle has not been refreshed.
     s.env.ledger().with_mut(|li| li.timestamp += 7_200);
     assert_eq!(

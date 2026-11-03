@@ -1,6 +1,6 @@
 {
   "generators": {
-    "address": 2,
+    "address": 3,
     "nonce": 0,
     "mux_id": 0
   },
@@ -14,17 +14,15 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
-              "function_name": "set_reference_value",
+              "function_name": "set_sources",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
                 },
                 {
-                  "i128": "10300000"
+                  "bytes": "0100000000000000000000000000000000000000000000000000000000000000"
                 },
-                {
-                  "u64": "1700000000"
-                }
+                "void"
               ]
             }
           },
@@ -32,7 +30,6 @@
         }
       ]
     ],
-    [],
     []
   ],
   "ledger": {
@@ -76,24 +73,36 @@
                       "key": {
                         "vec": [
                           {
-                            "symbol": "Price"
+                            "symbol": "MaxDeviationBps"
                           }
                         ]
                       },
                       "val": {
-                        "i128": "10300000"
+                        "u32": 1000
                       }
                     },
                     {
                       "key": {
                         "vec": [
                           {
-                            "symbol": "Timestamp"
+                            "symbol": "MaxStaleSeconds"
                           }
                         ]
                       },
                       "val": {
-                        "u64": "1700000000"
+                        "u64": "3600"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "PrimarySource"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bytes": "0100000000000000000000000000000000000000000000000000000000000000"
                       }
                     }
                   ]

@@ -225,7 +225,7 @@ fn admin_rotation_across_every_contract_and_the_market_still_functions() {
     // The old admin lost every power.
     assert!(s
         .oracle
-        .try_set_reference_value(&s.admin, &(SCALE * 2), &(T0 + 5))
+        .try_set_reference_value(&s.admin, &s.oracle_source, &(SCALE * 2), &(T0 + 5))
         .is_err());
     assert!(s.pm.try_set_paused(&s.admin, &true).is_err());
     assert!(s.pool.try_set_paused(&s.admin, &true).is_err());

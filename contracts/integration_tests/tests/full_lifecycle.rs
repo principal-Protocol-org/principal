@@ -228,6 +228,11 @@ fn multi_user_late_mint_does_not_dilute_early_holder_yield() {
 fn settle_all_requires_maturity_and_a_fresh_oracle() {
     let maturity = T0 + 500;
     let s = deploy_stack(maturity);
+    // Narrow the oracle's own window to the production default (3_600 s) for this test -- the
+    // shared harness otherwise configures a 365-day window so no other test's oracle moves trip
+    // the guard by accident.
+    s.oracle
+        .set_safety_params(&s.admin, &3_600_u64, &ORACLE_MAX_DEVIATION_BPS);
     assert_eq!(
         s.pm.try_settle_all().err(),
         err_code(PmError::NotMature as u32)
@@ -242,7 +247,7 @@ fn settle_all_requires_maturity_and_a_fresh_oracle() {
     );
     // Refresh and settle.
     s.oracle
-        .set_reference_value(&s.admin, &SCALE, &(maturity + 10_000));
+        .set_reference_value(&s.admin, &s.oracle_source, &SCALE, &(maturity + 10_000));
     assert_eq!(s.pm.settle_all(), SCALE);
 }
 

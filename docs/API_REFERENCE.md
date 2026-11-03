@@ -32,15 +32,26 @@ Contents: [OracleAdapter](#oracleadapter) · [Permissioning](#permissioning) ·
 
 The reference-value feed: USDC value of one underlying token, `SCALE`d, with a timestamp. Single-writer,
 **monotonic**: value and timestamp may never go backwards, because the settlement math assumes yield is
-never negative.
+never negative. Extended (`docs/ORACLE_SAFETY_EXTENSION.md`) with a primary/optional-fallback source
+pair, a deviation guard, and centralized staleness policy — a **breaking ABI change** from the
+Tranche 1 version (`initialize` and `set_reference_value` both take new required arguments), so a
+market using this version needs a freshly deployed `OracleAdapter` instance, not a retrofit of one
+already live.
 
 | Function | Auth | What it does / needs | Errors |
 |---|---|---|---|
-| `initialize(admin)` | – | One-time setup. | `AlreadyInitialized`(1) |
-| `set_reference_value(caller, value, timestamp)` | `caller` = admin | Publishes `value` at `timestamp`. Needs `value > 0`, `value ≥` the stored value, and `stored timestamp < timestamp ≤ ledger time` (a future-dated timestamp is rejected so the feed cannot be bricked). | `Unauthorized`(2), `InvalidValue`(3), `TimestampTooOld`(4), `ValueDecreased`(6), `TimestampInFuture`(7) |
+| `initialize(admin, max_stale_seconds, max_deviation_bps)` | – | One-time setup. `max_stale_seconds` and `max_deviation_bps` become this feed's own policy (see `is_available`); both must be nonzero and `max_deviation_bps ≤ 10_000` (100%). Sources are configured separately via `set_sources`. | `AlreadyInitialized`(1), `InvalidStaleness`(12), `InvalidDeviation`(11) |
+| `set_sources(caller, primary_source, fallback_source)` | `caller` = admin | Configures the primary and optional fallback source IDs (each a deterministic `BytesN<32>`, e.g. `sha256("principal-oracle-source:<network>:<asset>:<provider>:<feed>")`). `fallback_source: None` removes any existing fallback. | `Unauthorized`(2) |
+| `set_safety_params(caller, max_stale_seconds, max_deviation_bps)` | `caller` = admin | Updates the staleness/deviation policy without touching sources. Same validation as `initialize`. | `Unauthorized`(2), `InvalidStaleness`(12), `InvalidDeviation`(11) |
+| `set_reference_value(caller, source, value, timestamp)` → `bool` | `caller` = admin | Publishes `value` at `timestamp` from `source`, which must be the configured primary or fallback. Malformed calls (non-positive value, future timestamp, unrecognized source) **panic**. A syntactically valid submission policy rejects (value decrease, non-newer timestamp, >`max_deviation_bps` increase, or a fallback trying to move the value) **returns `false`** instead of panicking — `Price`/`Timestamp` stay untouched, and the attempt is recorded in `last_rejection()` plus a `ref_rej` event, because Soroban cannot both revert and persist a record in the same call. A caller must check the **return value**, not just transaction success, to know whether a submission landed — see `docs/ORACLE_SAFETY_EXTENSION.md` §3. | `Unauthorized`(2), `InvalidValue`(3), `TimestampInFuture`(7), `InvalidSource`(10), `FallbackNotConfigured`(13) |
 | `get_reference_value()` → `i128` | – | Last published value. | `NotInitialized`(5) if none |
 | `get_reference_timestamp()` → `u64` | – | Timestamp of the last value. | `NotInitialized`(5) |
-| `is_fresh(max_stale_seconds)` → `bool` | – | `true` iff `ledger_time − stored_timestamp ≤ max_stale_seconds`. A stored timestamp *ahead* of the ledger clock is stale. Consumers use 3 600 s. | – |
+| `is_fresh(max_stale_seconds)` → `bool` | – | `true` iff `ledger_time − stored_timestamp ≤ max_stale_seconds`, against a **caller-supplied** threshold. A stored timestamp *ahead* of the ledger clock is stale. | – |
+| `is_available()` → `bool` | – | `is_fresh` against this feed's **own configured** `max_stale_seconds` — no threshold needed from the caller. This is what `MarketPool`/`PrincipalManager`/`YTToken` call instead of `is_fresh` as of this extension; each still raises its own pre-existing `OracleStale` error when this returns `false` (this protocol's name for what this extension calls "unavailable"). | – |
+| `assert_available()` | – | Panics `OracleUnavailable`(8) unless `is_available()` is true. Not called by any consumer in this codebase today — infrastructure for a caller that wants a crisp revert in one hop rather than reading the boolean itself. | `OracleUnavailable`(8) |
+| `get_primary_source()`/`get_fallback_source()`/`get_active_source()` → `Option<BytesN<32>>` | – | The configured sources, and which one the current `Price` last came from (`None` before the first accepted update). | – |
+| `max_stale_seconds()` → `u64` / `max_deviation_bps()` → `u32` | – | The feed's current policy. | `NotInitialized`(5) |
+| `last_rejection()` → `Option<OracleRejection>` | – | `{ value, timestamp, reason }` for the most recent policy-rejected submission (`reason` is one of the short symbols `decrease`, `stale_ts`, `deviate`, `fb_value`), or `None` if nothing has ever been rejected. | – |
 | `transfer_admin(current_admin, new_admin)` | current admin | Single-step admin handover. | `Unauthorized`(2) |
 | `get_admin()` → `Address` | – | | `NotInitialized`(5) |
 
@@ -254,7 +265,7 @@ underlying. Each event writes a [`RecoveryRecord`](#appendix-b-types).
 
 | Contract | Topic → payload |
 |---|---|
-| OracleAdapter | `ref_set` → (value, timestamp); `adm_xfer` → (from, to) |
+| OracleAdapter | `ref_set` → (value, timestamp); `ref_rej` → (value, timestamp, reason); `src_set` → (primary_source, fallback_source); `adm_xfer` → (from, to) |
 | Permissioning | `acc_grant`/`acc_rev` → (caller, account); `acc_batch` → caller; `ast_grant`/`ast_rev` → (caller, account, asset); `adm_xfer` |
 | RiskControl | `paused` → (caller, bool); `add_psr`/`rm_psr` → (caller, pauser); `add_cons`/`rm_cons` → (caller, consumer); `cb_limit` → (caller, limit); `ast_limit` → (caller, asset, limit); `cb_window` → (caller, ledgers); `adm_xfer` |
 | MarketConfig | `mkt_new` → (underlying, maturity, tok_bps, yt_bps, tier_bps, share_bps); `fees_set` → (caller, tok, yt, tier); `payee_set`; `share_set`; `treas_set`; `padm_xfer` |

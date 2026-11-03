@@ -1,6 +1,6 @@
 use soroban_sdk::{
     testutils::{Address as _, IssuerFlags, Ledger as _},
-    token, Address, Env, String,
+    token, Address, BytesN, Env, String,
 };
 
 use principal_oracle_adapter::{OracleAdapterContract, OracleAdapterContractClient};
@@ -9,6 +9,15 @@ use principal_permissioning::{PermissioningContract, PermissioningContractClient
 use super::{YTTokenContract, YTTokenContractClient, INDEX_SCALE, SCALE};
 
 const T0: u64 = 1_000;
+/// `OracleAdapter`'s own configured staleness policy for every fixture in this file --
+/// previously a constant inside `YTToken` itself; now the oracle's own config, supplied at
+/// `initialize` instead.
+const MAX_ORACLE_STALENESS_SECS: u64 = 3_600;
+const MAX_ORACLE_DEVIATION_BPS: u32 = 10_000; // not under test here; generous enough never to trip
+
+fn oracle_source(env: &Env) -> BytesN<32> {
+    BytesN::from_array(env, &[1u8; 32])
+}
 
 struct Fixture {
     env: Env,
@@ -19,6 +28,7 @@ struct Fixture {
     perm_admin: Address,
     oracle: OracleAdapterContractClient<'static>,
     oracle_admin: Address,
+    oracle_source: BytesN<32>,
     yt_id: Address,
 }
 
@@ -35,8 +45,14 @@ fn setup() -> Fixture {
     let oracle_id = env.register_contract(None, OracleAdapterContract);
     let oracle = OracleAdapterContractClient::new(&env, &oracle_id);
     let oracle_admin = Address::generate(&env);
-    oracle.initialize(&oracle_admin);
-    oracle.set_reference_value(&oracle_admin, &SCALE, &T0);
+    let oracle_source = oracle_source(&env);
+    oracle.initialize(
+        &oracle_admin,
+        &MAX_ORACLE_STALENESS_SECS,
+        &MAX_ORACLE_DEVIATION_BPS,
+    );
+    oracle.set_sources(&oracle_admin, &oracle_source, &None);
+    oracle.set_reference_value(&oracle_admin, &oracle_source, &SCALE, &T0);
 
     // admin doubles as the underlying SAC's real admin, satisfying the issuer-match check.
     // RevocableFlag lets tests simulate deauthorization.
@@ -67,6 +83,7 @@ fn setup() -> Fixture {
         perm_admin,
         oracle,
         oracle_admin,
+        oracle_source,
         yt_id,
     }
 }
@@ -89,7 +106,11 @@ fn initialize_rejects_admin_not_matching_sac_admin() {
     PermissioningContractClient::new(&env, &perm_id).initialize(&real_sac_admin);
 
     let oracle_id = env.register_contract(None, OracleAdapterContract);
-    OracleAdapterContractClient::new(&env, &oracle_id).initialize(&real_sac_admin);
+    OracleAdapterContractClient::new(&env, &oracle_id).initialize(
+        &real_sac_admin,
+        &MAX_ORACLE_STALENESS_SECS,
+        &MAX_ORACLE_DEVIATION_BPS,
+    );
 
     let underlying = env
         .register_stellar_asset_contract_v2(real_sac_admin.clone())
@@ -123,8 +144,14 @@ fn initialize_rejects_stale_oracle() {
 
     let oracle_id = env.register_contract(None, OracleAdapterContract);
     let oracle = OracleAdapterContractClient::new(&env, &oracle_id);
-    oracle.initialize(&admin);
-    oracle.set_reference_value(&admin, &SCALE, &T0); // stale by the time we initialize below
+    let source = oracle_source(&env);
+    oracle.initialize(
+        &admin,
+        &MAX_ORACLE_STALENESS_SECS,
+        &MAX_ORACLE_DEVIATION_BPS,
+    );
+    oracle.set_sources(&admin, &source, &None);
+    oracle.set_reference_value(&admin, &source, &SCALE, &T0); // stale by the time we initialize below
 
     let underlying = env
         .register_stellar_asset_contract_v2(admin.clone())
@@ -162,9 +189,15 @@ fn genesis_above_scale_does_not_overpay_first_mint() {
     let oracle_id = env.register_contract(None, OracleAdapterContract);
     let oracle = OracleAdapterContractClient::new(&env, &oracle_id);
     let admin = Address::generate(&env);
-    oracle.initialize(&admin);
+    let source = oracle_source(&env);
+    oracle.initialize(
+        &admin,
+        &MAX_ORACLE_STALENESS_SECS,
+        &MAX_ORACLE_DEVIATION_BPS,
+    );
+    oracle.set_sources(&admin, &source, &None);
     // Real rate is already 1.05 at market genesis -- not SCALE.
-    oracle.set_reference_value(&admin, &10_500_000_i128, &T0);
+    oracle.set_reference_value(&admin, &source, &10_500_000_i128, &T0);
 
     let underlying_sac = env.register_stellar_asset_contract_v2(admin.clone());
     underlying_sac.issuer().set_flag(IssuerFlags::RevocableFlag);
@@ -256,7 +289,7 @@ fn yield_accrues_after_rate_increase() {
     // Rate goes from 1.0 to 1.03.
     f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
     f.oracle
-        .set_reference_value(&f.oracle_admin, &10_300_000, &(T0 + 1));
+        .set_reference_value(&f.oracle_admin, &f.oracle_source, &10_300_000, &(T0 + 1));
     f.client.update_yield_index();
 
     // new_factor = ceil(factor * last_rate / now_rate) = ceil(INDEX_SCALE * SCALE / 10_300_000)
@@ -299,7 +332,8 @@ fn yield_is_path_independent_across_many_intermediate_updates() {
         ts += 1;
         let r = SCALE + (final_rate - SCALE) * (i as i128) / (n_steps as i128);
         f.env.ledger().with_mut(|li| li.timestamp = ts);
-        f.oracle.set_reference_value(&f.oracle_admin, &r, &ts);
+        f.oracle
+            .set_reference_value(&f.oracle_admin, &f.oracle_source, &r, &ts);
         f.client.update_yield_index();
     }
 
@@ -334,7 +368,7 @@ fn late_buyer_does_not_receive_prior_yield() {
     // Rate rises before Bob ever holds YT.
     f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
     f.oracle
-        .set_reference_value(&f.oracle_admin, &10_300_000, &(T0 + 1));
+        .set_reference_value(&f.oracle_admin, &f.oracle_source, &10_300_000, &(T0 + 1));
     f.client.update_yield_index();
 
     // Bob receives YT only now, after the index already moved.
@@ -362,7 +396,7 @@ fn transfer_settles_both_sides() {
     f.client.mint(&alice, &(1_000 * SCALE));
     f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
     f.oracle
-        .set_reference_value(&f.oracle_admin, &10_300_000, &(T0 + 1));
+        .set_reference_value(&f.oracle_admin, &f.oracle_source, &10_300_000, &(T0 + 1));
     f.client.update_yield_index();
 
     // Alice transfers everything to Bob; her accrued yield up to this point must
@@ -434,7 +468,7 @@ fn seize_moves_balance_and_settles_both_sides() {
     // Rate rises before the seizure.
     f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
     f.oracle
-        .set_reference_value(&f.oracle_admin, &10_300_000, &(T0 + 1));
+        .set_reference_value(&f.oracle_admin, &f.oracle_source, &10_300_000, &(T0 + 1));
     f.client.update_yield_index();
 
     let seized = f.client.seize(&escrow, &bad_actor, &(1_000 * SCALE));
@@ -468,7 +502,7 @@ fn a_plain_transfer_does_not_hand_unsynced_yield_to_the_receiver() {
 
     f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
     f.oracle
-        .set_reference_value(&f.oracle_admin, &11_000_000, &(T0 + 1));
+        .set_reference_value(&f.oracle_admin, &f.oracle_source, &11_000_000, &(T0 + 1));
     f.client.transfer(&alice, &bob, &(100 * SCALE));
 
     // Alice earned the whole 1.0 -> 1.1 move while she held the YT; Bob earned none of it.
@@ -834,7 +868,7 @@ fn pt_plus_yt_claims_never_exceed_the_deposited_shares_at_any_mint_rate() {
         f.client.set_minter(&f.admin, &minter);
         f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
         f.oracle
-            .set_reference_value(&f.oracle_admin, &r0, &(T0 + 1));
+            .set_reference_value(&f.oracle_admin, &f.oracle_source, &r0, &(T0 + 1));
         let user = Address::generate(&f.env);
         grant(&f, &user);
         let shares = 100 * SCALE;
@@ -847,7 +881,8 @@ fn pt_plus_yt_claims_never_exceed_the_deposited_shares_at_any_mint_rate() {
             let r = r0 + (r_final - r0) * i / steps;
             let ts = T0 + 1 + i as u64 * 10;
             f.env.ledger().with_mut(|li| li.timestamp = ts);
-            f.oracle.set_reference_value(&f.oracle_admin, &r, &ts);
+            f.oracle
+                .set_reference_value(&f.oracle_admin, &f.oracle_source, &r, &ts);
             f.client.update_yield_index();
         }
         let yield_underlying = f.client.claim_yield(&minter, &user);

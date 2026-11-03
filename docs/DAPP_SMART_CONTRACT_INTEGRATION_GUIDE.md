@@ -589,7 +589,8 @@ Every contract's `#[contracterror]` enum, read from source. A dapp's error decod
 
 | Contract | Code | Error |
 |---|---|---|
-| OracleAdapter | 1–7 | AlreadyInitialized, Unauthorized, InvalidValue, TimestampTooOld, NotInitialized, ValueDecreased, TimestampInFuture |
+| OracleAdapter (markets created with the §3.4/§4.1/§5.4 WASM hashes — Tranche 1 ABI) | 1–7 | AlreadyInitialized, Unauthorized, InvalidValue, TimestampTooOld, NotInitialized, ValueDecreased, TimestampInFuture |
+| OracleAdapter (markets created with the extended oracle WASM, `docs/ORACLE_SAFETY_EXTENSION.md`) | 1–13 | same 1–7, plus OracleUnavailable(8), DeviationTooHigh(9), InvalidSource(10), InvalidDeviation(11), InvalidStaleness(12), FallbackNotConfigured(13) — **and** `initialize`/`set_reference_value` take new required arguments, a breaking ABI change requiring a freshly deployed OracleAdapter instance, not a retrofit |
 | Permissioning | 1–3 | AlreadyInitialized, Unauthorized, NotInitialized |
 | RiskControl | 1–13 | AlreadyInitialized, Unauthorized, NotInitialized, Paused, CircuitBreakerTripped, NotPauser, AlreadyPauser, NotConsumer, AlreadyConsumer, ZeroAmount, AssetLimitTripped, InvalidLimit, InvalidWindow |
 | SYWrapper | 1–15 | AlreadyInitialized, Unauthorized, NotInitialized, ZeroAmount, InsufficientShares, Paused, ArithmeticOverflow, PermissionDenied, NotAuthorizedOnSac, RecoveryEscrowAlreadySet, NotRecoveryEscrow, IssuerMismatch, SlippageExceeded, DepositCapExceeded, InvalidCap |
@@ -699,6 +700,9 @@ This document was reviewed against the live network, not just reread. Specifical
 
 ## 9. References
 
+- `docs/ORACLE_SAFETY_EXTENSION.md` — the primary/fallback source, deviation guard, and
+  availability-signaling extension to `OracleAdapter`, with live Testnet evidence and its own
+  breaking-ABI migration note
 - `docs/MARKET_FACTORY.md` — factory design, the single-call design's real Testnet failure, API
 - `docs/DAPP_INTEGRATION_AND_MARKET_CREATION.md` — the matured-market investigation this guide
   continues from

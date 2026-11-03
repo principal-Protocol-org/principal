@@ -91,12 +91,6 @@ pub const INDEX_SCALE: i128 = 1_000_000_000_000;
 /// TTL extension applied to every persistent per-user entry (~30 days at 5 s/ledger).
 const BALANCE_TTL_LEDGERS: u32 = 518_400;
 
-/// Matches PrincipalManager's staleness window. Without this check, update_yield_index would
-/// happily advance the accrual index off a rate the oracle relay stopped refreshing long ago —
-/// every other oracle-consuming path in this codebase (PrincipalManager.mint/redeem) checks
-/// freshness before using a rate; this one must too, for the same reason.
-const MAX_ORACLE_STALENESS_SECS: u64 = 3_600;
-
 // ---------------------------------------------------------------------------
 // External contract interfaces
 // ---------------------------------------------------------------------------
@@ -110,7 +104,7 @@ pub trait PermissioningInterface {
 #[contractclient(name = "OracleClient")]
 pub trait OracleInterface {
     fn get_reference_value(env: Env) -> i128;
-    fn is_fresh(env: Env, max_stale_seconds: u64) -> bool;
+    fn is_available(env: Env) -> bool;
 }
 
 // ---------------------------------------------------------------------------
@@ -221,7 +215,7 @@ impl YTTokenContract {
         // at that moment for appreciation that happened before their position ever existed.
         // Requiring freshness here too catches deploying a market against a stale feed.
         let oracle_client = OracleClient::new(&env, &oracle);
-        if !oracle_client.is_fresh(&MAX_ORACLE_STALENESS_SECS) {
+        if !oracle_client.is_available() {
             panic_with_error!(&env, Error::OracleStale);
         }
         let genesis_rate = oracle_client.get_reference_value();
@@ -628,7 +622,7 @@ impl YTTokenContract {
             .get(&DataKey::Oracle)
             .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
         let oracle = OracleClient::new(env, &oracle_addr);
-        if require_fresh && !oracle.is_fresh(&MAX_ORACLE_STALENESS_SECS) {
+        if require_fresh && !oracle.is_available() {
             panic_with_error!(env, Error::OracleStale);
         }
         let now_rate = oracle.get_reference_value();

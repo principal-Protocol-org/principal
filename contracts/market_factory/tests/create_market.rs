@@ -276,8 +276,12 @@ fn factory_creates_a_fully_functional_second_market_atomically() {
     s.env
         .ledger()
         .with_mut(|li| li.timestamp = market2_maturity + 1);
-    s.oracle
-        .set_reference_value(&s.admin, &(11 * SCALE / 10), &(market2_maturity + 1));
+    s.oracle.set_reference_value(
+        &s.admin,
+        &s.oracle_source,
+        &(11 * SCALE / 10),
+        &(market2_maturity + 1),
+    );
     pm2.settle_all();
     let remaining_pt = pt2.balance(&user);
     let remaining_yt = yt2.balance(&user);

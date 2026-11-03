@@ -99,9 +99,6 @@ use principal_compliance as compliance;
 pub const SCALE: i128 = 10_000_000; // 1e7
 pub const BPS: i128 = 10_000;
 
-/// Maximum seconds the oracle price may be stale at mint, claim and settlement.
-const MAX_ORACLE_STALENESS_SECS: u64 = 3_600;
-
 // ---------------------------------------------------------------------------
 // External contract interfaces (used for cross-contract calls)
 // ---------------------------------------------------------------------------
@@ -110,7 +107,7 @@ const MAX_ORACLE_STALENESS_SECS: u64 = 3_600;
 #[contractclient(name = "OracleClient")]
 pub trait OracleInterface {
     fn get_reference_value(env: Env) -> i128;
-    fn is_fresh(env: Env, max_stale_seconds: u64) -> bool;
+    fn is_available(env: Env) -> bool;
 }
 
 /// Minimum interface required from the Permissioning contract.
@@ -848,7 +845,7 @@ impl PrincipalManagerContract {
             .instance()
             .get(&DataKey::Oracle)
             .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
-        if !OracleClient::new(env, &oracle_addr).is_fresh(&MAX_ORACLE_STALENESS_SECS) {
+        if !OracleClient::new(env, &oracle_addr).is_available() {
             panic_with_error!(env, Error::OracleStale);
         }
     }

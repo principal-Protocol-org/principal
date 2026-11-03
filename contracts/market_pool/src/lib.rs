@@ -70,7 +70,6 @@ pub const SECONDS_PER_YEAR: u64 = 31_536_000;
 pub const MINIMUM_LIQUIDITY: i128 = 1_000;
 /// A swap may never leave either reserve below this many raw units.
 pub const MIN_RESERVE: i128 = 1_000;
-const MAX_ORACLE_STALENESS_SECS: u64 = 3_600;
 const BALANCE_TTL_LEDGERS: u32 = 518_400;
 /// Bisection steps for the single-sided zap split.
 const ZAP_ITERATIONS: u32 = 18;
@@ -105,7 +104,7 @@ pub trait TokenInterface {
 #[contractclient(name = "OracleClient")]
 pub trait OracleInterface {
     fn get_reference_value(env: Env) -> i128;
-    fn is_fresh(env: Env, max_stale_seconds: u64) -> bool;
+    fn is_available(env: Env) -> bool;
 }
 
 #[contractclient(name = "PermClient")]
@@ -1038,9 +1037,7 @@ impl MarketPoolContract {
     }
 
     fn assert_fresh_oracle(env: &Env) {
-        if !OracleClient::new(env, &Self::addr(env, &DataKey::Oracle))
-            .is_fresh(&MAX_ORACLE_STALENESS_SECS)
-        {
+        if !OracleClient::new(env, &Self::addr(env, &DataKey::Oracle)).is_available() {
             panic_with_error!(env, Error::OracleStale);
         }
     }

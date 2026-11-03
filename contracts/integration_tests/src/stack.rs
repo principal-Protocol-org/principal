@@ -5,7 +5,7 @@
 
 use soroban_sdk::{
     testutils::{Address as _, IssuerFlags, Ledger as _},
-    token, Address, Env, String,
+    token, Address, BytesN, Env, String,
 };
 
 use principal_compliance::mock_rwa::{self, MockIdentityVerifierClient, MockRwaClient};
@@ -25,6 +25,11 @@ pub const SCALE: i128 = 10_000_000;
 /// Base ledger timestamp (> 0 so the oracle can accept its first update).
 pub const T0: u64 = 1_000;
 pub const DAY: u64 = 86_400;
+/// `OracleAdapter`'s configured staleness/deviation policy for every test market: generous enough
+/// (365 days, 10_000 bps = 100%) that no existing test's oracle moves trip the new guards by
+/// accident -- tests that specifically want to exercise the guards configure their own adapter.
+pub const ORACLE_MAX_STALE_SECONDS: u64 = 365 * DAY;
+pub const ORACLE_MAX_DEVIATION_BPS: u32 = 10_000;
 /// A maturity comfortably inside the pool's supported range (a 365-day market from `T0`).
 pub const LONG: u64 = T0 + 365 * DAY;
 
@@ -90,6 +95,7 @@ pub struct Stack<'a> {
     pub treasury: Address,
     pub underlying: Address,
     pub oracle: OracleAdapterContractClient<'a>,
+    pub oracle_source: BytesN<32>,
     pub perm: PermissioningContractClient<'a>,
     pub risk: RiskControlContractClient<'a>,
     pub config: MarketConfigContractClient<'a>,
@@ -118,7 +124,8 @@ impl<'a> Stack<'a> {
     /// oracle is fresh there. `rate` must not be below the previous value.
     pub fn advance(&self, ts: u64, rate: i128) {
         self.env.ledger().with_mut(|li| li.timestamp = ts);
-        self.oracle.set_reference_value(&self.admin, &rate, &ts);
+        self.oracle
+            .set_reference_value(&self.admin, &self.oracle_source, &rate, &ts);
     }
 
     /// Move the ledger clock to `ts` and republish the *current* oracle rate at that time.
@@ -199,8 +206,10 @@ fn deploy_inner(cfg: Config, kind: UnderlyingKind, pool_wasm: Option<&[u8]>) -> 
 
     let oracle_id = env.register(OracleAdapterContract, ());
     let oracle = OracleAdapterContractClient::new(&env, &oracle_id);
-    oracle.initialize(&admin);
-    oracle.set_reference_value(&admin, &SCALE, &T0);
+    let oracle_source = BytesN::from_array(&env, &[1u8; 32]);
+    oracle.initialize(&admin, &ORACLE_MAX_STALE_SECONDS, &ORACLE_MAX_DEVIATION_BPS);
+    oracle.set_sources(&admin, &oracle_source, &None);
+    oracle.set_reference_value(&admin, &oracle_source, &SCALE, &T0);
 
     let perm_id = env.register(PermissioningContract, ());
     let perm = PermissioningContractClient::new(&env, &perm_id);
@@ -318,6 +327,7 @@ fn deploy_inner(cfg: Config, kind: UnderlyingKind, pool_wasm: Option<&[u8]>) -> 
         treasury,
         underlying,
         oracle,
+        oracle_source,
         perm,
         risk,
         config,

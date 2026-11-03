@@ -1,6 +1,6 @@
 use soroban_sdk::{
     testutils::{Address as _, IssuerFlags, Ledger as _},
-    token, Address, Env, String,
+    token, Address, BytesN, Env, String,
 };
 
 use principal_market_config::{MarketConfigContract, MarketConfigContractClient};
@@ -10,10 +10,7 @@ use principal_pt_token::{PTTokenContract, PTTokenContractClient};
 use principal_sy_wrapper::{SYWrapperContract, SYWrapperContractClient};
 use principal_yt_token::{YTTokenContract, YTTokenContractClient};
 
-use super::{
-    Error, PrincipalManagerContract, PrincipalManagerContractClient, MAX_ORACLE_STALENESS_SECS,
-    SCALE,
-};
+use super::{Error, PrincipalManagerContract, PrincipalManagerContractClient, SCALE};
 
 /// The value `try_*` returns for a contract-defined error `e`.
 fn expect_err(e: Error) -> Option<Result<soroban_sdk::Error, soroban_sdk::InvokeError>> {
@@ -22,6 +19,15 @@ fn expect_err(e: Error) -> Option<Result<soroban_sdk::Error, soroban_sdk::Invoke
 
 /// Base ledger timestamp (> 0 so the oracle can accept its first update).
 const T0: u64 = 1_000;
+/// `OracleAdapter`'s own configured staleness policy for every fixture in this file --
+/// previously a constant inside `PrincipalManager` itself; now the oracle's own config,
+/// supplied at `initialize` instead.
+const MAX_ORACLE_STALENESS_SECS: u64 = 3_600;
+const MAX_ORACLE_DEVIATION_BPS: u32 = 10_000; // not under test here; generous enough never to trip
+
+fn oracle_source(env: &Env) -> BytesN<32> {
+    BytesN::from_array(env, &[1u8; 32])
+}
 
 /// All contracts deployed into the same Env, returned together so tests can
 /// create addresses, advance ledger time, and update the oracle/mint SY after setup.
@@ -34,6 +40,7 @@ struct TestFixture {
     underlying: Address,
     oracle: OracleAdapterContractClient<'static>,
     oracle_admin: Address,
+    oracle_source: BytesN<32>,
     perm: PermissioningContractClient<'static>,
     perm_admin: Address,
     sy: SYWrapperContractClient<'static>,
@@ -64,8 +71,14 @@ fn setup_with_fees(maturity: u64, tokenization_fee_bps: u32, yt_fee_bps: u32) ->
     let oracle_id = env.register_contract(None, OracleAdapterContract);
     let oracle = OracleAdapterContractClient::new(&env, &oracle_id);
     let oracle_admin = Address::generate(&env);
-    oracle.initialize(&oracle_admin);
-    oracle.set_reference_value(&oracle_admin, &SCALE, &T0);
+    let oracle_source = oracle_source(&env);
+    oracle.initialize(
+        &oracle_admin,
+        &MAX_ORACLE_STALENESS_SECS,
+        &MAX_ORACLE_DEVIATION_BPS,
+    );
+    oracle.set_sources(&oracle_admin, &oracle_source, &None);
+    oracle.set_reference_value(&oracle_admin, &oracle_source, &SCALE, &T0);
 
     let perm_id = env.register_contract(None, PermissioningContract);
     let perm = PermissioningContractClient::new(&env, &perm_id);
@@ -153,6 +166,7 @@ fn setup_with_fees(maturity: u64, tokenization_fee_bps: u32, yt_fee_bps: u32) ->
         underlying,
         oracle,
         oracle_admin,
+        oracle_source,
         perm,
         perm_admin,
         sy,
@@ -282,8 +296,12 @@ fn redeem_pt_correct_formula() {
     // Advance to maturity; update oracle to 1.03.
     f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
     let final_rate: i128 = 10_300_000;
-    f.oracle
-        .set_reference_value(&f.oracle_admin, &final_rate, &(maturity + 1));
+    f.oracle.set_reference_value(
+        &f.oracle_admin,
+        &f.oracle_source,
+        &final_rate,
+        &(maturity + 1),
+    );
 
     let r = f.client.redeem(&user, &pt, &0_i128);
     let expected = pt * SCALE / final_rate;
@@ -311,8 +329,12 @@ fn redeem_yt_correct_formula_with_yield() {
     // Advance to maturity; oracle → 1.03.
     f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
     let final_rate: i128 = 10_300_000;
-    f.oracle
-        .set_reference_value(&f.oracle_admin, &final_rate, &(maturity + 1));
+    f.oracle.set_reference_value(
+        &f.oracle_admin,
+        &f.oracle_source,
+        &final_rate,
+        &(maturity + 1),
+    );
 
     let r = f.client.redeem(&user, &0_i128, &yt);
     // The YT index is the closed form 1/rate, so a single move from 1.0 to `final_rate` pays
@@ -338,8 +360,12 @@ fn redeem_yt_does_not_double_pay_yield_already_claimed_via_claim_yield() {
     let yt = result.yt_minted;
 
     f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
-    f.oracle
-        .set_reference_value(&f.oracle_admin, &10_300_000_i128, &(maturity + 1));
+    f.oracle.set_reference_value(
+        &f.oracle_admin,
+        &f.oracle_source,
+        &10_300_000_i128,
+        &(maturity + 1),
+    );
 
     // User claims ahead of redemption; this must actually pay out real underlying.
     let direct_claim = f.client.claim_yield(&user);
@@ -368,8 +394,12 @@ fn claim_yield_cannot_be_called_directly_on_yt_token() {
     f.client.mint(&user, &shares);
 
     f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
-    f.oracle
-        .set_reference_value(&f.oracle_admin, &10_300_000_i128, &(maturity + 1));
+    f.oracle.set_reference_value(
+        &f.oracle_admin,
+        &f.oracle_source,
+        &10_300_000_i128,
+        &(maturity + 1),
+    );
 
     f.yt.update_yield_index();
     f.yt.claim_yield(&user, &user);
@@ -442,8 +472,12 @@ fn late_minter_does_not_receive_prior_yield() {
 
     // Rate moves up before the second user ever mints.
     f.env.ledger().with_mut(|li| li.timestamp = T0 + 100);
-    f.oracle
-        .set_reference_value(&f.oracle_admin, &(SCALE * 11 / 10), &(T0 + 100));
+    f.oracle.set_reference_value(
+        &f.oracle_admin,
+        &f.oracle_source,
+        &(SCALE * 11 / 10),
+        &(T0 + 100),
+    );
 
     let late_user = Address::generate(&f.env);
     grant_user(&f, &late_user);
@@ -498,8 +532,14 @@ fn initialize_rejects_admin_not_matching_sac_admin() {
     let oracle_id = env.register_contract(None, OracleAdapterContract);
     let oracle = OracleAdapterContractClient::new(&env, &oracle_id);
     let oracle_admin = Address::generate(&env);
-    oracle.initialize(&oracle_admin);
-    oracle.set_reference_value(&oracle_admin, &SCALE, &T0);
+    let oracle_src = oracle_source(&env);
+    oracle.initialize(
+        &oracle_admin,
+        &MAX_ORACLE_STALENESS_SECS,
+        &MAX_ORACLE_DEVIATION_BPS,
+    );
+    oracle.set_sources(&oracle_admin, &oracle_src, &None);
+    oracle.set_reference_value(&oracle_admin, &oracle_src, &SCALE, &T0);
 
     let perm_id = env.register_contract(None, PermissioningContract);
     let perm = PermissioningContractClient::new(&env, &perm_id);
@@ -541,6 +581,7 @@ struct TopologyBase {
     admin: Address,
     underlying: Address,
     oracle_id: Address,
+    oracle_source: BytesN<32>,
     perm_id: Address,
 }
 
@@ -571,8 +612,14 @@ fn topology_base() -> TopologyBase {
     let oracle_id = env.register_contract(None, OracleAdapterContract);
     let oracle = OracleAdapterContractClient::new(&env, &oracle_id);
     let admin = Address::generate(&env);
-    oracle.initialize(&admin);
-    oracle.set_reference_value(&admin, &SCALE, &T0);
+    let oracle_source = oracle_source(&env);
+    oracle.initialize(
+        &admin,
+        &MAX_ORACLE_STALENESS_SECS,
+        &MAX_ORACLE_DEVIATION_BPS,
+    );
+    oracle.set_sources(&admin, &oracle_source, &None);
+    oracle.set_reference_value(&admin, &oracle_source, &SCALE, &T0);
 
     let perm_id = env.register_contract(None, PermissioningContract);
     PermissioningContractClient::new(&env, &perm_id).initialize(&admin);
@@ -586,6 +633,7 @@ fn topology_base() -> TopologyBase {
         admin,
         underlying,
         oracle_id,
+        oracle_source,
         perm_id,
     }
 }
@@ -748,8 +796,13 @@ fn initialize_rejects_mismatched_oracle() {
     let b = topology_base();
     let other_oracle_id = b.env.register_contract(None, OracleAdapterContract);
     let other_oracle = OracleAdapterContractClient::new(&b.env, &other_oracle_id);
-    other_oracle.initialize(&b.admin);
-    other_oracle.set_reference_value(&b.admin, &SCALE, &T0);
+    other_oracle.initialize(
+        &b.admin,
+        &MAX_ORACLE_STALENESS_SECS,
+        &MAX_ORACLE_DEVIATION_BPS,
+    );
+    other_oracle.set_sources(&b.admin, &b.oracle_source, &None);
+    other_oracle.set_reference_value(&b.admin, &b.oracle_source, &SCALE, &T0);
 
     let sy_id = b.env.register_contract(None, SYWrapperContract);
     SYWrapperContractClient::new(&b.env, &sy_id).initialize(&b.admin, &b.underlying, &b.perm_id);

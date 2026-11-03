@@ -232,9 +232,9 @@ fn a_future_dated_oracle_update_is_rejected_and_the_market_keeps_working() {
     let s = deploy_stack(LONG);
     let u = s.new_user();
     let shares = deposit_sy(&s, &u, 10 * SCALE);
-    let r = s
-        .oracle
-        .try_set_reference_value(&s.admin, &SCALE, &((T0 + 5) * 1_000));
+    let r =
+        s.oracle
+            .try_set_reference_value(&s.admin, &s.oracle_source, &SCALE, &((T0 + 5) * 1_000));
     assert!(r.is_err());
     s.advance(T0 + 5, SCALE);
     s.pm.mint(&u, &shares);

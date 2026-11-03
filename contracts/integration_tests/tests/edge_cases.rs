@@ -267,6 +267,11 @@ fn oracle_freshness_boundary_exactly_at_the_window_is_fresh_one_second_later_is_
     let s = deploy_stack(LONG);
     let u = s.new_user();
     deposit_sy(&s, &u, 100 * SCALE);
+    // Narrow the oracle's own configured window to the production default (3_600 s) for this
+    // boundary test -- the shared test harness otherwise configures a 365-day window so no
+    // other test's oracle moves trip the guard by accident.
+    s.oracle
+        .set_safety_params(&s.admin, &3_600_u64, &ORACLE_MAX_DEVIATION_BPS);
     // The oracle was published at T0; the window is 3600 s.
     s.env.ledger().with_mut(|li| li.timestamp = T0 + 3_600);
     s.pm.mint(&u, &(10 * SCALE));
@@ -395,7 +400,7 @@ fn every_admin_only_function_rejects_a_caller_that_is_not_the_admin() {
     assert!(s.perm.try_grant_asset(&x, &x, &x).is_err());
     assert!(s
         .oracle
-        .try_set_reference_value(&x, &(SCALE * 2), &(T0 + 5))
+        .try_set_reference_value(&x, &s.oracle_source, &(SCALE * 2), &(T0 + 5))
         .is_err());
 }
 
@@ -681,8 +686,11 @@ fn remaining_slippage_and_dust_guards_on_the_pool_and_manager() {
     // A dust single-sided deposit that rounds to no LP is refused rather than minting nothing.
     assert!(s.pool.try_add_liquidity_single_sy(&u, &3, &0).is_err());
 
-    // A recombine of a dust amount at a high rate would return zero shares: refused.
-    s.advance(T0 + DAY, SCALE * 3);
+    // A recombine of a dust amount at a high rate would return zero shares: refused. The move
+    // only needs to clear SCALE (any rate above 1.0 floors 1 raw unit's worth of shares to
+    // zero); kept inside the oracle's deviation cap rather than the 3x jump this used before
+    // the deviation guard existed.
+    s.advance(T0 + DAY, SCALE * 11 / 10);
     assert_eq!(
         s.pm.try_recombine(&u, &1).err(),
         err_code(PmError::ZeroAmount as u32)
