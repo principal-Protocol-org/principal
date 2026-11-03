@@ -92,6 +92,23 @@ real `swap_pt_for_sy` failure immediately after an `add_liquidity` call in the s
 In the JS SDK, this is `prepareTransaction`'s own simulated `sorobanData.resourceFee` — pad it
 directly if you see the same error rather than guessing which fee needs raising.
 
+A third gotcha, the most important one for anyone *writing new Router-style composed flows*
+rather than just calling the existing ones: **never chain a `MarketPool` swap's payout into a
+second call that needs fresh `from.require_auth()` on that exact amount.** `MarketPool`'s price
+depends on `seconds_to_maturity`, read live from the ledger, so the exact payout can differ by a
+few raw units between a client's pre-submission simulation and real execution moments later.
+Soroban's pre-signed authorization for the second call must match its real arguments exactly, so
+passing the swap's output as that call's amount reverts `Error(Auth, InvalidAction)` — not because
+anything about the trade was wrong, but because the authorization baked in at simulation time is
+already stale by the time the transaction lands. This broke a first version of
+`Router.swap_pt_for_underlying` (swap PT→SY, then `SYWrapper.withdraw(from, sy_out, ...)`) live on
+Testnet; §4.1 has the full story, the fix (`SYWrapper.withdraw_all`, which takes no amount argument
+at all — it reads the caller's balance at execution instead), and the live transactions proving it.
+The same risk applies to *any* value a contract computes mid-transaction from time-dependent state
+(not just this protocol's curve) that gets reused as a further authorized argument — if you hit
+`Error(Auth, InvalidAction)` on a composed call that worked in isolation, suspect this before
+anything else.
+
 ---
 
 ## 3. Creating a market: `MarketFactoryContract`
@@ -264,11 +281,16 @@ not new code.
 |---|---|---|
 | `wrap_and_mint` | `Router.wrap_and_mint(from, pool, amount, min_pt_out, deadline)` | `SYWrapper.deposit` → `PrincipalManager.mint` |
 | `swap_sy_for_pt` | `Router.swap_sy_for_pt(from, pool, sy_in, min_pt_out, deadline)` | `MarketPool.swap_sy_for_pt` |
+| `swap_underlying_for_pt` *(new, §4.1)* | `Router.swap_underlying_for_pt(from, pool, underlying_amount, min_pt_out, deadline)` | `SYWrapper.deposit` → `MarketPool.swap_sy_for_pt` |
 | `swap_pt_for_sy` | `Router.swap_pt_for_sy(from, pool, pt_in, min_sy_out, deadline)` | `MarketPool.swap_pt_for_sy` |
+| `swap_pt_for_underlying` *(new, §4.1)* | `Router.swap_pt_for_underlying(from, pool, pt_in, min_underlying_out, deadline)` | `MarketPool.swap_pt_for_sy` → `SYWrapper.withdraw_all` |
 | `swap_sy_for_yt` (flash-mint) | `Router.swap_sy_for_yt(from, pool, sy_in, min_yt_out, max_net_cost, deadline)` | `PrincipalManager.mint` → `MarketPool.swap_pt_for_sy` |
+| `swap_underlying_for_yt` *(new, §4.1)* | `Router.swap_underlying_for_yt(from, pool, underlying_amount, min_yt_out, max_net_cost, deadline)` | `SYWrapper.deposit` → `PrincipalManager.mint` → `MarketPool.swap_pt_for_sy` → `SYWrapper.withdraw_all` |
 | `swap_yt_for_sy` (flash-redeem) | `Router.swap_yt_for_sy(from, pool, yt_in, min_sy_out, deadline)` | `MarketPool.swap_yt_for_sy` |
+| `swap_yt_for_underlying` *(new, §4.1)* | `Router.swap_yt_for_underlying(from, pool, yt_in, min_underlying_out, deadline)` | `MarketPool.swap_yt_for_sy` → `SYWrapper.withdraw_all` |
 | `add_liquidity` | `Router.add_liquidity(from, pool, pt_in, sy_in, min_lp_out, deadline)` | `MarketPool.add_liquidity` |
 | `add_liquidity_single_sy` | `Router.add_liquidity_single_sy(from, pool, sy_in, min_lp_out, deadline)` | `MarketPool.add_liquidity_single_sy` |
+| `add_liquidity_keep_yt` *(new, §4.1)* | `Router.add_liquidity_keep_yt(from, pool, underlying_amount, mint_amount, min_lp_out, deadline)` | `SYWrapper.deposit` → `PrincipalManager.mint` → `MarketPool.add_liquidity` |
 | `remove_liquidity` | `Router.remove_liquidity(from, pool, lp_in, min_pt_out, min_sy_out, deadline)` | `MarketPool.remove_liquidity` |
 | `recombine` | `Router.recombine(from, pool, amount, min_sy_out, deadline)` | `PrincipalManager.recombine` |
 | `claim_yield` | `Router.claim_yield(from, pool)` | `PrincipalManager.claim_yield` |
@@ -280,6 +302,77 @@ rate-frozen, or the call is balance-only).
 
 The Router never custodies funds and is never itself compliance-gated; every downstream check runs
 against `from`, the real user, so a deauthorized user gains nothing by routing through it.
+
+### 4.1 Underlying-denominated trading and "keep YT" liquidity
+
+Added directly in response to the dApp team's integration feedback: today's dApp has to chain 2–3
+wallet signatures to pay in the yield-bearing underlying (USDY, BENJI) — wrap, then swap — because
+the original Router only took raw underlying in `wrap_and_mint`; every other function needed SY,
+PT or YT already in hand. The five rows marked *(new)* above close that gap, plus the
+`add_liquidity_single_sy` fix below, which was independently reported as failing outright.
+
+**`swap_underlying_for_pt` / `swap_underlying_for_yt` do not remove the capital requirement
+`swap_sy_for_yt` already had.** `swap_underlying_for_yt` still needs `from` to hold the *full*
+`underlying_amount` being tokenized up front, not just the eventual net cost — buying YT at 45×
+leverage to spend 100 USDY still means holding ~4,500 USDY during the call. The Router sequences
+existing calls inside one atomic transaction; it does not advance capital. A true flash swap,
+where the pool fronts the capital, is a larger change to how `MarketPool`/`PrincipalManager`
+custody funds and is out of scope here.
+
+**The real bug, found live while adding these:** a first version of `swap_pt_for_underlying`
+(`MarketPool.swap_pt_for_sy` then `SYWrapper.withdraw(from, sy_out, from, min_underlying_out)`,
+`sy_out` being the swap's own curve-derived payout) reverted at submission on real Testnet — not
+at simulation, which succeeded — with a bare `InvokeHostFunction(Trapped)`. §2's third gotcha
+explains the mechanism: `sy_out` is computed from `seconds_to_maturity`, which ticks forward
+between a client's local simulation and real on-chain execution, so the pre-signed authorization
+for `withdraw`'s exact `sy_out` argument no longer matched by the time the transaction landed.
+
+The fix, applied to `swap_pt_for_underlying`, `swap_yt_for_underlying`, and the final leg of
+`swap_underlying_for_yt`: a new `SYWrapper.withdraw_all(from, to, min_underlying_out)` that takes
+**no** amount argument at all — it reads `from`'s current SY balance live, inside its own
+execution, rather than taking a pre-computed one as input. With no curve-derived value left in the
+authorized invocation, there is nothing to go stale. The tradeoff: it withdraws *everything*, so
+these three functions now revert `PreexistingSyBalance` (Router error 9) if `from` already holds
+any SY before the call — a precondition the dApp should check (or just satisfy, by never leaving a
+user mid-flow with stray SY) rather than something a human needs to manually clear.
+
+`add_liquidity_keep_yt` had the same class of problem one step earlier: it originally computed the
+mint/liquidity split by calling `MarketPool.zap_swap_amount` *inside* its own execution and feeding
+that curve-derived value straight into `PrincipalManager.mint`'s authorized `sy_shares` argument —
+same staleness risk, different call. The fix there is different because `mint` has no "take
+everything" equivalent that would make sense (it's a partial split, not a full withdrawal):
+`mint_amount` is now a plain, caller-supplied argument. Quote `zap_swap_amount` off-chain before
+building the transaction — exactly how every other `min_*_out` in this Router is already handled —
+and pass the result in as a literal, signed value that cannot drift.
+
+Live evidence for all five functions plus the `add_liquidity_single_sy` fix, each confirmed on a
+fresh Testnet market created purely to reproduce and then fix these exact failures:
+
+| Function | Result | Transaction |
+|---|---|---|
+| `add_liquidity_single_sy` (fixed) | 500,000,000 SY in, 3,535 refunded, 243,429,586 LP minted | [094e8b99...](https://stellar.expert/explorer/testnet/tx/094e8b9904dcd6b316bdccf7a73506ef0e76981521a2cedb17181c2caf51fe6e) |
+| `swap_underlying_for_pt` | 500,000,000 raw underlying → 524,992,691 PT | [ea0d0125...](https://stellar.expert/explorer/testnet/tx/ea0d0125c161adae5fb2672822d22fb37b6dfb8800d1eeffc155f1377cdbbdf2) |
+| `swap_pt_for_underlying` (fixed) | 100,000,000 PT → 95,236,204 raw underlying | [61bbc1d8...](https://stellar.expert/explorer/testnet/tx/61bbc1d8cf93d92e9b0b3cda1dd37a6b23f13a81cad218f44db9e10b9386f955) |
+| `swap_underlying_for_yt` (fixed final leg) | 300,000,000 underlying → 314,842,500 YT, 299,838,073 underlying change | live, Testnet |
+| `swap_yt_for_underlying` (fixed) | 50,000,000 YT → 2,707 raw underlying | live, Testnet |
+| `add_liquidity_keep_yt` (fixed) | 100,000,000 underlying → 45,526,182 LP + 87,873,672 YT kept | [37045f59...](https://stellar.expert/explorer/testnet/tx/37045f59aa7a69f13fb39e86feff3dd2587f0deafb63c227d753c8265932e1a1) |
+
+The exact commands, representative of all five (each just swaps the function name and args per
+§4's table):
+
+```bash
+# swap_underlying_for_pt -- note --resource-fee: see §2's second gotcha.
+stellar contract invoke --id "$ROUTER_ID" --source v11-carol --network testnet --resource-fee 5000000 \
+  -- swap_underlying_for_pt --from "$CAROL" --pool "$POOL_ADDR" \
+     --underlying_amount 500000000 --min_pt_out 0 --deadline 9999999999
+
+# add_liquidity_keep_yt -- mint_amount is quoted off-chain first, exactly as described above.
+MINT_AMOUNT=$(stellar contract invoke --id "$POOL_ADDR" --source v11-carol --network testnet \
+  --send=no -- zap_swap_amount --sy_in 100000000 | tr -d '"')
+stellar contract invoke --id "$ROUTER_ID" --source v11-carol --network testnet --resource-fee 5000000 \
+  -- add_liquidity_keep_yt --from "$CAROL" --pool "$POOL_ADDR" \
+     --underlying_amount 100000000 --mint_amount "$MINT_AMOUNT" --min_lp_out 0 --deadline 9999999999
+```
 
 ---
 
@@ -338,6 +431,19 @@ quote_pt_for_sy(20000000): {"amount_in":"0","amount_out":"19047442","fee_shares"
 a pool at a 1.05 oracle rate: `add_liquidity(pt_desired=500000000, sy_desired=500000000, ...)`
 reverted `InvalidInitialRatio` (`500,000,000 × 1.05 = 525,000,000 > 500,000,000`); lowering to
 `sy_desired=400000000` succeeded (`400,000,000 × 1.05 = 420,000,000 ≤ 500,000,000`).
+
+**`add_liquidity_single_sy` was reported broken on real Testnet** (reproduced and confirmed: the
+dApp team's own repro showed a signed amount of `9999979445` against an executed amount of
+`9999979436` — nine raw units apart, enough to invalidate the signature) and has since been fixed.
+Root cause: it used to transfer `split + sy_used` from the caller, both derived from the pool's
+time-dependent curve state, so the amount Soroban authorized at simulation time could differ from
+what real execution computed moments later — §2's third gotcha, manifesting *inside* `MarketPool`
+itself rather than through Router composition. The fix takes the caller's full, fixed `sy_in` up
+front instead and refunds whatever goes unused; confirmed live on Testnet
+(`add_liquidity_single_sy(sy_in=500000000, ...)` → 500,000,000 taken, 3,535 refunded, 243,429,586
+LP minted — [tx](https://stellar.expert/explorer/testnet/tx/094e8b9904dcd6b316bdccf7a73506ef0e76981521a2cedb17181c2caf51fe6e)).
+The return values and economics are unchanged; only the internal transfer sequence is different,
+so no existing integration needs to change anything about how it reads this function's outputs.
 
 ### 5.3 Real example — the full AMM lifecycle, live
 
@@ -412,7 +518,7 @@ Every contract's `#[contracterror]` enum, read from source. A dapp's error decod
 | MarketConfig | 1–7 | AlreadyInitialized, NotInitialized, Unauthorized, IssuerMismatch, FeeTooHigh, InvalidShare, NotApplicable |
 | PrincipalManager | 1–15 | AlreadyInitialized, Unauthorized, NotInitialized, ZeroAmount, NotMature, AlreadyMature, OracleStale, (8 unused), Paused, PermissionDenied, NotAuthorizedOnSac, IssuerMismatch, TopologyMismatch, NothingToClaim, ArithmeticOverflow |
 | MarketPool | 1–21 | AlreadyInitialized, NotInitialized, Unauthorized, IssuerMismatch, Paused, Expired, ZeroAmount, SlippageExceeded, InsufficientLiquidity, InsufficientLpBalance, PermissionDenied, NotAuthorizedOnSac, OracleStale, MaturityTooFar, InvalidInitialRatio, MathError, RecoveryEscrowAlreadySet, NotRecoveryEscrow, NothingToClaim, InvalidStretch, MinimumLiquidity |
-| Router | 1–8 | AlreadyInitialized, NotInitialized, Unauthorized, MarketNotRegistered, DeadlineExpired, SlippageExceeded, TopologyMismatch, AlreadyRegistered |
+| Router | 1–9 | AlreadyInitialized, NotInitialized, Unauthorized, MarketNotRegistered, DeadlineExpired, SlippageExceeded, TopologyMismatch, AlreadyRegistered, PreexistingSyBalance (§4.1: `swap_pt_for_underlying`/`swap_yt_for_underlying`/`swap_underlying_for_yt` require a zero SY balance beforehand) |
 | RecoveryEscrow | 1–11 | AlreadyInitialized, NotInitialized, Unauthorized, TargetStillAuthorized, ZeroAmount, PositionUnderlyingMismatch, BatchTooLarge, RecordNotFound, AlreadyFinalized, NothingToSeize, NothingToFinalize |
 
 Two codes an integrator will hit often, confirmed live in this guide: `MarketPool` error 6
@@ -441,10 +547,11 @@ This document was reviewed against the live network, not just reread. Specifical
 - Every function signature in §3–§5 was read from `contracts/*/src/lib.rs` in this commit, not
   from memory or from other docs — cross-checked against the actual `stellar contract invoke`
   calls that succeeded below.
-- Every transaction hash in §3.4 and §5.3 was produced by actually running the cited script against
-  Stellar Testnet while writing this guide (not reused from an earlier, different run), with the
-  resulting contract addresses re-queried afterward to confirm they match what the script printed.
-- Three real bugs were found and fixed in the process, not just in the prose:
+- Every transaction hash in §3.4, §4.1 and §5.3 was produced by actually running the cited script
+  or command against Stellar Testnet while writing this guide (not reused from an earlier,
+  different run), with the resulting contract addresses re-queried afterward to confirm they match
+  what was printed.
+- Five real bugs were found and fixed in the process, not just in the prose:
   1. `scripts/create_market.sh` and the first draft of `scripts/create_market_via_factory.sh` had
      apostrophes inside `${VAR:?message}` parameter expansions, which breaks bash's parser even
      inside double quotes. The broken file (`create_market_via_factory.sh`, one such line) failed
@@ -457,18 +564,43 @@ This document was reviewed against the live network, not just reread. Specifical
   3. The same script's swap step failed at submission with `InsufficientRefundableFee` after a
      preceding `add_liquidity` call. `--inclusion-fee` (tried first) did not fix it;
      `--resource-fee` did. Verified by retrying the exact failing call manually with each flag.
-- `cargo fmt --all -- --check` and `cargo clippy -p principal_market_factory --all-targets --locked -- -D warnings` were not re-run for this document (it adds no Rust code), but `bash -n` was run on every modified/added script.
+  4. `MarketPool.add_liquidity_single_sy` reverted `Error(Auth, InvalidAction)` on real Testnet
+     (dApp team's own report, with a concrete signed-vs-executed amount mismatch) — fixed by
+     taking the caller's full `sy_in` up front instead of a curve-derived amount, confirmed live
+     post-fix (§5.2).
+  5. A first version of `Router.swap_pt_for_underlying` reverted `InvokeHostFunction(Trapped)` at
+     submission (simulation succeeded) for the same underlying reason as #4, but through Router
+     composition rather than inside `MarketPool` — fixed with a new `SYWrapper.withdraw_all` and,
+     for `add_liquidity_keep_yt`, a caller-supplied `mint_amount` instead of a mid-execution
+     `zap_swap_amount` call (§2's third gotcha, §4.1).
+- For the contract-level changes (fixes #4 and #5, plus the five new Router functions and
+  `SYWrapper.withdraw_all`): `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+  --locked -- -D warnings`, and `cargo test --workspace` were all run clean after every change,
+  not just once at the end — including new regression tests
+  (`single_sided_deposit_leaves_no_residual_sy_stranded_in_the_pool`,
+  `withdraw_all_takes_the_entire_balance` and its two `#[should_panic]` siblings,
+  `router_underlying_denominated_flows_and_keep_yt_work_end_to_end`). `bash -n` was run on every
+  modified/added script.
 - `settle_all`/`redeem` (§5.3 step 5) were added after this market's maturity actually passed
   during the writing of this guide (not simulated, not assumed) — settled at 10,500,000, redeemed
   594,317,500 PT and 1,364,317,500 YT for 566,016,666 raw STA, 0 from the YT leg.
-- What this guide does **not** verify live: `claim_yield`, `recombine`, the Router's flash-mint/flash-redeem paths (`swap_sy_for_yt`/`swap_yt_for_sy`), and `add_liquidity_single_sy`/`remove_liquidity` — these are documented from source (§4–§5) and are exercised in the repository's own Rust integration tests (`contracts/integration_tests/tests/`, `contracts/market_factory/tests/create_market.rs`), but not independently re-run against Testnet while writing this specific document. Treat §4's table as source-accurate and test-covered, not independently Testnet-verified the way §3.4/§5.3 are.
+- What this guide does **not** verify live: `claim_yield`, `recombine`, `remove_liquidity`, and
+  `add_liquidity_single_sy`'s/the new functions' deadline and slippage *guards specifically*
+  (tripping them) — these are documented from source (§4–§5) and exercised in the repository's own
+  Rust integration tests (`contracts/integration_tests/tests/`,
+  `contracts/market_factory/tests/create_market.rs`), but not independently re-run against Testnet
+  while writing this document. Every function added or fixed in this round
+  (`swap_underlying_for_pt`, `swap_pt_for_underlying`, `swap_underlying_for_yt`,
+  `swap_yt_for_underlying`, `add_liquidity_keep_yt`, `add_liquidity_single_sy`) **was** run live,
+  successfully, post-fix (§4.1, §5.2) — don't read "not verified live" as applying to those.
 - `principal-dApp`'s source was read directly (`src/lib/*.ts`, `src/types.ts`,
   `src/config/markets.ts`) to ground §2–§4 and the §3.5 gap analysis in what that codebase actually
   does today, not a guess at what a "typical" dapp might do. Its one registered market
   (`sta-testnet-2026-10-04-m4`) is the market already shown matured/closed in
   `docs/DAPP_INTEGRATION_AND_MARKET_CREATION.md` §2 — that dapp has no live market to trade against
   until its registry is pointed at a fresh one (e.g. §3.4's) and extended with factory support
-  (§3.5).
+  (§3.5), and its `TransactionIntent`/`protocol.ts` would need the five new actions from §4.1 added
+  following the exact pattern already there for the existing ones.
 
 ---
 

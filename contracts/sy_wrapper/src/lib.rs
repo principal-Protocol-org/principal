@@ -281,29 +281,62 @@ impl SYWrapperContract {
         min_underlying_out: i128,
     ) -> i128 {
         from.require_auth();
-        Self::assert_not_paused_unless_escrow(&env, &[&from]);
-        // Both sides are checked, not just `to`: if only the recipient were gated, a
-        // deauthorized account could self-withdraw the instant it suspected a seizure was
-        // coming. Frozen means frozen on both the sending and receiving side.
-        Self::assert_sac_authorized(&env, &from);
-        Self::assert_sac_authorized(&env, &to);
-        Self::assert_permitted(&env, &from);
-        Self::assert_permitted(&env, &to);
-        if shares <= 0 {
-            panic_with_error!(&env, Error::ZeroAmount);
-        }
-
         let balance = Self::get_balance(&env, &from);
         if balance < shares {
             panic_with_error!(&env, Error::InsufficientShares);
         }
+        Self::do_withdraw(&env, &from, shares, &to, min_underlying_out)
+    }
 
-        let underlying_out = Self::shares_to_underlying(&env, shares);
+    /// Burn `from`'s *entire* SY balance and return the equivalent underlying to `to`. Unlike
+    /// `withdraw`, there is no `shares` argument: the authorized invocation is `(from, to,
+    /// min_underlying_out)` only, and `shares` is read live from `from`'s own balance at
+    /// execution time instead of being passed in.
+    ///
+    /// This exists for callers -- in practice, Router functions that chain a `MarketPool` swap's
+    /// output straight into a withdrawal -- where the swap's payout is a curve-derived amount:
+    /// `MarketPool`'s price depends on `seconds_to_maturity`, read live from the ledger, so the
+    /// exact payout computed during a client's pre-submission simulation can differ by a few raw
+    /// units from what real execution computes moments later. Passing that payout as an explicit
+    /// `shares` argument to `withdraw` would need Soroban's pre-signed authorization for *that*
+    /// call to match an amount that can drift between those two passes, reverting
+    /// `Error(Auth, InvalidAction)` even though nothing about the trade itself was wrong. Reading
+    /// the balance instead of taking it as an argument removes the drifting value from the
+    /// authorized invocation entirely. See `docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md`.
+    ///
+    /// Safe only when the caller is certain `from` holds no other SY it wants to keep separate --
+    /// it withdraws everything, not just what a preceding swap produced.
+    pub fn withdraw_all(env: Env, from: Address, to: Address, min_underlying_out: i128) -> i128 {
+        from.require_auth();
+        let shares = Self::get_balance(&env, &from);
+        Self::do_withdraw(&env, &from, shares, &to, min_underlying_out)
+    }
+
+    fn do_withdraw(
+        env: &Env,
+        from: &Address,
+        shares: i128,
+        to: &Address,
+        min_underlying_out: i128,
+    ) -> i128 {
+        Self::assert_not_paused_unless_escrow(env, &[from]);
+        // Both sides are checked, not just `to`: if only the recipient were gated, a
+        // deauthorized account could self-withdraw the instant it suspected a seizure was
+        // coming. Frozen means frozen on both the sending and receiving side.
+        Self::assert_sac_authorized(env, from);
+        Self::assert_sac_authorized(env, to);
+        Self::assert_permitted(env, from);
+        Self::assert_permitted(env, to);
+        if shares <= 0 {
+            panic_with_error!(env, Error::ZeroAmount);
+        }
+
+        let underlying_out = Self::shares_to_underlying(env, shares);
         if underlying_out <= 0 {
-            panic_with_error!(&env, Error::ZeroAmount);
+            panic_with_error!(env, Error::ZeroAmount);
         }
         if underlying_out < min_underlying_out {
-            panic_with_error!(&env, Error::SlippageExceeded);
+            panic_with_error!(env, Error::SlippageExceeded);
         }
 
         // Update state before external call (checks-effects-interactions).
@@ -323,19 +356,21 @@ impl SYWrapperContract {
         env.storage()
             .instance()
             .set(&DataKey::TotalShares, &(total_s - shares));
-        Self::sub_balance(&env, &from, shares);
-        Self::release_deposit_cap(&env, &from, underlying_out);
+        Self::sub_balance(env, from, shares);
+        Self::release_deposit_cap(env, from, underlying_out);
 
         // Transfer underlying to recipient.
-        let underlying = Self::get_underlying(&env);
-        token::Client::new(&env, &underlying).transfer(
+        let underlying = Self::get_underlying(env);
+        token::Client::new(env, &underlying).transfer(
             &env.current_contract_address(),
-            &to,
+            to,
             &underlying_out,
         );
 
-        env.events()
-            .publish((symbol_short!("withdraw"),), (from, shares, underlying_out));
+        env.events().publish(
+            (symbol_short!("withdraw"),),
+            (from.clone(), shares, underlying_out),
+        );
         underlying_out
     }
 

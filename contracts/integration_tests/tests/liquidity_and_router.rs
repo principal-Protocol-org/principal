@@ -194,6 +194,31 @@ fn single_sided_deposit_swaps_just_enough_and_mints_lp_for_nearly_all_of_the_sy(
     );
 }
 
+/// Regression for the fix that takes `sy_in` from the caller up front (a plain, time-independent
+/// argument) instead of transferring a curve-derived `split + sy_used` amount read from
+/// `state_fresh()` -- the live version reverted `Error(Auth, InvalidAction)` because the amount
+/// Soroban authorized at simulation time could differ, by a few raw units, from the amount
+/// computed moments later at execution, once the ledger's timestamp had ticked forward. This test
+/// cannot reproduce that specific authorization mismatch (`mock_all_auths()` bypasses per-argument
+/// auth matching entirely), but it does pin down the refund invariant the rewrite must still
+/// satisfy: the pool's own SY balance grows by exactly `sy_total_used`, never by the full `sy_in`,
+/// so no part of the up-front transfer is left stranded in the pool once the refund runs.
+#[test]
+fn single_sided_deposit_leaves_no_residual_sy_stranded_in_the_pool() {
+    let (s, _, _) = seeded(UnderlyingKind::Sac);
+    let user = s.new_user();
+    deposit_sy(&s, &user, 100 * SCALE);
+
+    let pool_sy_before = s.sy.balance_of(&s.pool.address);
+    let (_, sy_total_used, lp) = s.pool.add_liquidity_single_sy(&user, &(100 * SCALE), &0);
+    assert!(lp > 0);
+    let pool_sy_after = s.sy.balance_of(&s.pool.address);
+
+    assert_eq!(pool_sy_after - pool_sy_before, sy_total_used);
+    // Whatever the pool didn't keep came back to the user, not a third party.
+    assert_eq!(s.sy.balance_of(&user), 100 * SCALE - sy_total_used);
+}
+
 #[test]
 fn single_sided_deposit_on_an_empty_pool_is_refused() {
     let s = deploy(Config::free(T0 + 180 * DAY));
@@ -588,6 +613,87 @@ fn router_wrap_unwrap_recombine_and_liquidity_flows_work_end_to_end() {
         .remove_liquidity(&user, &pool, &(lp + lp2), &0, &0, &u64::MAX);
     assert!(pt_out > 0 && sy_out > 0);
     assert_eq!(s.pool.lp_balance(&user), 0);
+}
+
+/// The five Router functions added for underlying-denominated trading and the "keep YT" deposit
+/// (requested by the dApp team so a user paying in the yield-bearing underlying -- USDY, BENJI --
+/// never has to hold SY directly). Each wraps/unwraps or sequences existing, already-tested
+/// primitives; this proves the composition round-trips correctly end to end.
+#[test]
+fn router_underlying_denominated_flows_and_keep_yt_work_end_to_end() {
+    let (s, _, _) = seeded(UnderlyingKind::Sac);
+    let pool = s.pool.address.clone();
+    let user = s.new_user();
+    s.mint_underlying(&user, 500 * SCALE);
+
+    // swap_underlying_for_pt: pay underlying directly, no separate wrap call by the caller.
+    let pt_out = s
+        .router
+        .swap_underlying_for_pt(&user, &pool, &(100 * SCALE), &0, &u64::MAX);
+    assert!(pt_out > 0);
+    assert_eq!(underlying_balance(&s, &user), 400 * SCALE);
+    assert_eq!(s.pt.balance(&user), pt_out);
+
+    // swap_pt_for_underlying: sell it back, receive underlying directly (fee + price impact, so
+    // strictly less than the 100 SCALE spent).
+    let underlying_back = s
+        .router
+        .swap_pt_for_underlying(&user, &pool, &pt_out, &0, &u64::MAX);
+    assert!(underlying_back > 0 && underlying_back < 100 * SCALE);
+    assert_eq!(s.pt.balance(&user), 0);
+    assert_eq!(underlying_balance(&s, &user), 400 * SCALE + underlying_back);
+
+    // swap_underlying_for_yt: flash-mint YT directly from underlying, no SY left in the caller's
+    // hands mid-flow.
+    let (yt_out, _underlying_change) =
+        s.router
+            .swap_underlying_for_yt(&user, &pool, &(50 * SCALE), &0, &i128::MAX, &u64::MAX);
+    assert!(yt_out > 0);
+    assert_eq!(s.yt.balance(&user), yt_out);
+
+    // swap_yt_for_underlying: flash-redeem back to underlying directly.
+    let underlying_from_yt = s
+        .router
+        .swap_yt_for_underlying(&user, &pool, &yt_out, &0, &u64::MAX);
+    assert!(underlying_from_yt > 0);
+    assert_eq!(s.yt.balance(&user), 0);
+
+    // add_liquidity_keep_yt: underlying -> LP + YT, no swap leg at all. `mint_amount` is quoted
+    // off-chain first (MarketPool.zap_swap_amount), exactly as a real caller would, rather than
+    // derived mid-execution -- see the function's own docs for why that distinction matters.
+    let mint_amount = s.pool.zap_swap_amount(&(100 * SCALE));
+    let result =
+        s.router
+            .add_liquidity_keep_yt(&user, &pool, &(100 * SCALE), &mint_amount, &0, &u64::MAX);
+    assert!(result.lp_minted > 0, "lp_minted {}", result.lp_minted);
+    assert!(result.yt_minted > 0, "yt_minted {}", result.yt_minted);
+    assert_eq!(s.pool.lp_balance(&user), result.lp_minted);
+    assert_eq!(s.yt.balance(&user), result.yt_minted);
+
+    // Deadline and slippage guards apply to the new functions exactly like the existing ones.
+    let past = s.env.ledger().timestamp() - 1;
+    assert_eq!(
+        s.router
+            .try_swap_underlying_for_pt(&user, &pool, &SCALE, &0, &past)
+            .err(),
+        err_code(RouterError::DeadlineExpired as u32)
+    );
+    s.mint_underlying(&user, 10 * SCALE);
+    // The slippage check for this function lives in MarketPool.swap_sy_for_pt itself (this
+    // wrapper forwards min_pt_out unchanged), exactly like the existing swap_sy_for_pt wrapper --
+    // so the error code is MarketPool's SlippageExceeded, not the Router's own.
+    assert_eq!(
+        s.router
+            .try_swap_underlying_for_pt(
+                &user,
+                &pool,
+                &(10 * SCALE),
+                &(1_000_000 * SCALE),
+                &u64::MAX
+            )
+            .err(),
+        err_code(PoolError::SlippageExceeded as u32)
+    );
 }
 
 #[test]

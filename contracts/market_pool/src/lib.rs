@@ -453,6 +453,16 @@ impl MarketPoolContract {
     /// Add liquidity from SY alone: the pool buys just enough PT with part of `sy_in` (paying the
     /// normal swap fee) that the remainder and the PT match the post-swap pool ratio, then adds
     /// both. Any rounding leftover is returned. Returns `(pt_used, sy_used, lp_minted)`.
+    ///
+    /// Takes the full `sy_in` from `from` up front, at the exact value the caller authorized --
+    /// not a time-dependent amount derived from the curve below -- and refunds whatever of it
+    /// goes unused. Soroban's authorization for the nested `SYWrapper.transfer` must match that
+    /// call's real arguments exactly; an earlier version transferred `split + sy_used`, both
+    /// derived from `state_fresh()` (which reads the ledger's current timestamp), so the amount
+    /// signed at simulation time could differ -- by a few raw units -- from the amount computed
+    /// moments later at execution, and the stale signature was then rejected with
+    /// `Error(Auth, InvalidAction)`. `sy_in` is a plain argument, identical at simulation and
+    /// execution, so transferring exactly that removes the mismatch.
     pub fn add_liquidity_single_sy(
         env: Env,
         from: Address,
@@ -469,6 +479,11 @@ impl MarketPoolContract {
         if st.total_lp == 0 {
             panic_with_error!(&env, Error::InsufficientLiquidity);
         }
+
+        let this = env.current_contract_address();
+        let sy = SYClient::new(&env, &Self::addr(&env, &DataKey::SY));
+        sy.transfer(&from, &this, &sy_in);
+
         let split = Self::zap_split(&env, &st, sy_in);
         let q = Self::calc_buy_pt(&env, &st, split);
         let pt_bought = q.amount_out;
@@ -491,11 +506,13 @@ impl MarketPoolContract {
         Self::credit_lp(&env, &from, lp);
         Self::set_total_lp(&env, st.total_lp + lp);
 
-        // The user pays `split + sy_used` SY in total; the PT they "bought" never leaves the pool
-        // except for `pt_bought - pt_used`, refunded here.
-        let this = env.current_contract_address();
-        let sy = SYClient::new(&env, &Self::addr(&env, &DataKey::SY));
-        sy.transfer(&from, &this, &(split + sy_used));
+        // Refund whatever of `sy_in` the pool didn't end up using, and whatever PT the "buy"
+        // produced beyond what this `lp` amount needed.
+        let sy_total_used = split + sy_used;
+        let sy_refund = sy_in - sy_total_used;
+        if sy_refund > 0 {
+            sy.transfer(&this, &from, &sy_refund);
+        }
         let pt_refund = pt_bought - pt_used;
         if pt_refund > 0 {
             TokenClient::new(&env, &Self::addr(&env, &DataKey::PT))
@@ -503,9 +520,9 @@ impl MarketPoolContract {
         }
         env.events().publish(
             (symbol_short!("zap_liq"),),
-            (from, pt_used, split + sy_used, lp),
+            (from, pt_used, sy_total_used, lp),
         );
-        (pt_used, split + sy_used, lp)
+        (pt_used, sy_total_used, lp)
     }
 
     /// Burn `lp` and send the proportional PT and SY to `to`. Available after maturity even while

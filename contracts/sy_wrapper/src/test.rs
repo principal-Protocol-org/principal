@@ -177,6 +177,45 @@ fn withdraw_more_than_balance_panics() {
     f.client.withdraw(&user, &200_000_000_i128, &user, &0);
 }
 
+/// `withdraw_all` exists so a caller (in practice, a Router function chaining a curve-derived
+/// swap payout straight into a withdrawal) never needs to pass an exact `shares` amount that
+/// could drift between simulation and execution -- see its own doc comment for why. This pins
+/// its basic behavior: it takes the caller's whole balance, not a chosen amount.
+#[test]
+fn withdraw_all_takes_the_entire_balance() {
+    let f = setup();
+    let user = Address::generate(&f.env);
+    grant(&f, &user);
+    mint(&f.env, &f.underlying, &f.admin, &user, 500_000_000);
+
+    f.client.deposit(&user, &500_000_000_i128, &0);
+    let out = f.client.withdraw_all(&user, &user, &0);
+    assert_eq!(out, 500_000_000);
+    assert_eq!(f.client.total_shares(), 0);
+    assert_eq!(f.client.balance_of(&user), 0);
+}
+
+#[test]
+#[should_panic]
+fn withdraw_all_with_zero_balance_panics() {
+    let f = setup();
+    let user = Address::generate(&f.env);
+    grant(&f, &user);
+    f.client.withdraw_all(&user, &user, &0); // never deposited -- zero balance
+}
+
+#[test]
+#[should_panic]
+fn withdraw_all_to_unpermitted_recipient_panics() {
+    let f = setup();
+    let user = Address::generate(&f.env);
+    let stranger = Address::generate(&f.env);
+    grant(&f, &user);
+    mint(&f.env, &f.underlying, &f.admin, &user, 500_000_000);
+    f.client.deposit(&user, &500_000_000_i128, &0);
+    f.client.withdraw_all(&user, &stranger, &0); // stranger never granted
+}
+
 #[test]
 #[should_panic]
 fn deposit_while_paused_panics() {
