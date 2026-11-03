@@ -4,13 +4,15 @@
 # manually checking a price before building a swap transaction.
 #
 # Usage:
-#   ./scripts/quote_market.sh <market_pool_id> [source_identity] [sy_in_for_buy_quote] [pt_in_for_sell_quote]
+#   ./scripts/quote_market.sh <market_pool_id> [source_identity] [sy_in_for_buy_quote] [pt_in_for_sell_quote] [yt_in_for_flash_redeem_quote] [sy_in_for_flash_mint_quote]
 set -euo pipefail
 
 POOL_ID="${1:?market_pool contract id required}"
 SOURCE="${2:-}"
 SY_IN="${3:-0}"
 PT_IN="${4:-0}"
+YT_IN="${5:-0}"
+SY_IN_FOR_YT="${6:-0}"
 
 NETWORK_PASSPHRASE="${NETWORK_PASSPHRASE:-Test SDF Network ; September 2015}"
 RPC_URL="${RPC_URL:-https://soroban-testnet.stellar.org}"
@@ -41,4 +43,12 @@ fi
 if [ "$PT_IN" != "0" ]; then
   echo
   echo "quote_pt_for_sy($PT_IN): $(inv quote_pt_for_sy --pt_in "$PT_IN")"
+fi
+if [ "$YT_IN" != "0" ]; then
+  echo
+  echo "quote_yt_for_sy($YT_IN) [flash-redeem preview]: $(inv quote_yt_for_sy --yt_in "$YT_IN")"
+fi
+if [ "$SY_IN_FOR_YT" != "0" ]; then
+  echo
+  echo "quote_sy_for_yt($SY_IN_FOR_YT) [flash-mint preview]: $(inv quote_sy_for_yt --sy_in "$SY_IN_FOR_YT")"
 fi

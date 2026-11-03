@@ -60,6 +60,9 @@ use soroban_sdk::{
 use principal_compliance as compliance;
 
 pub const SCALE: i128 = 10_000_000;
+/// Basis-point denominator, matching `MarketConfig`'s own `BPS` -- used only to replicate
+/// `PrincipalManager.mint`'s tokenization-fee formula for `quote_sy_for_yt`'s preview.
+pub const BPS: i128 = 10_000;
 /// Fixed-point denominator of the swap fee rate returned by `MarketConfig` (1e12).
 pub const FEE_SCALE: i128 = 1_000_000_000_000;
 pub const SECONDS_PER_YEAR: u64 = 31_536_000;
@@ -116,6 +119,7 @@ pub trait ConfigInterface {
     fn split(env: Env, fee: i128) -> (i128, i128);
     fn treasury(env: Env) -> Address;
     fn creator(env: Env) -> Address;
+    fn tokenization_fee_bps(env: Env) -> u32;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +205,21 @@ pub struct Quote {
     pub amount_in: i128,
     /// Fee, in SY shares.
     pub fee_shares: i128,
+}
+
+/// Preview of `swap_sy_for_yt`'s two legs (`PrincipalManager.mint` then `MarketPool.swap_pt_for_sy`),
+/// reported separately so a caller can show the two fees instead of just a net number.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlashMintQuote {
+    /// YT (and PT) the mint leg would produce.
+    pub yt_out: i128,
+    /// SY the sell-PT leg would pay back, before `max_net_cost` is applied by the caller.
+    pub sy_back: i128,
+    /// Tokenization fee the mint leg would charge, in SY shares.
+    pub mint_fee_shares: i128,
+    /// Swap fee the sell-PT leg would charge, in SY shares.
+    pub swap_fee_shares: i128,
 }
 
 #[contract]
@@ -702,6 +721,57 @@ impl MarketPoolContract {
     pub fn zap_swap_amount(env: Env, sy_in: i128) -> i128 {
         let st = Self::state(&env);
         Self::zap_split(&env, &st, sy_in)
+    }
+
+    /// Preview `swap_yt_for_sy` (the flash-redeem behind `Router.swap_yt_for_sy` /
+    /// `swap_yt_for_underlying`): recombining `yt_in` YT with `yt_in` PT pulled from this pool's
+    /// own reserve, at the live oracle rate, minus the curve-priced cost of pulling that PT.
+    /// Matches `swap_yt_for_sy`'s own math exactly -- see `contracts/market_factory/tests/
+    /// create_market.rs`-style regression tests that assert the real swap's payout equals this.
+    pub fn quote_yt_for_sy(env: Env, yt_in: i128) -> Quote {
+        let st = Self::state(&env);
+        let q = Self::calc_buy_exact_pt(&env, &st, yt_in);
+        let recombined = yt_in * SCALE / st.rate;
+        let payout = recombined - q.amount_in;
+        if payout < 0 {
+            panic_with_error!(&env, Error::InsufficientLiquidity);
+        }
+        Quote {
+            amount_out: payout,
+            amount_in: 0,
+            fee_shares: q.fee_shares,
+        }
+    }
+
+    /// Preview `PrincipalManager.mint` followed by `MarketPool.swap_pt_for_sy` together (the
+    /// flash-mint behind `Router.swap_sy_for_yt` / `swap_underlying_for_yt`): tokenizing `sy_in`
+    /// SY into PT+YT at the live oracle rate and `MarketConfig`'s tokenization fee, then selling
+    /// the minted PT back into this same pool at the live curve price. Replicates
+    /// `PrincipalManager.mint`'s exact formula (ceil-rounded fee, floor-rounded notional) rather
+    /// than calling it, since the quote must stay read-only.
+    pub fn quote_sy_for_yt(env: Env, sy_in: i128) -> FlashMintQuote {
+        if sy_in <= 0 {
+            panic_with_error!(&env, Error::ZeroAmount);
+        }
+        let st = Self::state(&env);
+        let fee_bps = ConfigClient::new(&env, &Self::addr(&env, &DataKey::Config))
+            .tokenization_fee_bps() as i128;
+        let mint_fee_shares = Self::ceil_div(sy_in * fee_bps, BPS);
+        let net_shares = sy_in - mint_fee_shares;
+        if net_shares <= 0 {
+            panic_with_error!(&env, Error::ZeroAmount);
+        }
+        let yt_out = net_shares * st.rate / SCALE;
+        if yt_out <= 0 {
+            panic_with_error!(&env, Error::ZeroAmount);
+        }
+        let (sell_quote, _gross) = Self::calc_sell_pt(&env, &st, yt_out);
+        FlashMintQuote {
+            yt_out,
+            sy_back: sell_quote.amount_out,
+            mint_fee_shares,
+            swap_fee_shares: sell_quote.fee_shares,
+        }
     }
 
     pub fn maturity(env: Env) -> u64 {

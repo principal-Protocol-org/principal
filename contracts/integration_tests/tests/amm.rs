@@ -636,3 +636,71 @@ fn flash_redeem_min_out_is_a_hard_floor_at_the_exact_payout() {
         payout
     );
 }
+
+// --------------------------------------------------------- YT quote preview
+
+#[test]
+fn quote_yt_for_sy_matches_the_real_flash_redeem_payout_exactly() {
+    let (s, _) = seeded(Config::free(T0 + 180 * DAY));
+    let holder = s.new_user();
+    deposit_sy(&s, &holder, 100 * SCALE);
+    let pool = s.pool.address.clone();
+    s.router.swap_sy_for_yt(
+        &holder,
+        &pool,
+        &(100 * SCALE),
+        &0,
+        &(100 * SCALE),
+        &u64::MAX,
+    );
+    let yt = s.yt.balance(&holder);
+
+    // Quote before the trade touches reserves or the oracle rate again.
+    let quote = s.pool.quote_yt_for_sy(&yt);
+    let payout = s.router.swap_yt_for_sy(&holder, &pool, &yt, &0, &u64::MAX);
+
+    assert_eq!(
+        quote.amount_out, payout,
+        "quote must match the real payout exactly"
+    );
+    assert_eq!(quote.amount_in, 0);
+}
+
+#[test]
+fn quote_yt_for_sy_reverts_the_same_way_the_real_swap_does() {
+    // Mirrors `flash_redeem_reverts_when_the_yt_cannot_cover_the_pt_it_consumes`: a stale YT a
+    // day before maturity, under a fee tier high enough that the quote must also revert.
+    let maturity = T0 + 300 * DAY;
+    let mut cfg = Config::with_example_fees(maturity);
+    cfg.swap_fee_tier_bps = 500;
+    let (s, _) = seeded(cfg);
+    let holder = s.new_user();
+    let shares = deposit_sy(&s, &holder, 100 * SCALE);
+    s.pm.mint(&holder, &shares);
+    s.advance_flat(maturity - DAY);
+    let yt = s.yt.balance(&holder);
+
+    assert_eq!(
+        s.pool.try_quote_yt_for_sy(&yt).err(),
+        err_code(PoolError::InsufficientLiquidity as u32)
+    );
+}
+
+#[test]
+fn quote_sy_for_yt_matches_the_real_flash_mint_outcome_exactly() {
+    let (s, _) = seeded(Config::with_example_fees(T0 + 180 * DAY));
+    let buyer = s.new_user();
+    deposit_sy(&s, &buyer, 100 * SCALE);
+    let pool = s.pool.address.clone();
+
+    let quote = s.pool.quote_sy_for_yt(&(100 * SCALE));
+    let (yt_out, sy_back) =
+        s.router
+            .swap_sy_for_yt(&buyer, &pool, &(100 * SCALE), &0, &(100 * SCALE), &u64::MAX);
+
+    assert_eq!(quote.yt_out, yt_out, "quoted YT must match the real mint");
+    assert_eq!(
+        quote.sy_back, sy_back,
+        "quoted SY-back must match the real sell-PT leg"
+    );
+}

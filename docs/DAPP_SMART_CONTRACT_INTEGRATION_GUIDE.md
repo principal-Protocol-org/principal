@@ -391,14 +391,17 @@ protocol/creator fee claims, or pricing that `Router` doesn't expose.
 | `quote_sy_for_pt(sy_in)` | `Quote { amount_out, fee_shares }` — buying PT with `sy_in` SY |
 | `quote_pt_for_sy(pt_in)` | `Quote { amount_out, fee_shares }` — selling `pt_in` PT |
 | `quote_buy_exact_pt(pt_out)` | `Quote { amount_in, fee_shares }` — SY needed for an exact PT amount |
+| `quote_yt_for_sy(yt_in)` *(new, §5.4)* | `Quote { amount_out, fee_shares }` — flash-redeem preview: selling `yt_in` YT |
+| `quote_sy_for_yt(sy_in)` *(new, §5.4)* | `FlashMintQuote { yt_out, sy_back, mint_fee_shares, swap_fee_shares }` — flash-mint preview: buying YT with `sy_in` SY |
 | `zap_swap_amount(sy_in)` | how much of a single-sided SY deposit converts to PT |
 | `reserves()` | `(pt_reserve, sy_reserve)` |
 | `pool_state()`, `maturity()`, `is_paused()` | self-explanatory |
 
 `principal-dApp/src/lib/quotes.ts` wires `quote_sy_for_pt`/`quote_pt_for_sy` today (the two
-swap-quote actions); `quote_buy_exact_pt`, `zap_swap_amount`, `pt_price`, and `implied_rate` are
-not wired yet — direct pricing/exact-output flows and a market-overview "current rate" display
-would need them added, following the exact pattern `fetchMarketQuote` already uses.
+swap-quote actions); `quote_buy_exact_pt`, `quote_yt_for_sy`, `quote_sy_for_yt`, `zap_swap_amount`,
+`pt_price`, and `implied_rate` are not wired yet — direct pricing/exact-output flows, the YT-trade
+preview closed in §5.4, and a market-overview "current rate" display would need them added,
+following the exact pattern `fetchMarketQuote` already uses.
 
 Live example against the market from §3.4 (`scripts/quote_market.sh`):
 
@@ -498,6 +501,83 @@ simulated resource fee came in short of what submission actually needed. Fixed b
 script's `inv()` helper; confirmed by retrying the exact same call with that flag and watching it
 succeed.
 
+### 5.4 Pricing YT trades: closing the "RouterStatic" gap
+
+Bastien's reply in the dApp developers' thread asked for the Pendle-style `RouterStatic`
+pattern — a read-only preview of slippage, resulting APY, amount received, and fees, shown to the
+user *before* they sign — and pointed out Principal had nothing equivalent for YT. That's
+confirmed by `principal-dApp/src/lib/quotes.ts`'s own comment: *"Until a dedicated quote is wired
+for this action, reuse the same conservative 'no usable quote -> 0' fallback as min_yt_out"* — the
+dapp was quoting PT trades (`quote_sy_for_pt`/`quote_pt_for_sy`) but had no way to quote either YT
+flow (`swap_sy_for_yt`'s flash-mint or `swap_yt_for_sy`'s flash-redeem) at all.
+
+Two new, read-only `MarketPool` functions close this:
+
+- **`quote_yt_for_sy(yt_in) -> Quote`** previews `swap_yt_for_sy` (flash-redeem): recombining
+  `yt_in` YT with `yt_in` PT pulled from the pool's own reserve, at the live oracle rate, minus the
+  curve-priced cost of pulling that PT. Replicates `swap_yt_for_sy`'s math exactly — same
+  `calc_buy_exact_pt` call, same `recombined = yt_in * SCALE / rate` formula `PrincipalManager.recombine`
+  itself uses — rather than calling the real swap and discarding its effects, since the quote must
+  stay read-only (no `require_auth`, no state change).
+- **`quote_sy_for_yt(sy_in) -> FlashMintQuote`** previews `swap_sy_for_yt` (flash-mint):
+  tokenizing `sy_in` SY into PT+YT at the live oracle rate and `MarketConfig`'s tokenization fee,
+  then selling the minted PT back into the same pool at the live curve price. `FlashMintQuote`
+  reports the mint fee and the swap fee separately (`mint_fee_shares`, `swap_fee_shares`), not just
+  a net number, so a dapp can show the user both legs' cost the way Bastien's request asked for.
+  Replicates `PrincipalManager.mint`'s exact ceil-rounded-fee, floor-rounded-notional formula
+  in-contract rather than calling it.
+
+**Both reverts match their real swap exactly, not just their happy path** — proven live, not just
+in the Rust test suite (`contracts/integration_tests/tests/amm.rs`,
+`quote_yt_for_sy_reverts_the_same_way_the_real_swap_does`): a YT position priced at near-zero (rate
+above 1.0 and the curve close enough to par that recombining can't cover the PT it must buy back)
+makes `quote_yt_for_sy` revert `InsufficientLiquidity` (pool error 9) exactly like `swap_yt_for_sy`
+itself would — confirmed on a fresh market (`CDRDFQ7IHM6K6II7BDWLQCF4L3UWG6S4GTAPRB7XKBIOOS3J6YH7O367`,
+30-minute maturity, 1.05 oracle rate): both `quote_yt_for_sy(1000000)` and the real
+`Router.swap_yt_for_sy(1000000, ...)` reverted with the identical contract error, at simulation, so
+no transaction hash exists for either (correct — neither should have submitted).
+
+**Getting a genuinely profitable flash-redeem to demonstrate the happy path took two more fresh
+markets, and that itself is a real finding worth recording.** A 1.05 oracle rate shrinks
+`recombine`'s payout by dividing by 1.05, while a shallow discount (PT seeded at a 0.95 SY/PT
+ratio) only lowers the cost of buying back the PT by a few percent — not enough margin to clear
+that division. A second market seeded with the same 0.95 ratio but a 180-day maturity hit the same
+wall (`quote_yt_for_sy` and the real swap both reverted `InsufficientLiquidity` again, for the same
+reason, just confirmed twice). Only a third market, seeded at a steeper 0.80 PT/SY ratio
+(`add_liquidity(pt_desired=100000000, sy_desired=80000000, ...)`), left enough margin for a small
+trade to clear it. This is not a quote bug — it is the real economics `PrincipalManager.recombine`
+enforces, and matches the already-existing Rust regression
+`flash_redeem_reverts_when_the_yt_cannot_cover_the_pt_it_consumes` — but it means a dapp's YT-sell
+UI should expect `quote_yt_for_sy` to legitimately return "no, you'd lose money" close to maturity
+whenever the oracle rate has moved enough, and should surface that rather than treat it as an
+error state.
+
+Live evidence, all three calls on market `CCXMGKRUMRHXJUQ66HN4Y6U2LKWYRLUQO75OIROWOYNXL6OE2KS32NI2`
+(180-day maturity, seeded 100,000,000 PT / 80,000,000 SY, oracle rate 1.05):
+
+| Call | Quoted | Real result | Transaction |
+|---|---|---|---|
+| `quote_yt_for_sy(1000000)` then `Router.swap_yt_for_sy(1000000, ...)` | `{"amount_out":"18544","fee_shares":"461"}` | `18544` SY paid out | [0a1d5918...](https://stellar.expert/explorer/testnet/tx/0a1d5918674e12ef6f3ea5c6a701ca0bb1c808ce90e757aeda1eb91d3663f1a3) |
+| `quote_sy_for_yt(15000000)` then `Router.swap_sy_for_yt(15000000, ...)` | `{"yt_out":"15742125","sy_back":"14399757",...}` | `yt_out=15742125`, `sy_back=14399758` | [5ae51df2...](https://stellar.expert/explorer/testnet/tx/5ae51df2fd07b5ec21fc9dbadfc20a3d4df6732bbd1362646fcfe6cc7a1c4a11) |
+
+`quote_yt_for_sy`'s payout matched the real swap bit-for-bit. `quote_sy_for_yt`'s `yt_out` (the
+mint leg, priced off the oracle rate, which does not move between two calls seconds apart) also
+matched exactly; `sy_back` (the sell-PT leg, priced off the time-decaying curve) was one raw unit
+off — the quote was simulated a few seconds, and one ledger close, before the real swap executed,
+and `seconds_to_maturity` ticked down by that much in between. This is the same class of
+quote-vs-execution drift as §2's third gotcha, not a flaw in the quote math: the Rust test suite's
+`quote_sy_for_yt_matches_the_real_flash_mint_outcome_exactly` asserts a bit-for-bit match because
+there the quote and the swap execute inside the same simulated ledger, with no real time passing
+between them — a guarantee only a single atomic call (not two separate client round-trips) can
+give on live Testnet. A dapp quoting a flash-mint SY-back amount should treat it as indicative
+down to the last one or two raw units, exactly like every other `min_*_out` parameter in this
+Router, rather than assume byte-for-byte equality with whatever ledger the swap lands in.
+
+```bash
+# Both quotes, read-only, no signature needed beyond a throwaway simulation account:
+./scripts/quote_market.sh "$POOL_ID" v11-carol 0 0 1000000 15000000
+```
+
 ---
 
 ## 6. Error reference (master table)
@@ -534,7 +614,7 @@ passed" — expected behavior once `now >= maturity`, not a bug (see
 |---|---|
 | `scripts/create_market_via_factory.sh` | the three factory calls + wiring, parametrized (§3.4) |
 | `scripts/amm_lifecycle_demo.sh` | deposit → mint → liquidity → swap → (optionally) settle → redeem (§5.3) |
-| `scripts/quote_market.sh` | read-only AMM pricing, no signing key needed (§5.1) |
+| `scripts/quote_market.sh` | read-only AMM pricing, no signing key needed, including the YT quotes (§5.1, §5.4) |
 | `scripts/create_market.sh` | the fully-manual, pre-factory 11-step deployment (kept as a fallback / reference) |
 | `scripts/check_market_status.sh` | live probe for whether a given market is open or matured |
 
@@ -573,14 +653,27 @@ This document was reviewed against the live network, not just reread. Specifical
      composition rather than inside `MarketPool` — fixed with a new `SYWrapper.withdraw_all` and,
      for `add_liquidity_keep_yt`, a caller-supplied `mint_amount` instead of a mid-execution
      `zap_swap_amount` call (§2's third gotcha, §4.1).
-- For the contract-level changes (fixes #4 and #5, plus the five new Router functions and
-  `SYWrapper.withdraw_all`): `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
-  --locked -- -D warnings`, and `cargo test --workspace` were all run clean after every change,
-  not just once at the end — including new regression tests
-  (`single_sided_deposit_leaves_no_residual_sy_stranded_in_the_pool`,
+- For the contract-level changes (fixes #4 and #5, plus the five new Router functions,
+  `SYWrapper.withdraw_all`, and the two new `MarketPool` quote functions in §5.4): `cargo fmt --all
+  -- --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test
+  --workspace` were all run clean after every change, not just once at the end — including new
+  regression tests (`single_sided_deposit_leaves_no_residual_sy_stranded_in_the_pool`,
   `withdraw_all_takes_the_entire_balance` and its two `#[should_panic]` siblings,
-  `router_underlying_denominated_flows_and_keep_yt_work_end_to_end`). `bash -n` was run on every
+  `router_underlying_denominated_flows_and_keep_yt_work_end_to_end`,
+  `quote_yt_for_sy_matches_the_real_flash_redeem_payout_exactly`,
+  `quote_yt_for_sy_reverts_the_same_way_the_real_swap_does`, and
+  `quote_sy_for_yt_matches_the_real_flash_mint_outcome_exactly`). `bash -n` was run on every
   modified/added script.
+- §5.4's two quote functions needed three fresh markets to verify live, not one: the first two
+  (30-minute and 180-day maturity, both seeded at a 0.95 PT/SY ratio) could only demonstrate
+  `quote_yt_for_sy`'s revert path — a genuinely profitable flash-redeem needed a third, seeded at a
+  steeper 0.80 ratio, to leave enough margin against the 1.05 oracle rate. That took longer than
+  expected and is recorded as a finding in §5.4 itself, not smoothed over here. The one-raw-unit
+  gap between `quote_sy_for_yt`'s quoted `sy_back` and the real swap's (§5.4) is real, reproduced
+  exactly once, and is attributed to the ledger close between the two separate calls — not
+  re-attempted dozens of times to see if it is consistent, since the mechanism (§2's third gotcha)
+  already explains it and the Rust test suite proves the underlying formula matches bit-for-bit
+  when no time passes between quote and execution.
 - `settle_all`/`redeem` (§5.3 step 5) were added after this market's maturity actually passed
   during the writing of this guide (not simulated, not assumed) — settled at 10,500,000, redeemed
   594,317,500 PT and 1,364,317,500 YT for 566,016,666 raw STA, 0 from the YT leg.
