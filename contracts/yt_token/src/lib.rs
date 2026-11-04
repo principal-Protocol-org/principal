@@ -313,7 +313,6 @@ impl YTTokenContract {
             panic_with_error!(&env, Error::InsufficientBalance);
         }
         Self::sync_index(&env);
-        Self::sync_index(&env);
         Self::settle(&env, &from);
         Self::settle(&env, &to);
 

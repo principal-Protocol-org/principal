@@ -483,17 +483,29 @@ fn router_registry_is_admin_only_validated_and_required_by_every_flow() {
 }
 
 #[test]
-fn router_registration_rejects_a_pool_that_belongs_to_a_different_market() {
-    // A second, independent market stack: its pool trades different SY/PT/YT tokens than the
-    // first stack's manager describes... registering pool B against router A is fine, because a
-    // pool is self-describing; what must fail is a pool whose manager disagrees with its own
-    // tokens. That cannot happen by construction (the pool reads them from its manager), so the
-    // check is exercised by the positive path: the resolved info always matches the pool.
+fn router_resolves_market_info_directly_from_the_pool_so_it_cannot_disagree_with_it() {
+    // `register_market` keeps no independent registry entry that could drift out of sync with
+    // the pool: it reads `sy_address`/`pt_address`/`yt_address` straight off the pool being
+    // registered, so a registered pool's `MarketInfo` cannot describe different tokens than the
+    // pool itself trades. There is no "a pool whose manager disagrees with its own tokens"
+    // scenario to construct against this design -- that can't happen by construction. What *can*
+    // be checked is the positive-path property this relies on, and that each separately
+    // registered pool gets its own independent `MarketInfo` (not a single, pool-address-blind
+    // cache), using a second pool registered on this stack's own manager.
     let s = deploy(Config::free(T0 + 180 * DAY));
     let info = s.router.market(&s.pool.address);
     assert_eq!(info.sy, s.pool.sy_address());
     assert_eq!(info.pt, s.pool.pt_address());
     assert_eq!(info.yt, s.pool.yt_address());
+
+    let other = MarketPoolContractClient::new(&s.env, &s.env.register(MarketPoolContract, ()));
+    other.initialize(&s.admin, &s.pm.address, &4);
+    s.router.register_market(&s.admin, &other.address);
+    let other_info = s.router.market(&other.address);
+    assert_eq!(other_info.sy, other.sy_address());
+    assert_eq!(other_info.pt, other.pt_address());
+    assert_eq!(other_info.yt, other.yt_address());
+    assert_ne!(info, other_info);
 }
 
 #[test]
@@ -833,6 +845,39 @@ fn router_flash_mint_yt_from_underlying_wraps_only_the_budget() {
         underlying_before - underlying_budget
     );
     assert_eq!(s.sy.balance_of(&buyer), underlying_budget - net_cost);
+}
+
+/// `underlying_budget` is a separate, caller-chosen amount, not derived from `max_net_cost` --
+/// nothing stops a caller from passing a budget below the real net cost. That must revert
+/// cleanly (the pool simply cannot pull more SY than the buyer ends up holding), and because a
+/// Soroban panic rolls back the *entire* transaction, the earlier underlying-to-SY wrap must be
+/// undone too, not left half-applied.
+#[test]
+fn router_flash_mint_yt_from_underlying_reverts_cleanly_when_the_budget_is_below_the_net_cost() {
+    let (s, _, _) = seeded(UnderlyingKind::Sac);
+    let pool = s.pool.address.clone();
+    let sy_in = 100 * SCALE;
+    let quote = s.pool.quote_sy_for_yt(&sy_in);
+    let net_cost = sy_in - quote.sy_back;
+    let underlying_budget = net_cost - 1; // one unit short of the real cost
+
+    let buyer = s.new_user();
+    s.mint_underlying(&buyer, underlying_budget);
+    let underlying_before = underlying_balance(&s, &buyer);
+
+    let r = s.router.try_flash_mint_yt_from_underlying(
+        &buyer,
+        &pool,
+        &sy_in,
+        &0,
+        &net_cost,
+        &underlying_budget,
+        &u64::MAX,
+    );
+    assert!(r.is_err());
+    assert_eq!(underlying_balance(&s, &buyer), underlying_before);
+    assert_eq!(s.yt.balance(&buyer), 0);
+    assert_eq!(s.sy.balance_of(&buyer), 0);
 }
 
 #[test]

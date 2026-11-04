@@ -190,3 +190,25 @@ all under the 128 KB limit. The CI `wasm` job gates on it.
   defect before this function existed, and `flash_mint_yt` was verified live on Testnet minting
   against a notional larger than the caller's own SY balance. `swap_sy_for_yt`/
   `swap_underlying_for_yt` remain as the capital-up-front alternative, unchanged.
+* **"Early PT redemption before maturity at an oracle-derived discount"** (the funded roadmap's
+  own wording for a `PrincipalManager` feature) **is this pool's `swap_pt_for_sy`/
+  `swap_pt_for_underlying`, not a separate function** -- clarified explicitly here because an
+  audit review (`docs/AUDIT_2026_11_04_FULL_REVIEW.md`) found the clause present in the funded
+  text but silently dropped from every later deliverable/acceptance document, with no function
+  anywhere actually named for it. `PrincipalManager.recombine` is not a substitute (it needs
+  *matching* YT, which a PT-only holder may not have, and pays the *current* oracle rate with no
+  discount at all -- it is simply reversing a mint, not an early exit). This pool's swap *is* an
+  oracle-derived discount: `calc_sell_pt` (§2, §3) values the SY leg at the live oracle rate
+  before running it through the curve, and the curve's own exponent `a` is a direct function of
+  time-to-maturity, so the discount a PT holder receives is anchored to the oracle and shrinks
+  toward zero as maturity approaches -- exactly the "oracle-derived discount" the roadmap
+  describes, just computed through the curve (which also reflects real supply and demand) rather
+  than a separate formula.
+  A standalone, non-market-priced redemption function was deliberately **not** built to close
+  this: `PrincipalManager` has no reserve of its own beyond the SY fungibly backing all
+  outstanding PT+YT in aggregate (per-position earmarking doesn't exist), so any formulaic
+  discount not backed by matched counter-liquidity either shortchanges the YT side still
+  outstanding against that same notional, or requires inventing a second, parallel pricing
+  mechanism that has to stay exactly consistent with the curve's own time-decay math forever -- a
+  new, ongoing solvency-bug surface for no economic benefit over the mechanism already live,
+  tested, and audited today.

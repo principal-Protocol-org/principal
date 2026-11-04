@@ -296,6 +296,112 @@ fn deviation_guard_does_not_apply_to_the_first_ever_value() {
     assert!(accepted);
 }
 
+#[test]
+fn deviation_overflow_is_rejected_gracefully_not_panicked() {
+    // An astronomically large submission would overflow the raw `(value - current_price) *
+    // BPS_SCALE` multiplication; this must go through the same graceful-rejection path as an
+    // ordinary over-threshold deviation, not panic (which would also discard the rejection record
+    // this module's own doc promises callers can read).
+    let (_env, client, admin, primary) = setup();
+    client.set_reference_value(&admin, &primary, &1_i128, &1_700_000_000_u64);
+    let accepted = client.set_reference_value(&admin, &primary, &i128::MAX, &1_700_001_000_u64);
+    assert!(!accepted);
+    assert_eq!(client.get_reference_value(), 1_i128);
+    assert_eq!(
+        client.last_rejection().unwrap().reason,
+        Symbol::new(&_env, "deviate")
+    );
+}
+
+// --------------------------------------------------------------------------------- value bounds
+
+#[test]
+fn value_bounds_default_unset() {
+    let (_env, client, _admin, _primary) = setup();
+    assert_eq!(client.value_bounds(), None);
+}
+
+#[test]
+fn set_value_bounds_validates_the_range() {
+    let (_env, client, admin, _primary) = setup();
+    assert_eq!(
+        client
+            .try_set_value_bounds(&admin, &0_i128, &100_i128)
+            .err(),
+        err(Error::InvalidValue)
+    );
+    assert_eq!(
+        client
+            .try_set_value_bounds(&admin, &100_i128, &100_i128)
+            .err(),
+        err(Error::InvalidValue)
+    );
+    assert_eq!(
+        client
+            .try_set_value_bounds(&admin, &100_i128, &50_i128)
+            .err(),
+        err(Error::InvalidValue)
+    );
+    client.set_value_bounds(&admin, &1_i128, &100_i128);
+    assert_eq!(client.value_bounds(), Some((1_i128, 100_i128)));
+}
+
+#[test]
+fn set_value_bounds_by_non_admin_panics() {
+    let (env, client, _admin, _primary) = setup();
+    let impostor = Address::generate(&env);
+    let r = client.try_set_value_bounds(&impostor, &1_i128, &100_i128);
+    assert_eq!(r.err(), err(Error::Unauthorized));
+}
+
+#[test]
+fn value_bounds_reject_an_out_of_range_first_ever_value() {
+    // The exact scenario the bounds exist to catch: a relay decimal/scale bug inflates the
+    // genesis submission by orders of magnitude. Without this check it would be accepted
+    // outright (the deviation guard is exempt for the first value, by design -- see above), and
+    // every subsequent *correct* submission would then read as a `decrease` and be rejected
+    // forever, since nothing can move the stored value back down.
+    let (_env, client, admin, primary) = setup();
+    client.set_value_bounds(&admin, &1_i128, &100_000_000_i128); // sane range: up to 10x SCALE
+    let accepted = client.set_reference_value(
+        &admin,
+        &primary,
+        &1_000_000_000_000_i128,
+        &1_700_000_000_u64,
+    );
+    assert!(!accepted);
+    assert_eq!(
+        client.last_rejection().unwrap().reason,
+        Symbol::new(&_env, "oob")
+    );
+    // The feed is left unset, not stuck on the bad value -- a correct genesis value can still be
+    // submitted afterward.
+    assert!(client.try_get_reference_value().is_err());
+    let corrected =
+        client.set_reference_value(&admin, &primary, &10_000_000_i128, &1_700_001_000_u64);
+    assert!(corrected);
+}
+
+#[test]
+fn value_bounds_reject_an_out_of_range_subsequent_value() {
+    let (_env, client, admin, primary) = setup();
+    client.set_reference_value(&admin, &primary, &10_000_000_i128, &1_700_000_000_u64);
+    client.set_value_bounds(&admin, &1_i128, &20_000_000_i128);
+    let accepted =
+        client.set_reference_value(&admin, &primary, &20_000_001_i128, &1_700_001_000_u64);
+    assert!(!accepted);
+    assert_eq!(client.get_reference_value(), 10_000_000_i128);
+}
+
+#[test]
+fn value_within_bounds_is_still_accepted() {
+    let (_env, client, admin, primary) = setup();
+    client.set_value_bounds(&admin, &1_i128, &100_000_000_i128);
+    let accepted =
+        client.set_reference_value(&admin, &primary, &10_000_000_i128, &1_700_000_000_u64);
+    assert!(accepted);
+}
+
 // --------------------------------------------------------------------------------------- fallback
 
 #[test]

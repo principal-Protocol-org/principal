@@ -27,10 +27,12 @@ currently usable" without first picking its own staleness threshold.
 | A deviation guard: reject an increase of more than `max_deviation_bps` | The funded text's ±10% guard against a compromised or malfunctioning feed pushing a large upward jump in one tick. Decreases are already caught first by the existing `ValueDecreased` check, so this only ever fires on an outsized increase |
 | `last_rejection()` / `LastRejectedValue`/`Timestamp`/`Reason` / `ref_rej` event | A public dashboard needs to show "why was the last update rejected" from a contract read, not from a private relay's own log (`docs/TRANCHE_2_3_TECHNICAL_SPECIFICATION.md` §10.5) |
 | A fallback that may only refresh the timestamp, never the value | The funded text's "recommended conservative policy" §10.3: primary is the sole source of truth for price; fallback exists only to keep the feed from reading stale when primary is briefly unavailable |
+| `set_value_bounds(caller, min_value, max_value)` / `value_bounds()`, admin-only, unset by default | Found during a later audit review: a sane absolute range checked on every accepted value, including the first-ever submission, to catch a relay decimal/scale bug before it is ever stored — see §6 |
 
 New errors, appended after the existing seven rather than renumbering them (`AlreadyInitialized`=1
 … `TimestampInFuture`=7, unchanged): `OracleUnavailable`=8, `DeviationTooHigh`=9,
-`InvalidSource`=10, `InvalidDeviation`=11, `InvalidStaleness`=12, `FallbackNotConfigured`=13.
+`InvalidSource`=10, `InvalidDeviation`=11, `InvalidStaleness`=12, `FallbackNotConfigured`=13,
+`ValueOutOfBounds`=14 (the last added in the same audit review as the value-bounds check itself).
 
 ## 3. Hard failures vs. graceful rejections — and why both exist
 
@@ -195,12 +197,27 @@ specifically exercise the 3,600-second production boundary narrow their own mark
   move is now impossible in one call under any valid configuration, by design, so the test was
   changed to a 10% bump — the only property it actually needed was "rate > SCALE", not any
   particular magnitude.
-- **Deviation arithmetic** (`(value - current_price) * BPS_SCALE / current_price`) uses `i128`
-  with this codebase's workspace-wide `overflow-checks = true` release profile setting, so an
-  adversarial or malformed value large enough to overflow the intermediate product would panic
-  (abort the transaction) rather than silently wrap into a wrong, under-protective accepted value
-  — a fail-closed outcome consistent with how every other fixed-point calculation in this codebase
-  already relies on the same release-profile setting.
+- **Deviation arithmetic** (`(value - current_price) * BPS_SCALE / current_price`) was originally
+  written with raw `i128` operators, relying on this codebase's workspace-wide `overflow-checks =
+  true` release profile setting to fail closed (abort the transaction) rather than silently wrap
+  into a wrong, under-protective accepted value if an adversarial or malformed value overflowed
+  the intermediate product. A later audit review pointed out that an abort here is *worse* than
+  it looks: this module's own contract (§3 above) is that a policy-rejected submission never
+  panics, so a dashboard reading `last_rejection()` can always see why the last update was
+  refused — but an overflow panic discards that same record along with everything else in the
+  call. The arithmetic now uses `checked_mul`/`checked_div` and treats an overflow as "deviation
+  far exceeds the threshold," routing it through the same graceful `reject(..., "deviate")` path
+  as an ordinary over-threshold increase, rather than panicking.
+- **An optional sane absolute value range** (`set_value_bounds(caller, min_value, max_value)`,
+  admin-only, unset by default) is checked against *every* accepted value, including the
+  first-ever submission — which is otherwise exempt from the deviation guard, since there is
+  nothing yet to deviate from. This closes a gap the deviation guard cannot: a relay decimal/scale
+  bug (e.g. an 18-decimal raw value where the feed expects 8) inflating the genesis value by many
+  orders of magnitude would, without this check, be accepted outright as the exempt first value —
+  and every later *correct* submission would then read as a `decrease` and be rejected forever,
+  since nothing can move the stored value back down without reopening exactly the insolvency path
+  the monotonic-value invariant (§1 above) exists to close. A violation rejects gracefully
+  (`reason = "oob"`), the same as every other policy rejection in this module.
 - **What this doc does not verify live**: the fallback source's timestamp-only-refresh policy
   (§4 explains why — it has no network-timing dependency, and is covered exhaustively by unit
   tests instead) and a literal 3,600-second real-time wait for the production staleness window

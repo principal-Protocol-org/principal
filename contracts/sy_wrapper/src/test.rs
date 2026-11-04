@@ -4,8 +4,9 @@ use soroban_sdk::{
 };
 
 use principal_permissioning::{PermissioningContract, PermissioningContractClient};
+use principal_risk_control::{RiskControlContract, RiskControlContractClient};
 
-use super::{SYWrapperContract, SYWrapperContractClient, RATE_SCALE};
+use super::{Error, SYWrapperContract, SYWrapperContractClient, RATE_SCALE};
 
 /// Deploy a minimal mock SAC for testing. `admin` becomes the SAC's real admin, matching
 /// how `initialize` now requires SYWrapper's own admin to equal `underlying.admin()`. The
@@ -498,4 +499,156 @@ fn admin_transfer_and_getters() {
     let new_admin = Address::generate(&f.env);
     f.client.transfer_admin(&f.admin, &new_admin);
     assert_eq!(f.client.get_admin(), new_admin);
+}
+
+// ====================================================================== slippage / cap / risk-control
+// Coverage gap found during an audit review: none of these three documented security controls
+// (front-running protection, per-address exposure limits, the protocol-wide circuit breaker) had
+// any test at all -- every deposit/withdraw call elsewhere in this file passes `0` for the min-out
+// parameter, and `set_deposit_cap`/`set_risk_control` were never exercised.
+
+#[test]
+fn deposit_slippage_exact_minimum_passes_one_more_reverts() {
+    let f = setup();
+    let user = Address::generate(&f.env);
+    grant(&f, &user);
+    mint(&f.env, &f.underlying, &f.admin, &user, 1_000_000_000);
+
+    // 1:1 at the first deposit, so the exact minimum is the deposited amount itself.
+    assert_eq!(
+        f.client
+            .try_deposit(&user, &1_000_000_000_i128, &1_000_000_000_i128)
+            .err(),
+        None
+    );
+}
+
+#[test]
+#[should_panic]
+fn deposit_slippage_one_above_the_real_output_panics() {
+    let f = setup();
+    let user = Address::generate(&f.env);
+    grant(&f, &user);
+    mint(&f.env, &f.underlying, &f.admin, &user, 1_000_000_000);
+    f.client
+        .deposit(&user, &1_000_000_000_i128, &1_000_000_001_i128);
+}
+
+#[test]
+fn withdraw_slippage_exact_minimum_passes_one_more_reverts() {
+    let f = setup();
+    let user = Address::generate(&f.env);
+    grant(&f, &user);
+    mint(&f.env, &f.underlying, &f.admin, &user, 1_000_000_000);
+    let shares = f.client.deposit(&user, &1_000_000_000_i128, &0);
+
+    assert_eq!(
+        f.client
+            .try_withdraw(&user, &shares, &user, &1_000_000_000_i128)
+            .err(),
+        None
+    );
+}
+
+#[test]
+#[should_panic]
+fn withdraw_slippage_one_above_the_real_output_panics() {
+    let f = setup();
+    let user = Address::generate(&f.env);
+    grant(&f, &user);
+    mint(&f.env, &f.underlying, &f.admin, &user, 1_000_000_000);
+    let shares = f.client.deposit(&user, &1_000_000_000_i128, &0);
+    f.client
+        .withdraw(&user, &shares, &user, &1_000_000_001_i128);
+}
+
+#[test]
+fn deposit_cap_boundary_exactly_at_the_cap_passes_and_one_more_reverts() {
+    let f = setup();
+    f.client.set_deposit_cap(&f.admin, &1_000_i128);
+    let user = Address::generate(&f.env);
+    grant(&f, &user);
+    mint(&f.env, &f.underlying, &f.admin, &user, 2_000);
+
+    assert_eq!(f.client.deposit(&user, &1_000_i128, &0), 1_000);
+    assert_eq!(
+        f.client.try_deposit(&user, &1_i128, &0).err(),
+        Some(Ok(soroban_sdk::Error::from_contract_error(
+            Error::DepositCapExceeded as u32
+        )))
+    );
+}
+
+#[test]
+fn deposit_cap_is_released_on_withdraw_so_a_fresh_deposit_up_to_the_cap_succeeds_again() {
+    let f = setup();
+    f.client.set_deposit_cap(&f.admin, &1_000_i128);
+    let user = Address::generate(&f.env);
+    grant(&f, &user);
+    mint(&f.env, &f.underlying, &f.admin, &user, 3_000);
+
+    f.client.deposit(&user, &1_000_i128, &0);
+    assert_eq!(
+        f.client.try_deposit(&user, &1_i128, &0).err(),
+        Some(Ok(soroban_sdk::Error::from_contract_error(
+            Error::DepositCapExceeded as u32
+        )))
+    );
+
+    // Withdrawing releases net-deposited headroom, not just the cap check itself.
+    f.client.withdraw(&user, &500_i128, &user, &0);
+    assert_eq!(f.client.deposit(&user, &500_i128, &0), 500);
+    // Back at the cap again.
+    assert_eq!(
+        f.client.try_deposit(&user, &1_i128, &0).err(),
+        Some(Ok(soroban_sdk::Error::from_contract_error(
+            Error::DepositCapExceeded as u32
+        )))
+    );
+}
+
+fn setup_risk_control(f: &Fixture) -> RiskControlContractClient<'static> {
+    let rc_id = f.env.register_contract(None, RiskControlContract);
+    let rc = RiskControlContractClient::new(&f.env, &rc_id);
+    rc.initialize(&f.admin, &(10_000 * 1_000_000_000_i128));
+    rc
+}
+
+#[test]
+fn a_wired_risk_control_that_is_not_a_registered_consumer_fails_closed() {
+    // "a wired wrapper that is not a registered consumer reverts" -- documented in
+    // `docs/SECURITY.md`; this is the only place that property was actually exercised.
+    let f = setup();
+    let rc = setup_risk_control(&f);
+    f.client.set_risk_control(&f.admin, &rc.address);
+    // Deliberately never registered as a consumer.
+
+    let user = Address::generate(&f.env);
+    grant(&f, &user);
+    mint(&f.env, &f.underlying, &f.admin, &user, 1_000_000_000);
+    assert!(f
+        .client
+        .try_deposit(&user, &1_000_000_000_i128, &0)
+        .is_err());
+}
+
+#[test]
+fn risk_control_blocks_a_deposit_that_would_exceed_the_shared_limit() {
+    let f = setup();
+    let rc = setup_risk_control(&f);
+    f.client.set_risk_control(&f.admin, &rc.address);
+    rc.add_consumer(&f.admin, &f.client.address);
+    rc.set_cb_limit(&f.admin, &1_000_i128);
+
+    let user = Address::generate(&f.env);
+    grant(&f, &user);
+    mint(&f.env, &f.underlying, &f.admin, &user, 2_000);
+
+    assert_eq!(f.client.deposit(&user, &1_000_i128, &0), 1_000);
+    assert_eq!(rc.get_cb_volume(), 1_000);
+    // One more unit trips the shared breaker -- and the deposit itself reverts, atomically, with
+    // no separate manual call needed.
+    assert!(f.client.try_deposit(&user, &1_i128, &0).is_err());
+    assert_eq!(f.client.balance_of(&user), 1_000);
+    assert_eq!(rc.get_cb_volume(), 1_000);
 }

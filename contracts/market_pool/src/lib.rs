@@ -606,7 +606,12 @@ impl MarketPoolContract {
         let (pt_used, sy_used, lp) = if total_lp == 0 {
             Self::assert_fresh_oracle(&env);
             let rate = Self::rate(&env);
-            if sy_desired * rate / SCALE > pt_desired {
+            // Round the SY leg's value *up* here (not the floor a plain `/` would give): the
+            // floored value under-reports `sy_desired`'s true worth by up to one part in `SCALE`,
+            // which would let a ratio a hair under par pass this guard. Every other
+            // reserve-sizing computation in this contract already rounds in the pool's favor;
+            // this one-time first-deposit check should too.
+            if Self::ceil_div(sy_desired * rate, SCALE) > pt_desired {
                 panic_with_error!(&env, Error::InvalidInitialRatio);
             }
             let root = math::isqrt(

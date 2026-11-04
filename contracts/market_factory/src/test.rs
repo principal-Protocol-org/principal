@@ -93,6 +93,106 @@ fn create_tokens_requires_issuer_auth() {
     c.create_tokens(&issuer, &salt(&env, 9), &wasm, &params);
 }
 
+/// `create_engine` rejects a `tokens` argument that does not match what `create_tokens` would
+/// have deployed for this exact `salt` -- the fix for the audit finding that nothing previously
+/// checked this on-chain (a wrong salt, or a stale/copy-pasted `tokens` struct, would otherwise
+/// wire a market's one-time minter/circuit-breaker references to the wrong, unrelated contracts
+/// -- irreversibly, since `set_minter` can only ever be called once). The check runs before any
+/// deployment, so this needs no real Wasm.
+#[test]
+fn create_engine_rejects_a_tokens_value_that_does_not_match_the_salt() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let c = client(&env);
+    let issuer = Address::generate(&env);
+    let s = salt(&env, 11);
+
+    // Well-formed, but not what `create_tokens` would have deployed for this salt.
+    let wrong_tokens = MarketTokens {
+        sy_wrapper: Address::generate(&env),
+        pt_token: Address::generate(&env),
+        yt_token: Address::generate(&env),
+    };
+    let zero = BytesN::from_array(&env, &[0u8; 32]);
+    let r = c.try_create_engine(
+        &issuer,
+        &s,
+        &EngineWasmHashes {
+            market_config: zero.clone(),
+            principal_manager: zero,
+        },
+        &wrong_tokens,
+        &EngineParams {
+            underlying: Address::generate(&env),
+            maturity: 2_000_000,
+            permissioning: Address::generate(&env),
+            oracle: Address::generate(&env),
+            risk_control: Address::generate(&env),
+            protocol_admin: Address::generate(&env),
+            treasury: Address::generate(&env),
+            tokenization_fee_bps: 5,
+            yt_fee_bps: 1_000,
+            swap_fee_tier_bps: 10,
+            protocol_share_bps: 2_000,
+        },
+    );
+    assert_eq!(
+        r.err(),
+        Some(Ok(soroban_sdk::Error::from_contract_error(
+            Error::TopologyMismatch as u32
+        )))
+    );
+}
+
+/// The real `tokens` value for this salt (as `predict_market` derives it) must still be accepted
+/// -- the mismatch check above must not be so strict it rejects the legitimate, matching case.
+/// Fails before any real deploy happens here too, since the wasm hashes are zero, but that
+/// failure must come from the *deploy* step, not `TopologyMismatch`.
+#[test]
+fn create_engine_accepts_a_tokens_value_that_matches_the_salt() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let c = client(&env);
+    let issuer = Address::generate(&env);
+    let s = salt(&env, 12);
+    let predicted = c.predict_market(&s);
+    let matching_tokens = MarketTokens {
+        sy_wrapper: predicted.sy_wrapper,
+        pt_token: predicted.pt_token,
+        yt_token: predicted.yt_token,
+    };
+    let zero = BytesN::from_array(&env, &[0u8; 32]);
+    let r = c.try_create_engine(
+        &issuer,
+        &s,
+        &EngineWasmHashes {
+            market_config: zero.clone(),
+            principal_manager: zero,
+        },
+        &matching_tokens,
+        &EngineParams {
+            underlying: Address::generate(&env),
+            maturity: 2_000_000,
+            permissioning: Address::generate(&env),
+            oracle: Address::generate(&env),
+            risk_control: Address::generate(&env),
+            protocol_admin: Address::generate(&env),
+            treasury: Address::generate(&env),
+            tokenization_fee_bps: 5,
+            yt_fee_bps: 1_000,
+            swap_fee_tier_bps: 10,
+            protocol_share_bps: 2_000,
+        },
+    );
+    // Not a TopologyMismatch -- it fails later, trying to deploy with a zero/invalid Wasm hash.
+    assert_ne!(
+        r.err(),
+        Some(Ok(soroban_sdk::Error::from_contract_error(
+            Error::TopologyMismatch as u32
+        )))
+    );
+}
+
 /// Sanity check on the salt-mixing helper itself: `Bytes::append` + `sha256` must not collapse two
 /// different (salt, tag) pairs onto the same sub-salt for the tags this contract actually uses.
 #[test]

@@ -109,6 +109,15 @@ See `contracts/market_factory/src/lib.rs` for full doc comments. Summary:
 The same `salt` must be passed to all three calls for one market. `issuer` must be the underlying's
 live issuer authority and must sign every call.
 
+`create_engine` and `create_pool_and_escrow` verify their `tokens`/`engine` arguments on-chain
+before using them: each recomputes the addresses `salt` must have deployed in the earlier phase
+(the same derivation `predict_market` uses) and reverts `Error::TopologyMismatch`(1) if the
+caller-supplied struct doesn't match. Found during an audit review: previously nothing enforced
+this beyond caller convention, so a wrong `salt` or a stale/copy-pasted `tokens`/`engine` value
+would wire a market's one-time minter/circuit-breaker/recovery-escrow references to the wrong,
+unrelated contracts — irreversibly, since `set_minter` and the other one-time setters it drives
+can only ever be called once per token.
+
 ## Tests
 
 - `contracts/market_factory/src/test.rs` — pure-logic unit tests (address determinism, the auth

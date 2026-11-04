@@ -51,6 +51,42 @@ fn an_over_limit_deposit_reverts_automatically_with_no_manual_call() {
     );
 }
 
+/// `MarketPool.flash_mint_yt` never calls `RiskControl` itself -- but it mints through
+/// `PrincipalManager.mint` internally (the pool calling as itself, self-authorized), and that
+/// call reports the tokenized value to the circuit breaker exactly as an ordinary user mint
+/// would. So a true flash-mint is gated by the shared protocol-wide limit too; it is not an
+/// unguarded side door around the breaker.
+#[test]
+fn flash_mint_yt_is_gated_by_the_circuit_breaker_through_principal_managers_own_mint() {
+    let s = deploy(Config::free(LONG));
+    seed_pool(&s, 1_000 * SCALE, 950 * SCALE);
+    let buyer = s.new_user();
+    // Give the buyer SY headroom before the breaker is armed, matching the existing
+    // `an_over_limit_mint_reverts_automatically` pattern -- only the flash-mint's own internal
+    // mint should be counted against the tight limit set below.
+    deposit_sy(&s, &buyer, 50 * SCALE);
+    s.risk.set_cb_limit(&s.admin, &(10 * SCALE));
+
+    assert_eq!(
+        s.pool
+            .try_flash_mint_yt(&buyer, &buyer, &(50 * SCALE), &0, &(50 * SCALE))
+            .err(),
+        err_code(RcError::CircuitBreakerTripped as u32)
+    );
+    // Nothing moved: no YT minted, no SY pulled.
+    assert_eq!(s.yt.balance(&buyer), 0);
+    assert_eq!(s.sy.balance_of(&buyer), 50 * SCALE);
+    assert_eq!(s.risk.get_cb_volume(), 0);
+
+    // Raising the limit lets the same call through.
+    s.risk.set_cb_limit(&s.admin, &(1_000 * SCALE));
+    let (yt_out, _) = s
+        .pool
+        .flash_mint_yt(&buyer, &buyer, &(50 * SCALE), &0, &(50 * SCALE));
+    assert!(yt_out > 0);
+    assert_eq!(s.yt.balance(&buyer), yt_out);
+}
+
 #[test]
 fn an_over_limit_mint_reverts_automatically() {
     let s = deploy_stack(LONG);

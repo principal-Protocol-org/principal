@@ -15,12 +15,19 @@ Principal Protocol is a Soroban-native yield tokenization protocol for regulated
 
 The first supported market targets **Ondo USDY on Stellar** — a tokenized US Treasury-backed note whose value increases continuously as interest accrues. The architecture is asset-agnostic and designed to extend to any Stellar yield-bearing asset.
 
-All eleven contracts are implemented and tested (Tranche 1): OracleAdapter, Permissioning, RiskControl,
+All eleven Tranche 1 contracts are implemented and tested: OracleAdapter, Permissioning, RiskControl,
 MarketConfig, SYWrapper, PrincipalManager, PTToken, YTToken, MarketPool, Router and RecoveryEscrow, plus the
 shared `principal_compliance` library. `PrincipalManager` mints and burns real SEP-41 PT/YT through the
 token contracts, `MarketPool` and `Router` provide the PT/SY market and the user flows (including flash-mint
 and flash-redeem YT), and `RecoveryEscrow` recovers SY, PT, YT and LP positions. See
-[TRANCHE_1_DELIVERABLES.md](TRANCHE_1_DELIVERABLES.md) for the acceptance evidence.
+[TRANCHE_1_DELIVERABLES.md](TRANCHE_1_DELIVERABLES.md) for the acceptance evidence. Since that acceptance, a
+twelfth contract, `MarketFactoryContract`, was added to deploy a full market stack atomically (see
+[MARKET_FACTORY.md](MARKET_FACTORY.md)); the Router also gained composed underlying-denominated quotes
+([ROUTER_QUOTES.md](ROUTER_QUOTES.md)) and a true flash-mint for YT
+([AMM_FLASH_SWAP_AND_SIDEREAL_REVIEW.md](AMM_FLASH_SWAP_AND_SIDEREAL_REVIEW.md)), and `OracleAdapter` gained
+multi-source configuration and a deviation guard ([ORACLE_SAFETY_EXTENSION.md](ORACLE_SAFETY_EXTENSION.md)).
+The operations list in §8.1 below reflects the original Tranche 1 Router surface; see those documents for
+everything added since.
 
 Compliance is inherited directly from the underlying asset, controlled throughout by its real, current
 issuer authority — who also controls market creation and its maturity and fee parameters. For a classic
@@ -490,6 +497,14 @@ fn register_market(env, caller, pool) -> MarketInfo        // router admin
 fn unregister_market(env, caller, pool)                    // router admin
 ```
 
+This is the original Tranche 1 surface. Since then the Router also gained `swap_underlying_for_pt`,
+`swap_pt_for_underlying`, `swap_underlying_for_yt`, `swap_yt_for_underlying`, `flash_mint_yt`,
+`flash_mint_yt_from_underlying`, `add_liquidity_keep_yt`, and five `quote_*` preview functions
+(`quote_underlying_for_pt`, `quote_pt_for_underlying`, `quote_underlying_for_yt`, `quote_yt_for_underlying`,
+`quote_add_liquidity_keep_yt`) — see [ROUTER_QUOTES.md](ROUTER_QUOTES.md) and
+[AMM_FLASH_SWAP_AND_SIDEREAL_REVIEW.md](AMM_FLASH_SWAP_AND_SIDEREAL_REVIEW.md), or
+[API_REFERENCE.md](API_REFERENCE.md) for the authoritative current signatures.
+
 ### 8.2 Flash-mint YT (`swap_sy_for_yt`)
 
 Both steps are calls made *as the user* in one atomic transaction — no loan, no Router custody:
@@ -531,16 +546,28 @@ The `OracleAdapter` stores the reference value (USDY/USD, via RedStone's SEP-40 
 ### 9.2 Interface
 
 ```rust
-fn initialize(env, admin)
-fn set_reference_value(env, caller, value: i128, timestamp: u64)
+fn initialize(env, admin, max_stale_seconds: u64, max_deviation_bps: u32)
+fn set_sources(env, caller, primary_source: BytesN<32>, fallback_source: Option<BytesN<32>>)
+fn set_safety_params(env, caller, max_stale_seconds: u64, max_deviation_bps: u32)
+fn set_reference_value(env, caller, source: BytesN<32>, value: i128, timestamp: u64) -> bool
 fn get_reference_value(env) -> i128
 fn get_reference_timestamp(env) -> u64
 fn is_fresh(env, max_stale_seconds: u64) -> bool
+fn is_available(env) -> bool
+fn assert_available(env)
+fn get_primary_source(env) -> Option<BytesN<32>>
+fn get_fallback_source(env) -> Option<BytesN<32>>
+fn get_active_source(env) -> Option<BytesN<32>>
+fn max_stale_seconds(env) -> u64
+fn max_deviation_bps(env) -> u32
+fn last_rejection(env) -> Option<OracleRejection>
 fn transfer_admin(env, current_admin, new_admin)
 fn get_admin(env) -> Address
 ```
 
-`value` is scaled by `RATE_SCALE` (10^7). For example, 1.03 USDC per USDY is stored as `10_300_000`.
+`value` is scaled by `RATE_SCALE` (10^7). For example, 1.03 USDC per USDY is stored as `10_300_000`. The
+full multi-source/deviation-guard design, including `OracleRejection` and why `set_reference_value` returns
+`bool` instead of panicking on a policy rejection, is in [ORACLE_SAFETY_EXTENSION.md](ORACLE_SAFETY_EXTENSION.md).
 
 ### 9.3 Trust model and security
 
@@ -555,7 +582,7 @@ fn get_admin(env) -> Address
 
 **Monotonic value enforcement (already implemented):** `set_reference_value` rejects a value below the currently stored one (`ValueDecreased`); an equal-value resubmission is still allowed. This is enforced because the PT/YT settlement model already, silently, assumes it — `YTToken.update_yield_index` only ever accrues on a rate increase, and PT's `pt_amount * SCALE / final_rate` redemption formula would release more underlying than was ever deposited if the rate could fall below its value at issuance. This matches the reference asset this protocol targets first (USDY, a Treasury-backed, NAV-appreciating token), not a generic market price that can fall.
 
-**Mint and redemption staleness threshold:** At mint and at maturity redemption, the oracle value must be fresh within `MAX_ORACLE_STALENESS_SECS = 3600` (1 hour). This prevents minting or redeeming against an arbitrarily stale rate.
+**Mint and redemption staleness threshold:** At mint and at maturity redemption, the oracle must report `is_available() == true` — fresh within its own configured `max_stale_seconds` (set at `initialize`/`set_safety_params`, no longer a per-caller constant). This prevents minting or redeeming against an arbitrarily stale rate.
 
 ### 9.4 Storage
 
@@ -693,7 +720,7 @@ Each contract has its own `#[contracterror]` enum; the codes are stable and list
 
 | Contract | Codes |
 |---|---|
-| OracleAdapter | AlreadyInitialized 1, Unauthorized 2, InvalidValue 3, TimestampTooOld 4, NotInitialized 5, ValueDecreased 6, TimestampInFuture 7 |
+| OracleAdapter | AlreadyInitialized 1, Unauthorized 2, InvalidValue 3, TimestampTooOld 4, NotInitialized 5, ValueDecreased 6, TimestampInFuture 7, OracleUnavailable 8, DeviationTooHigh 9, InvalidSource 10, InvalidDeviation 11, InvalidStaleness 12, FallbackNotConfigured 13, ValueOutOfBounds 14 |
 | Permissioning | AlreadyInitialized 1, Unauthorized 2, NotInitialized 3 |
 | RiskControl | AlreadyInitialized 1, Unauthorized 2, NotInitialized 3, Paused 4, CircuitBreakerTripped 5, NotPauser 6, AlreadyPauser 7, NotConsumer 8, AlreadyConsumer 9, ZeroAmount 10, AssetLimitTripped 11, InvalidLimit 12, InvalidWindow 13 |
 | MarketConfig | AlreadyInitialized 1, NotInitialized 2, Unauthorized 3, IssuerMismatch 4, FeeTooHigh 5, InvalidShare 6, NotApplicable 7 |
@@ -702,7 +729,7 @@ Each contract has its own `#[contracterror]` enum; the codes are stable and list
 | YTToken | as PTToken with OracleStale 10, NotAuthorizedOnSac 11, IssuerMismatch 12, RecoveryEscrowAlreadySet 13, NotRecoveryEscrow 14 |
 | PrincipalManager | AlreadyInitialized 1, Unauthorized 2, NotInitialized 3, ZeroAmount 4, NotMature 5, AlreadyMature 6, OracleStale 7, Paused 9, PermissionDenied 10, NotAuthorizedOnSac 11, IssuerMismatch 12, TopologyMismatch 13, NothingToClaim 14, ArithmeticOverflow 15 |
 | MarketPool | AlreadyInitialized 1, NotInitialized 2, Unauthorized 3, IssuerMismatch 4, Paused 5, Expired 6, ZeroAmount 7, SlippageExceeded 8, InsufficientLiquidity 9, InsufficientLpBalance 10, PermissionDenied 11, NotAuthorizedOnSac 12, OracleStale 13, MaturityTooFar 14, InvalidInitialRatio 15, MathError 16, RecoveryEscrowAlreadySet 17, NotRecoveryEscrow 18, NothingToClaim 19, InvalidStretch 20, MinimumLiquidity 21 |
-| Router | AlreadyInitialized 1, NotInitialized 2, Unauthorized 3, MarketNotRegistered 4, DeadlineExpired 5, SlippageExceeded 6, TopologyMismatch 7, AlreadyRegistered 8 |
+| Router | AlreadyInitialized 1, NotInitialized 2, Unauthorized 3, MarketNotRegistered 4, DeadlineExpired 5, SlippageExceeded 6, TopologyMismatch 7, AlreadyRegistered 8, PreexistingSyBalance 9 |
 | RecoveryEscrow | AlreadyInitialized 1, NotInitialized 2, Unauthorized 3, TargetStillAuthorized 4, ZeroAmount 5, PositionUnderlyingMismatch 6, BatchTooLarge 7, RecordNotFound 8, AlreadyFinalized 9, NothingToSeize 10, NothingToFinalize 11 |
 
 ---
@@ -721,13 +748,17 @@ Each contract has its own `#[contracterror]` enum; the codes are stable and list
 | `MIN_EXPONENT` | `0.25` (WAD/4) | MarketPool math | Smallest curve exponent (remaining life < 75 % of stretch) |
 | `SECONDS_PER_YEAR` | `31_536_000` | MarketPool | 365-day year |
 | `DEFAULT_WINDOW_LEDGERS` | `17_280` | RiskControl | Default breaker window (~24 h at 5 s) |
-| `MAX_ORACLE_STALENESS_SECS` | `3_600` | PrincipalManager, YTToken, MarketPool | Oracle freshness window |
 | `MAX_BATCH` | `3` | RecoveryEscrow | Accounts per batch seizure — bounded by Soroban's 100-entry ledger footprint with every position type held |
 | `MAX_TOKENIZATION_FEE_BPS` | `100` | MarketConfig | 1 % cap |
 | `MAX_YT_FEE_BPS` | `5_000` | MarketConfig | 50 % cap on claimed yield |
 | `MAX_SWAP_FEE_TIER_BPS` | `500` | MarketConfig | 5 % cap on the tier |
 | `MAX_SWAP_FEE_RATE` | `FEE_SCALE / 10` | MarketConfig | 10 % cap on the effective swap fee |
 | protocol share | `2_000` bps (20 %) initially | MarketConfig | Principal's cut of every fee; creator gets the rest |
+
+The oracle freshness window no longer lives as a local constant in `PrincipalManager`, `YTToken`, or `MarketPool`
+(each previously hardcoded `MAX_ORACLE_STALENESS_SECS = 3_600`). All three now call `OracleAdapter.is_available()`,
+which reads the feed's own centrally-configured `max_stale_seconds` (set at `initialize`/`set_safety_params`) — one
+copy of the policy instead of three that could drift out of sync. See [ORACLE_SAFETY_EXTENSION.md](ORACLE_SAFETY_EXTENSION.md).
 
 ---
 
@@ -808,8 +839,8 @@ Arithmetic uses plain operators with `overflow-checks = true` in the release pro
 
 | Threat | Mitigation |
 |---|---|
-| Stale oracle price | `is_fresh()` checked at every mint and redemption; relay enforces `max_stale_seconds` aligned to `MAX_ORACLE_STALENESS_SECS` |
-| Oracle value manipulation | Admin-only `set_reference_value`; monotonic timestamps; multi-source quorum not yet implemented |
+| Stale oracle price | `is_available()` checked at every mint and redemption, reading the feed's own configured `max_stale_seconds` |
+| Oracle value manipulation | Admin-only `set_reference_value`; monotonic timestamps; a configured primary/fallback source pair with a deviation guard between successive accepted values — not yet an independent-signer multi-source quorum |
 | Oracle value decrease | `set_reference_value` reverts `ValueDecreased` below the currently stored value (equal values allowed) — the settlement model already, silently, assumes a non-decreasing rate |
 | YT overpay at non-par mint rate | The YT index is the closed form `1/rate`; PT + YT telescope to exactly the shares deposited for any mint rate (`pt_plus_yt_claims_never_exceed_…`) |
 | YT genesis baseline overpay | `YTToken.initialize` reads its genesis rate live from the oracle (reverting `OracleStale` if not fresh) rather than hardcoding `SCALE`; `PrincipalManager.mint` calls `update_yield_index()` before crediting a new YT balance, so a fresh mint's snapshot always starts current |

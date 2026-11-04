@@ -157,7 +157,11 @@ maturity the exponent is exactly 1, swaps close, and PT redeems at par through `
 ## 7. Buying and selling YT (flash-mint / flash-redeem)
 
 YT is not pooled. **Buying YT** is `Router.swap_sy_for_yt`: tokenize the SY into PT + YT, sell the PT into
-the pool, keep the YT and the proceeds — in one atomic transaction.
+the pool, keep the YT and the proceeds — in one atomic transaction. This route requires the caller to hold
+the full SY notional up front. `MarketPool.flash_mint_yt` (and its Router wrappers `flash_mint_yt` /
+`flash_mint_yt_from_underlying`) is a true flash-mint alternative: the pool fronts the notional from its own
+reserves, so the caller only needs the net cost. See
+[AMM_FLASH_SWAP_AND_SIDEREAL_REVIEW.md](AMM_FLASH_SWAP_AND_SIDEREAL_REVIEW.md) §5.
 
 **Example 6 — 100 SY into the pool of Example 5 (fee-free).**
 

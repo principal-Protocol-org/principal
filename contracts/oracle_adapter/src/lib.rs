@@ -78,6 +78,10 @@ pub enum Error {
     /// `source` does not match the primary source, and no fallback source is configured at all
     /// -- so whatever the caller intended, it cannot be a fallback submission either.
     FallbackNotConfigured = 13,
+    /// A submitted value fell outside the admin-configured sane range (`set_value_bounds`), if
+    /// one has been set. Checked before the deviation guard and even for a value otherwise
+    /// exempt from it (the first-ever submission) -- see `set_value_bounds`'s doc for why.
+    ValueOutOfBounds = 14,
 }
 
 #[contracttype]
@@ -93,6 +97,8 @@ pub enum DataKey {
     LastRejectedValue,
     LastRejectedTimestamp,
     LastRejectReason,
+    MinSaneValue,
+    MaxSaneValue,
 }
 
 /// The most recent `set_reference_value` call this contract refused, if any. `reason` is one of
@@ -183,6 +189,47 @@ impl OracleAdapterContract {
             .set(&DataKey::MaxDeviationBps, &max_deviation_bps);
     }
 
+    /// Configure an optional sane absolute range checked against *every* accepted value,
+    /// including the first-ever submission (which is otherwise exempt from the deviation guard,
+    /// since there is nothing yet to deviate from). Unset by default -- no bound is enforced
+    /// until this is called at least once.
+    ///
+    /// This exists to catch an operational mistake the deviation guard cannot: a relay
+    /// decimal/scale bug (e.g. submitting an 18-decimal raw amount where the feed expects 8)
+    /// that inflates the very first accepted value by many orders of magnitude. Once such a
+    /// value were accepted, every subsequent *correct* submission would read as a `decrease`
+    /// and be rejected forever -- there is no admin override that can move the stored value
+    /// back down, because that would reopen exactly the insolvency path the monotonic-value
+    /// invariant exists to close (see the module doc). A sane range catches the bad value before
+    /// it is ever stored, which is the only safe place to catch it.
+    pub fn set_value_bounds(env: Env, caller: Address, min_value: i128, max_value: i128) {
+        caller.require_auth();
+        let admin = Self::require_admin(&env);
+        if caller != admin {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+        if min_value <= 0 || max_value <= min_value {
+            panic_with_error!(&env, Error::InvalidValue);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MinSaneValue, &min_value);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxSaneValue, &max_value);
+    }
+
+    /// The configured `(min_value, max_value)` sane range, or `None` if `set_value_bounds` has
+    /// never been called.
+    pub fn value_bounds(env: Env) -> Option<(i128, i128)> {
+        let min: Option<i128> = env.storage().instance().get(&DataKey::MinSaneValue);
+        let max: Option<i128> = env.storage().instance().get(&DataKey::MaxSaneValue);
+        match (min, max) {
+            (Some(min), Some(max)) => Some((min, max)),
+            _ => None,
+        }
+    }
+
     /// Submit a new value from `source`, which must be the configured primary or fallback.
     /// Returns `true` if accepted (`Price`/`Timestamp`/`ActiveSource` updated), `false` if a
     /// *legitimate* submission was rejected by policy (see the module doc for which outcomes
@@ -205,6 +252,13 @@ impl OracleAdapterContract {
         }
         if value <= 0 {
             panic_with_error!(&env, Error::InvalidValue);
+        }
+        // Checked before anything else about this submission, including before the first-ever
+        // value's exemption from the deviation guard below -- see `set_value_bounds`'s doc.
+        if let Some((min, max)) = Self::value_bounds(env.clone()) {
+            if value < min || value > max {
+                return Self::reject(&env, value, timestamp, symbol_short!("oob"));
+            }
         }
         // A timestamp ahead of the ledger clock (e.g. milliseconds instead of seconds) would make
         // the feed read as stale until real time caught up *and* lock out every correction, since
@@ -250,8 +304,17 @@ impl OracleAdapterContract {
             return Self::reject(&env, value, timestamp, symbol_short!("decrease"));
         } else if current_price > 0 {
             let max_bps = Self::max_deviation_bps(env.clone()) as i128;
-            let deviation_bps = (value - current_price) * (BPS_SCALE as i128) / current_price;
-            if deviation_bps > max_bps {
+            // `checked_mul`/`checked_div` rather than raw operators: with `overflow-checks =
+            // true`, an astronomically large `value` (e.g. from the same scale bug
+            // `set_value_bounds` is meant to catch, if no bound was configured) would otherwise
+            // panic here instead of going through the graceful-rejection path this module's own
+            // doc promises for "a syntactically valid submission ... rejected by policy" --
+            // treat an overflow as "deviation far exceeds threshold" and reject the same way.
+            let within_bounds = (value - current_price)
+                .checked_mul(BPS_SCALE as i128)
+                .and_then(|scaled| scaled.checked_div(current_price))
+                .is_some_and(|deviation_bps| deviation_bps <= max_bps);
+            if !within_bounds {
                 return Self::reject(&env, value, timestamp, symbol_short!("deviate"));
             }
         }

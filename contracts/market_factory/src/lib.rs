@@ -72,8 +72,22 @@
 #![allow(clippy::too_many_arguments)] // one entrypoint wires seven contracts by design.
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Bytes, BytesN, Env, String,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    Bytes, BytesN, Env, String,
 };
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum Error {
+    /// `tokens` or `engine` passed into `create_engine`/`create_pool_and_escrow` is not the
+    /// exact value `salt` actually deployed in an earlier phase (see the module doc's
+    /// "Determinism" section). Catches a wrong `salt` or a stale/copy-pasted struct *before* any
+    /// one-time wiring (`set_minter`, `set_recovery_escrow`) is consumed irreversibly against the
+    /// wrong contract -- found during an audit review: nothing previously checked this on-chain,
+    /// even though `predict_market` could trivially recompute and assert the same addresses.
+    TopologyMismatch = 1,
+}
 
 /// Wasm hashes for `create_tokens` (`SYWrapper`, `PTToken`, `YTToken`), already uploaded to the
 /// network (`stellar contract upload` or `Deployer::upload_contract_wasm`).
@@ -300,6 +314,33 @@ fn sub_salt(env: &Env, salt: &BytesN<32>, tag: u8) -> BytesN<32> {
     env.crypto().sha256(&bytes).to_bytes()
 }
 
+fn deployed_addr(env: &Env, salt: &BytesN<32>, tag: u8) -> Address {
+    env.deployer()
+        .with_current_contract(sub_salt(env, salt, tag))
+        .deployed_address()
+}
+
+/// Recompute what `create_tokens` must have deployed for this `salt` and reject a caller-supplied
+/// `tokens` that doesn't match -- see `Error::TopologyMismatch`.
+fn assert_tokens_match(env: &Env, salt: &BytesN<32>, tokens: &MarketTokens) {
+    if tokens.sy_wrapper != deployed_addr(env, salt, TAG_SY)
+        || tokens.pt_token != deployed_addr(env, salt, TAG_PT)
+        || tokens.yt_token != deployed_addr(env, salt, TAG_YT)
+    {
+        panic_with_error!(env, Error::TopologyMismatch);
+    }
+}
+
+/// Recompute what `create_engine` must have deployed for this `salt` and reject a caller-supplied
+/// `engine` that doesn't match -- see `Error::TopologyMismatch`.
+fn assert_engine_matches(env: &Env, salt: &BytesN<32>, engine: &MarketEngine) {
+    if engine.market_config != deployed_addr(env, salt, TAG_CONFIG)
+        || engine.principal_manager != deployed_addr(env, salt, TAG_MANAGER)
+    {
+        panic_with_error!(env, Error::TopologyMismatch);
+    }
+}
+
 #[contract]
 pub struct MarketFactoryContract;
 
@@ -310,19 +351,14 @@ impl MarketFactoryContract {
     /// the issuer commits to signing anything, so a dapp can show the addresses in a confirmation
     /// screen first.
     pub fn predict_market(env: Env, salt: BytesN<32>) -> MarketContracts {
-        let addr_for = |tag: u8| -> Address {
-            env.deployer()
-                .with_current_contract(sub_salt(&env, &salt, tag))
-                .deployed_address()
-        };
         MarketContracts {
-            sy_wrapper: addr_for(TAG_SY),
-            pt_token: addr_for(TAG_PT),
-            yt_token: addr_for(TAG_YT),
-            market_config: addr_for(TAG_CONFIG),
-            principal_manager: addr_for(TAG_MANAGER),
-            market_pool: addr_for(TAG_POOL),
-            recovery_escrow: addr_for(TAG_ESCROW),
+            sy_wrapper: deployed_addr(&env, &salt, TAG_SY),
+            pt_token: deployed_addr(&env, &salt, TAG_PT),
+            yt_token: deployed_addr(&env, &salt, TAG_YT),
+            market_config: deployed_addr(&env, &salt, TAG_CONFIG),
+            principal_manager: deployed_addr(&env, &salt, TAG_MANAGER),
+            market_pool: deployed_addr(&env, &salt, TAG_POOL),
+            recovery_escrow: deployed_addr(&env, &salt, TAG_ESCROW),
         }
     }
 
@@ -389,8 +425,9 @@ impl MarketFactoryContract {
 
     /// Phase 2 of 3. Deploy and initialize `MarketConfig` and `PrincipalManager`, wire the minter
     /// on PT/YT and the circuit breaker on SY/PrincipalManager -- atomically. `tokens` must be the
-    /// exact value `create_tokens` returned for this `salt`. Pass the returned [`MarketEngine`]
-    /// into `create_pool_and_escrow`.
+    /// exact value `create_tokens` returned for this `salt`, which is verified on-chain (not just
+    /// by convention) before any of it is used. Pass the returned [`MarketEngine`] into
+    /// `create_pool_and_escrow`.
     pub fn create_engine(
         env: Env,
         issuer: Address,
@@ -400,6 +437,7 @@ impl MarketFactoryContract {
         params: EngineParams,
     ) -> MarketEngine {
         issuer.require_auth();
+        assert_tokens_match(&env, &salt, &tokens);
 
         let deploy = |tag: u8, hash: BytesN<32>| -> Address {
             env.deployer()
@@ -453,7 +491,8 @@ impl MarketFactoryContract {
 
     /// Phase 3 of 3. Deploy and initialize `MarketPool` and `RecoveryEscrow`, wire the recovery
     /// escrow into SY/PT/YT/Pool -- atomically. `tokens` and `engine` must be the exact values
-    /// `create_tokens`/`create_engine` returned for this `salt`. The market is fully live once
+    /// `create_tokens`/`create_engine` returned for this `salt`, which is verified on-chain (not
+    /// just by convention) before any of it is used. The market is fully live once
     /// this call returns -- except the two steps this contract never does for any phase (see the
     /// module docs): `RiskControl.add_consumer` for SY/PrincipalManager, `Router.register_market`
     /// for the pool, and granting every one of these five addresses (plus the treasury and the
@@ -468,6 +507,8 @@ impl MarketFactoryContract {
         params: PoolEscrowParams,
     ) -> MarketPoolAndEscrow {
         issuer.require_auth();
+        assert_tokens_match(&env, &salt, &tokens);
+        assert_engine_matches(&env, &salt, &engine);
 
         let deploy = |tag: u8, hash: BytesN<32>| -> Address {
             env.deployer()

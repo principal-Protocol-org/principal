@@ -923,3 +923,144 @@ fn non_admin_cannot_transfer_admin() {
     let new_admin = Address::generate(&f.env);
     f.client.transfer_admin(&impostor, &new_admin);
 }
+
+// ============================================================ recombine / fee claiming / settle_all
+// These three were entirely uncovered in this file (zero calls to `recombine`,
+// `claim_protocol_fees`, `claim_creator_fees`, or `settle_all` anywhere) -- found during an audit
+// review. Each is custody-moving (or, for `settle_all`, is the one permissionless call every later
+// redemption depends on), so a regression in any of them had no safety net at the unit level.
+
+#[test]
+fn recombine_round_trip_immediately_returns_the_full_shares() {
+    let f = setup(u64::MAX);
+    let user = Address::generate(&f.env);
+    grant_user(&f, &user);
+    let shares = deposit_sy(&f, &user, 100_i128 * SCALE);
+    f.client.mint(&user, &shares);
+
+    let pt_before = f.client.pt_balance(&user);
+    let returned = f.client.recombine(&user, &pt_before);
+    // No rate movement since mint, no fees: recombining everything returns exactly what was put
+    // in, and nothing is left minted.
+    assert_eq!(returned, shares);
+    assert_eq!(f.client.pt_balance(&user), 0);
+    assert_eq!(f.client.yt_balance(&user), 0);
+    assert_eq!(f.sy.balance_of(&user), shares);
+}
+
+#[test]
+fn recombine_after_a_rate_increase_returns_fewer_shares_matching_the_claimable_shortfall() {
+    let f = setup(u64::MAX);
+    let user = Address::generate(&f.env);
+    grant_user(&f, &user);
+    let shares = deposit_sy(&f, &user, 100_i128 * SCALE);
+    f.client.mint(&user, &shares);
+    let pt_before = f.client.pt_balance(&user);
+
+    f.env.ledger().with_mut(|li| li.timestamp = T0 + 100);
+    f.oracle.set_reference_value(
+        &f.oracle_admin,
+        &f.oracle_source,
+        &(SCALE * 11 / 10),
+        &(T0 + 100),
+    );
+
+    let returned = f.client.recombine(&user, &pt_before);
+    // `recombine` prices off the *live* rate, which is now above the mint-time rate, so it
+    // returns strictly fewer shares than were originally deposited -- the shortfall is exactly
+    // what `claim_yield` would otherwise have paid for the same holding.
+    assert!(returned < shares);
+    let claimable_had_they_not_recombined = pt_before * SCALE / (SCALE * 11 / 10);
+    assert_eq!(returned, claimable_had_they_not_recombined);
+}
+
+#[test]
+#[should_panic]
+fn recombine_more_than_the_callers_pt_balance_panics() {
+    let f = setup(u64::MAX);
+    let user = Address::generate(&f.env);
+    grant_user(&f, &user);
+    let shares = deposit_sy(&f, &user, 10_i128 * SCALE);
+    f.client.mint(&user, &shares);
+    let pt_before = f.client.pt_balance(&user);
+    f.client.recombine(&user, &(pt_before + 1));
+}
+
+#[test]
+#[should_panic]
+fn recombine_after_maturity_panics() {
+    let maturity = T0 + 500;
+    let f = setup(maturity);
+    let user = Address::generate(&f.env);
+    grant_user(&f, &user);
+    let shares = deposit_sy(&f, &user, 10_i128 * SCALE);
+    f.client.mint(&user, &shares);
+    f.env.ledger().with_mut(|li| li.timestamp = maturity);
+    f.client.recombine(&user, &shares);
+}
+
+#[test]
+fn claim_protocol_and_creator_fees_pay_the_configured_payees_and_zero_the_bucket() {
+    let f = setup_with_fees(T0 + 500, 100, 0); // 1% tokenization fee, 20/80 split by default
+    let user = Address::generate(&f.env);
+    grant_user(&f, &user);
+    let shares = deposit_sy(&f, &user, 1_000_i128 * SCALE);
+    f.client.mint(&user, &shares);
+
+    let (protocol_owed, creator_owed) = f.client.accrued_fees();
+    assert!(protocol_owed > 0 && creator_owed > 0);
+
+    f.perm.grant_account(&f.perm_admin, &f.treasury);
+    token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&f.treasury, &true);
+    f.perm.grant_account(&f.perm_admin, &f.pm_admin);
+    token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(&f.pm_admin, &true);
+
+    let paid_protocol = f.client.claim_protocol_fees();
+    assert_eq!(paid_protocol, protocol_owed);
+    assert_eq!(f.sy.balance_of(&f.treasury), protocol_owed);
+    assert_eq!(f.client.accrued_fees().0, 0);
+
+    // `creator()` resolves to the underlying's current admin (`pm_admin` here) when the
+    // compliance layer doesn't name a different authority.
+    let paid_creator = f.client.claim_creator_fees();
+    assert_eq!(paid_creator, creator_owed);
+    assert_eq!(f.sy.balance_of(&f.pm_admin), creator_owed);
+    assert_eq!(f.client.accrued_fees().1, 0);
+}
+
+#[test]
+#[should_panic]
+fn claiming_protocol_fees_with_nothing_accrued_panics() {
+    let f = setup(u64::MAX);
+    f.client.claim_protocol_fees();
+}
+
+#[test]
+fn settle_all_is_idempotent_and_returns_the_same_frozen_rate_on_a_second_call() {
+    let maturity = T0 + 500;
+    let f = setup(maturity);
+    let user = Address::generate(&f.env);
+    grant_user(&f, &user);
+    let shares = deposit_sy(&f, &user, 10_i128 * SCALE);
+    f.client.mint(&user, &shares);
+
+    f.env.ledger().with_mut(|li| li.timestamp = maturity + 10);
+    f.oracle.set_reference_value(
+        &f.oracle_admin,
+        &f.oracle_source,
+        &(SCALE * 12 / 10),
+        &(maturity + 10),
+    );
+
+    let first = f.client.settle_all();
+    assert_eq!(f.client.settled_rate(), Some(first));
+
+    // A second call must not re-read the oracle or move the frozen rate, even if the oracle
+    // later goes stale or the ledger advances further.
+    f.env
+        .ledger()
+        .with_mut(|li| li.timestamp = maturity + 10 + MAX_ORACLE_STALENESS_SECS * 10);
+    let second = f.client.settle_all();
+    assert_eq!(second, first);
+    assert_eq!(f.client.settled_rate(), Some(first));
+}

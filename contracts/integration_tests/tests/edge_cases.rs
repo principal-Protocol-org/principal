@@ -4,7 +4,7 @@
 
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
-    Address,
+    Address, BytesN, Symbol,
 };
 
 use principal_integration_tests::stack::*;
@@ -402,6 +402,15 @@ fn every_admin_only_function_rejects_a_caller_that_is_not_the_admin() {
         .oracle
         .try_set_reference_value(&x, &s.oracle_source, &(SCALE * 2), &(T0 + 5))
         .is_err());
+    assert!(s
+        .oracle
+        .try_set_sources(&x, &s.oracle_source, &None)
+        .is_err());
+    assert!(s
+        .oracle
+        .try_set_safety_params(&x, &ORACLE_MAX_STALE_SECONDS, &ORACLE_MAX_DEVIATION_BPS)
+        .is_err());
+    assert!(s.oracle.try_set_value_bounds(&x, &1, &i128::MAX).is_err());
 }
 
 #[test]
@@ -750,12 +759,83 @@ fn a_gross_up_and_a_yt_fee_that_swallows_a_dust_claim_pay_nothing_and_never_unde
         ..Config::free(LONG)
     });
     let u = s.new_user();
-    let shares = deposit_sy(&s, &u, 100 * SCALE);
+    let shares = deposit_sy(&s, &u, 15_000);
     s.pm.mint(&u, &shares);
-    s.advance(T0 + DAY, SCALE + 2); // a rate move worth ~1 raw unit of yield per 5e6 notional
+    s.advance(T0 + DAY, SCALE + 1); // smallest possible rate tick, on a small enough notional
+                                    // that the gross accrued yield itself floors to exactly 1 raw unit.
     let paid = s.pm.claim_yield(&u);
-    assert!(paid >= 0);
+    // The test's own premise: at a 1-raw-unit gross yield and a 50% fee (ceil-rounded), the net
+    // payout is exactly zero -- not just "non-negative," which a wrong (but still non-negative)
+    // payout would also satisfy.
+    assert_eq!(paid, 0);
     // Whatever was withheld is accounted as fees, never lost.
     let (p, c) = s.pm.accrued_fees();
     assert!(p + c >= 0);
+}
+
+// =================================================================== oracle: deviation + fallback
+
+#[test]
+fn oracle_deviation_guard_rejects_an_excessive_jump_and_the_market_keeps_working() {
+    let s = deploy_stack(LONG);
+    let user = s.new_user();
+    let shares = deposit_sy(&s, &user, 10 * SCALE);
+
+    // Narrow the deviation guard to 1% -- the stack's default (100%) is deliberately generous so
+    // ordinary tests don't trip it by accident.
+    s.oracle
+        .set_safety_params(&s.admin, &ORACLE_MAX_STALE_SECONDS, &100);
+    let ts = s.env.ledger().timestamp() + 10;
+    s.env.ledger().with_mut(|li| li.timestamp = ts);
+
+    // A 2% jump clears the 1% bound -- rejected gracefully (returns `false`), not panicked.
+    let accepted =
+        s.oracle
+            .set_reference_value(&s.admin, &s.oracle_source, &(SCALE * 102 / 100), &ts);
+    assert!(!accepted);
+    assert_eq!(s.oracle.get_reference_value(), SCALE);
+    assert_eq!(
+        s.oracle.last_rejection().unwrap().reason,
+        Symbol::new(&s.env, "deviate")
+    );
+
+    // The market keeps working off the last *accepted* rate -- the rejection did not brick it.
+    s.pm.mint(&user, &shares);
+}
+
+#[test]
+fn oracle_fallback_keeps_the_market_working_when_the_primary_goes_stale_and_blocks_when_both_do() {
+    let s = deploy_stack(LONG);
+    let user = s.new_user();
+    let shares = deposit_sy(&s, &user, 10 * SCALE);
+
+    let fallback_source = BytesN::from_array(&s.env, &[2u8; 32]);
+    s.oracle
+        .set_sources(&s.admin, &s.oracle_source, &Some(fallback_source.clone()));
+    // A tight staleness window so this test doesn't need to advance 365 days to exercise it.
+    s.oracle
+        .set_safety_params(&s.admin, &100, &ORACLE_MAX_DEVIATION_BPS);
+
+    // The primary is now stale from the market's perspective; refresh via the fallback instead --
+    // it may only replay the *current* price (never move it), which is exactly what a liveness
+    // heartbeat needs.
+    let t1 = s.env.ledger().timestamp() + 50;
+    s.env.ledger().with_mut(|li| li.timestamp = t1);
+    let rate = s.oracle.get_reference_value();
+    let refreshed = s
+        .oracle
+        .set_reference_value(&s.admin, &fallback_source, &rate, &t1);
+    assert!(refreshed);
+    assert!(s.oracle.is_available());
+    assert_eq!(s.oracle.get_active_source(), Some(fallback_source));
+    s.pm.mint(&user, &shares); // still works, refreshed via the fallback
+
+    // Now let both sources go stale -- the market must stop, not silently trade on a dead feed.
+    let t2 = t1 + 200;
+    s.env.ledger().with_mut(|li| li.timestamp = t2);
+    assert!(!s.oracle.is_available());
+    assert_eq!(
+        s.pm.try_mint(&user, &1).err(),
+        err_code(PmError::OracleStale as u32)
+    );
 }

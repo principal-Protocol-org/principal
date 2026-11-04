@@ -195,7 +195,7 @@ sequenceDiagram
     RT->>PM: mint(from=user, shares)
     PM->>UND: compliance: authorized(user)
     PM->>PERM: is_allowed(user)
-    PM->>OA: is_fresh(3600) and get_reference_value()
+    PM->>OA: is_available() and get_reference_value()
     PM->>RC: check_deposit(caller=PrincipalManager, asset, underlying_value)
     PM->>SYW: transfer(user -> PrincipalManager, shares)   [custody, incl. the fee]
     PM->>YT: update_yield_index()
@@ -273,7 +273,7 @@ sequenceDiagram
 
     K->>PM: settle_all()   [permissionless, at/after maturity]
     PM->>YT: is_frozen()
-    PM->>OA: is_fresh(3600)   [skipped if the YT index is already frozen]
+    PM->>OA: is_available()   [skipped if the YT index is already frozen]
     PM->>YT: update_yield_index()   [advances a last time and FREEZES]
     PM->>YT: last_oracle_rate()
     PM-->>K: settled_rate (recorded once)
