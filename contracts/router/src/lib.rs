@@ -95,6 +95,64 @@ pub struct KeepYtResult {
     pub yt_minted: i128,
 }
 
+/// Mirrors `MarketPool`'s own `Quote` shape (PT/SY-denominated, field-for-field) -- used for a
+/// Router quote whose `amount_out` is already PT, not underlying, because only the *input* leg
+/// of that flow involves a unit conversion.
+#[contracttype]
+#[derive(Clone)]
+pub struct Quote {
+    pub amount_out: i128,
+    pub amount_in: i128,
+    pub fee_shares: i128,
+}
+
+/// Mirrors `MarketPool`'s own `FlashMintQuote` shape, field-for-field.
+#[contracttype]
+#[derive(Clone)]
+pub struct FlashMintQuote {
+    pub yt_out: i128,
+    pub sy_back: i128,
+    pub mint_fee_shares: i128,
+    pub swap_fee_shares: i128,
+}
+
+/// A `MarketPool`-style quote restated entirely in underlying units -- `amount_out` and the fee
+/// both converted via `SYWrapper.exchange_rate()` -- for a Router flow whose final leg unwraps
+/// SY back to underlying (`quote_pt_for_underlying`, `quote_yt_for_underlying`).
+#[contracttype]
+#[derive(Clone)]
+pub struct UnderlyingQuote {
+    pub amount_out: i128,
+    pub amount_in: i128,
+    pub fee_underlying: i128,
+}
+
+/// `FlashMintQuote` restated in underlying units, for `quote_underlying_for_yt`.
+#[contracttype]
+#[derive(Clone)]
+pub struct UnderlyingFlashMintQuote {
+    pub yt_out: i128,
+    pub underlying_back: i128,
+    pub mint_fee_underlying: i128,
+    pub swap_fee_underlying: i128,
+}
+
+/// Preview for `add_liquidity_keep_yt`: the `mint_amount`/`sy_remaining` split to pass into the
+/// real call (`mint_amount` is exactly what that call's own `mint_amount` argument expects), and
+/// the YT the mint leg alone would produce. Does not predict `add_liquidity`'s own
+/// `pt_used`/`sy_used`/`lp_minted` -- no quote for that exists anywhere in this protocol today
+/// (not even for the plain `add_liquidity`/`add_liquidity_single_sy` calls this composes with),
+/// since it is ordinary proportional-ratio arithmetic against reserves that can themselves move
+/// before the real call lands, exactly like every other LP deposit in this Router.
+#[contracttype]
+#[derive(Clone)]
+pub struct KeepYtQuote {
+    pub mint_amount: i128,
+    pub sy_remaining: i128,
+    pub yt_out: i128,
+    pub mint_fee_underlying: i128,
+}
+
 #[contractclient(name = "PoolClient")]
 pub trait PoolInterface {
     fn manager_address(env: Env) -> Address;
@@ -127,6 +185,10 @@ pub trait PoolInterface {
         min_sy_out: i128,
     ) -> (i128, i128);
     fn zap_swap_amount(env: Env, sy_in: i128) -> i128;
+    fn quote_sy_for_pt(env: Env, sy_in: i128) -> Quote;
+    fn quote_pt_for_sy(env: Env, pt_in: i128) -> Quote;
+    fn quote_yt_for_sy(env: Env, yt_in: i128) -> Quote;
+    fn quote_sy_for_yt(env: Env, sy_in: i128) -> FlashMintQuote;
 }
 
 #[contractclient(name = "ManagerClient")]
@@ -153,6 +215,7 @@ pub trait SYInterface {
     ) -> i128;
     fn withdraw_all(env: Env, from: Address, to: Address, min_underlying_out: i128) -> i128;
     fn balance_of(env: Env, account: Address) -> i128;
+    fn exchange_rate(env: Env) -> i128;
 }
 
 // ---------------------------------------------------------------------------
@@ -163,6 +226,9 @@ pub trait SYInterface {
 const INSTANCE_TTL_LEDGERS: u32 = 518_400;
 /// TTL applied to a market listing each time it is used or registered.
 const MARKET_TTL_LEDGERS: u32 = 518_400;
+/// Matches `SYWrapper::RATE_SCALE` -- `exchange_rate()` is underlying units per share at this
+/// scale, used to convert a quote's SY-denominated legs to/from underlying.
+const RATE_SCALE: i128 = 10_000_000;
 
 #[contracterror]
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -619,6 +685,102 @@ impl RouterContract {
             sy_used,
             lp_minted,
             yt_minted: minted.yt_minted,
+        }
+    }
+
+    // ------------------------------------------------- quotes (underlying-denominated flows)
+    //
+    // Previewing any of the five `_for_underlying`/`_for_yt`/`add_liquidity_keep_yt` flows above
+    // used to mean calling `MarketPool`'s own SY-denominated quote and separately calling
+    // `SYWrapper.exchange_rate()` to convert by hand. These five compose the two calls so a
+    // caller gets one underlying-denominated (or, for `quote_underlying_for_pt`, already
+    // PT-denominated) answer. Each replicates the exact rounding of its real call -- same
+    // formula, same single `exchange_rate()` read -- so the only drift against the real
+    // transaction is the same unavoidable one every quote in this protocol already has: time
+    // passing between simulating the quote and the real call landing (MarketPool's curve is
+    // `seconds_to_maturity`-dependent; see `docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md` §2's
+    // third gotcha and §5.4's live-measured example of it).
+
+    /// Preview `swap_underlying_for_pt`. `amount_out` is PT (unaffected by the wrap leg);
+    /// `fee_shares` is the AMM swap fee, in SY, exactly as `MarketPool.quote_sy_for_pt` reports it
+    /// -- there is nothing to convert on the output side, only the input (`underlying_amount` ->
+    /// SY shares) feeds into the pool quote.
+    pub fn quote_underlying_for_pt(env: Env, pool: Address, underlying_amount: i128) -> Quote {
+        let info = Self::info(&env, &pool);
+        let rate = SYClient::new(&env, &info.sy).exchange_rate();
+        let shares = underlying_amount * RATE_SCALE / rate;
+        PoolClient::new(&env, &pool).quote_sy_for_pt(&shares)
+    }
+
+    /// Preview `swap_pt_for_underlying`: `MarketPool.quote_pt_for_sy`'s SY-denominated
+    /// `amount_out`/`fee_shares`, both converted to underlying via the same `exchange_rate()`
+    /// read `SYWrapper.withdraw_all` would apply to the swap's real SY payout.
+    pub fn quote_pt_for_underlying(env: Env, pool: Address, pt_in: i128) -> UnderlyingQuote {
+        let info = Self::info(&env, &pool);
+        let q = PoolClient::new(&env, &pool).quote_pt_for_sy(&pt_in);
+        let rate = SYClient::new(&env, &info.sy).exchange_rate();
+        UnderlyingQuote {
+            amount_out: q.amount_out * rate / RATE_SCALE,
+            amount_in: 0,
+            fee_underlying: q.fee_shares * rate / RATE_SCALE,
+        }
+    }
+
+    /// Preview `swap_underlying_for_yt`: wraps `underlying_amount` to SY shares, previews the
+    /// flash-mint via `MarketPool.quote_sy_for_yt`, then converts `sy_back` and both fee legs to
+    /// underlying the same way the real call's final `withdraw_all` would.
+    pub fn quote_underlying_for_yt(
+        env: Env,
+        pool: Address,
+        underlying_amount: i128,
+    ) -> UnderlyingFlashMintQuote {
+        let info = Self::info(&env, &pool);
+        let rate = SYClient::new(&env, &info.sy).exchange_rate();
+        let sy_in = underlying_amount * RATE_SCALE / rate;
+        let flash = PoolClient::new(&env, &pool).quote_sy_for_yt(&sy_in);
+        UnderlyingFlashMintQuote {
+            yt_out: flash.yt_out,
+            underlying_back: flash.sy_back * rate / RATE_SCALE,
+            mint_fee_underlying: flash.mint_fee_shares * rate / RATE_SCALE,
+            swap_fee_underlying: flash.swap_fee_shares * rate / RATE_SCALE,
+        }
+    }
+
+    /// Preview `swap_yt_for_underlying`: `MarketPool.quote_yt_for_sy`'s SY-denominated payout and
+    /// fee, converted to underlying.
+    pub fn quote_yt_for_underlying(env: Env, pool: Address, yt_in: i128) -> UnderlyingQuote {
+        let info = Self::info(&env, &pool);
+        let q = PoolClient::new(&env, &pool).quote_yt_for_sy(&yt_in);
+        let rate = SYClient::new(&env, &info.sy).exchange_rate();
+        UnderlyingQuote {
+            amount_out: q.amount_out * rate / RATE_SCALE,
+            amount_in: 0,
+            fee_underlying: q.fee_shares * rate / RATE_SCALE,
+        }
+    }
+
+    /// Preview `add_liquidity_keep_yt`. Returns the exact `mint_amount` to pass into that call
+    /// (the SY split `MarketPool.zap_swap_amount` recommends for `underlying_amount`'s worth of
+    /// wrapped shares), the SY left over for the proportional deposit leg, and the YT the mint
+    /// alone would produce (via `MarketPool.quote_sy_for_yt`'s mint leg -- its sell-PT leg is
+    /// irrelevant here since this flow deposits the minted PT as liquidity instead of selling it).
+    pub fn quote_add_liquidity_keep_yt(
+        env: Env,
+        pool: Address,
+        underlying_amount: i128,
+    ) -> KeepYtQuote {
+        let info = Self::info(&env, &pool);
+        let rate = SYClient::new(&env, &info.sy).exchange_rate();
+        let shares = underlying_amount * RATE_SCALE / rate;
+        let pool_client = PoolClient::new(&env, &pool);
+        let mint_amount = pool_client.zap_swap_amount(&shares);
+        let sy_remaining = shares - mint_amount;
+        let flash = pool_client.quote_sy_for_yt(&mint_amount);
+        KeepYtQuote {
+            mint_amount,
+            sy_remaining,
+            yt_out: flash.yt_out,
+            mint_fee_underlying: flash.mint_fee_shares * rate / RATE_SCALE,
         }
     }
 

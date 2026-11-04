@@ -235,12 +235,44 @@ their own codes.
 | `wrap_and_mint(from, pool, amount, min_pt_out, deadline)` → `MintResult` | `from` | underlying → SY → PT + YT. |
 | `unwrap(from, pool, shares, min_underlying_out, deadline)` | `from` | SY → underlying. |
 | `swap_sy_for_pt` / `swap_pt_for_sy(from, pool, amount, min_out, deadline)` | `from` | Pool trades. |
+| `swap_underlying_for_pt(from, pool, underlying_amount, min_pt_out, deadline)` → PT | `from` | underlying → SY (`SYWrapper.deposit`, unguarded) → PT (`MarketPool.swap_sy_for_pt`, guarded by `min_pt_out`) — one signature for a caller who holds the underlying, not SY. |
+| `swap_pt_for_underlying(from, pool, pt_in, min_underlying_out, deadline)` → underlying | `from` | PT → SY (`MarketPool.swap_pt_for_sy`) → underlying (`SYWrapper.withdraw_all`). **Requires `from` to hold zero SY before the call** (`PreexistingSyBalance`(9) otherwise) — `withdraw_all` reads the balance live instead of taking the swap's curve-derived payout as an argument (see `docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md` §2's third gotcha for why), so it necessarily withdraws *everything* `from` holds. |
 | `swap_sy_for_yt(from, pool, sy_in, min_yt_out, max_net_cost, deadline)` → `(yt_out, sy_back)` | `from` | **Flash-mint:** mint PT + YT from `sy_in`, sell the PT into the pool, keep the YT and the SY proceeds. `min_yt_out` guards the YT minted; `max_net_cost` guards the pool price (`sy_in − sy_back`), reverting the pool's `SlippageExceeded`(8) if the PT fetches too little. |
+| `swap_underlying_for_yt(from, pool, underlying_amount, min_yt_out, max_net_cost, deadline)` → `(yt_out, underlying_back)` | `from` | Same flash-mint as `swap_sy_for_yt`, wrapping `underlying_amount` first and unwrapping the proceeds back to underlying at the end. Not a true flash loan: `from` needs the full `underlying_amount` in hand up front. Requires zero pre-existing SY (`PreexistingSyBalance`(9)), same reason as `swap_pt_for_underlying`. |
 | `swap_yt_for_sy(from, pool, yt_in, min_sy_out, deadline)` | `from` | **Flash-redeem** via the pool. |
+| `swap_yt_for_underlying(from, pool, yt_in, min_underlying_out, deadline)` → underlying | `from` | Same flash-redeem as `swap_yt_for_sy`, unwrapping the SY proceeds to underlying. Requires zero pre-existing SY (`PreexistingSyBalance`(9)). |
 | `add_liquidity`, `add_liquidity_single_sy`, `remove_liquidity` | `from` | Pool LP operations. |
+| `add_liquidity_keep_yt(from, pool, underlying_amount, mint_amount, min_lp_out, deadline)` → `KeepYtResult{pt_used, sy_used, lp_minted, yt_minted}` | `from` | Pendle-style "keep YT" deposit: wraps `underlying_amount`, mints PT+YT from `mint_amount` of it (quoted beforehand via `quote_add_liquidity_keep_yt` or `MarketPool.zap_swap_amount`, passed as a literal argument — never derived mid-execution, for the same `Error(Auth, InvalidAction)` reason as `swap_pt_for_underlying`), deposits the minted PT plus the remaining SY as a normal proportional `add_liquidity`, and lets the caller keep the YT instead of selling it. No swap leg, so the only guard is `min_lp_out`. |
 | `recombine(from, pool, amount, min_sy_out, deadline)` | `from` | PT + YT → SY before maturity. |
 | `redeem_at_maturity(from, pool, pt_amount, yt_amount)` | `from` | PT and/or YT → underlying after maturity. |
 | `claim_yield(from, pool)` | `from` | Accrued YT yield → underlying. |
+
+### Router quotes (no auth, no fee)
+
+Preview any of the five underlying-denominated functions above without needing a separate
+`SYWrapper.exchange_rate()` call and manual conversion: each composes `MarketPool`'s own
+SY-denominated quote with the exchange rate, replicating the real call's exact rounding.
+
+| Function | Returns | Mirrors |
+|---|---|---|
+| `quote_underlying_for_pt(pool, underlying_amount)` | `Quote{amount_out, amount_in, fee_shares}` — `amount_out` is PT, unaffected by the wrap leg; `fee_shares` is the AMM fee in SY | `swap_underlying_for_pt` |
+| `quote_pt_for_underlying(pool, pt_in)` | `UnderlyingQuote{amount_out, amount_in, fee_underlying}` — both converted to underlying | `swap_pt_for_underlying` |
+| `quote_underlying_for_yt(pool, underlying_amount)` | `UnderlyingFlashMintQuote{yt_out, underlying_back, mint_fee_underlying, swap_fee_underlying}` | `swap_underlying_for_yt` |
+| `quote_yt_for_underlying(pool, yt_in)` | `UnderlyingQuote{amount_out, amount_in, fee_underlying}` | `swap_yt_for_underlying` |
+| `quote_add_liquidity_keep_yt(pool, underlying_amount)` | `KeepYtQuote{mint_amount, sy_remaining, yt_out, mint_fee_underlying}` — `mint_amount` is the exact value to pass as `add_liquidity_keep_yt`'s own `mint_amount` argument | `add_liquidity_keep_yt`'s mint leg only — no quote exists anywhere in this protocol for `add_liquidity`'s own `pt_used`/`sy_used`/`lp_minted`, since that is ordinary proportional-ratio arithmetic against reserves that can move before the real call lands |
+
+These are provably exact against the real executed outcome under the current `SYWrapper`, not
+just exact in the test numbers tried: `SYWrapper.exchange_rate()` can only ever equal
+`RATE_SCALE` (1.0) for the lifetime of any instance of the current contract — nothing in
+`deposit`/`withdraw`/`seize` can move `total_underlying`/`total_shares` out of the exact 1:1 ratio
+the first deposit establishes, and there is no rebase/sync entrypoint that pulls in yield
+independent of a deposit. `quote_underlying_for_yt` is the one function here with two
+rate-dependent conversions straddling a state-mutating `deposit` inside the real call
+(`swap_underlying_for_yt`'s own deposit, then its later `withdraw_all`) — if a future version of
+`SYWrapper` ever gains a mechanism to move its own share rate within a single transaction, this
+quote (which reads the rate once and reuses it for both conversions) would need rechecking against
+the real call's two separate reads. See `docs/ROUTER_QUOTES.md` for the full exactness argument and
+the regression test that proves it.
 
 ## RecoveryEscrow
 

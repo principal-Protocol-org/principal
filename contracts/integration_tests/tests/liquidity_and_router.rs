@@ -701,6 +701,68 @@ fn router_underlying_denominated_flows_and_keep_yt_work_end_to_end() {
     );
 }
 
+/// Each of the five quotes added on top of §4.1's functions composes `MarketPool`'s own
+/// SY-denominated quote with `SYWrapper.exchange_rate()`, replicating the exact rounding its real
+/// call applies. Proven here against the real executed outcome, not just by inspection -- same
+/// style as `contracts/integration_tests/tests/amm.rs`'s `quote_*_matches_the_real_*_exactly`
+/// tests for the `MarketPool`-level quotes these build on.
+#[test]
+fn router_quotes_for_underlying_denominated_flows_match_the_real_outcome_exactly() {
+    let (s, _, _) = seeded(UnderlyingKind::Sac);
+    let pool = s.pool.address.clone();
+    let user = s.new_user();
+    s.mint_underlying(&user, 500 * SCALE);
+
+    let q = s.router.quote_underlying_for_pt(&pool, &(100 * SCALE));
+    let pt_out = s
+        .router
+        .swap_underlying_for_pt(&user, &pool, &(100 * SCALE), &0, &u64::MAX);
+    assert_eq!(q.amount_out, pt_out, "quote_underlying_for_pt");
+
+    let q = s.router.quote_pt_for_underlying(&pool, &pt_out);
+    let underlying_back = s
+        .router
+        .swap_pt_for_underlying(&user, &pool, &pt_out, &0, &u64::MAX);
+    assert_eq!(q.amount_out, underlying_back, "quote_pt_for_underlying");
+
+    let q = s.router.quote_underlying_for_yt(&pool, &(50 * SCALE));
+    let (yt_out, underlying_change) =
+        s.router
+            .swap_underlying_for_yt(&user, &pool, &(50 * SCALE), &0, &i128::MAX, &u64::MAX);
+    assert_eq!(q.yt_out, yt_out, "quote_underlying_for_yt yt_out");
+    assert_eq!(
+        q.underlying_back, underlying_change,
+        "quote_underlying_for_yt underlying_back"
+    );
+
+    let q = s.router.quote_yt_for_underlying(&pool, &yt_out);
+    let underlying_from_yt = s
+        .router
+        .swap_yt_for_underlying(&user, &pool, &yt_out, &0, &u64::MAX);
+    assert_eq!(q.amount_out, underlying_from_yt, "quote_yt_for_underlying");
+
+    let q = s.router.quote_add_liquidity_keep_yt(&pool, &(100 * SCALE));
+    assert_eq!(
+        q.mint_amount + q.sy_remaining,
+        underlying_to_shares_for_test(&s, 100 * SCALE),
+        "mint_amount + sy_remaining must account for the full wrapped amount"
+    );
+    let result =
+        s.router
+            .add_liquidity_keep_yt(&user, &pool, &(100 * SCALE), &q.mint_amount, &0, &u64::MAX);
+    assert_eq!(
+        q.yt_out, result.yt_minted,
+        "quote_add_liquidity_keep_yt yt_out"
+    );
+}
+
+/// `underlying_amount * RATE_SCALE / exchange_rate()`, matching `SYWrapper`'s own
+/// `underlying_to_shares` exactly (its `total_shares == 0` bootstrap case folds into the same
+/// formula, since `exchange_rate()` itself returns `RATE_SCALE` then).
+fn underlying_to_shares_for_test(s: &Stack<'_>, underlying_amount: i128) -> i128 {
+    underlying_amount * SCALE / s.sy.exchange_rate()
+}
+
 #[test]
 fn router_acts_as_the_user_so_a_deauthorized_user_gains_nothing_by_using_it() {
     for kind in [UnderlyingKind::Sac, UnderlyingKind::Rwa] {

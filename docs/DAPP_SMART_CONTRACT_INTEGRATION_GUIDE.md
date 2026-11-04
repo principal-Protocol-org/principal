@@ -374,6 +374,26 @@ stellar contract invoke --id "$ROUTER_ID" --source v11-carol --network testnet -
      --underlying_amount 100000000 --mint_amount "$MINT_AMOUNT" --min_lp_out 0 --deadline 9999999999
 ```
 
+### 4.2 Quotes for the five underlying-denominated flows
+
+Previewing any of the five functions above used to mean calling `MarketPool`'s own SY-denominated
+quote and separately calling `SYWrapper.exchange_rate()` to convert by hand — exactly what the
+`MINT_AMOUNT=...` line above still does for `add_liquidity_keep_yt`. Five new, read-only `Router`
+functions compose both calls into one answer, each in the units the real call's caller actually
+experiences:
+
+| Function | Mirrors | Returns |
+|---|---|---|
+| `quote_underlying_for_pt(pool, underlying_amount)` | `swap_underlying_for_pt` | `Quote{amount_out, amount_in, fee_shares}` (`amount_out` is PT) |
+| `quote_pt_for_underlying(pool, pt_in)` | `swap_pt_for_underlying` | `UnderlyingQuote{amount_out, amount_in, fee_underlying}` |
+| `quote_underlying_for_yt(pool, underlying_amount)` | `swap_underlying_for_yt` | `UnderlyingFlashMintQuote{yt_out, underlying_back, mint_fee_underlying, swap_fee_underlying}` |
+| `quote_yt_for_underlying(pool, yt_in)` | `swap_yt_for_underlying` | `UnderlyingQuote{amount_out, amount_in, fee_underlying}` |
+| `quote_add_liquidity_keep_yt(pool, underlying_amount)` | `add_liquidity_keep_yt`'s mint leg | `KeepYtQuote{mint_amount, sy_remaining, yt_out, mint_fee_underlying}` — `mint_amount` is exactly the value to pass as the real call's own `mint_amount` argument, replacing the `zap_swap_amount` + manual-conversion line above |
+
+Full design, the exactness argument for why these need no "quote vs. live execution" drift caveat
+of their own (beyond the usual seconds-to-maturity one every `MarketPool` quote already carries),
+and the regression test proving it: `docs/ROUTER_QUOTES.md`.
+
 ---
 
 ## 5. AMM integration: `MarketPool` direct interface
@@ -675,6 +695,15 @@ This document was reviewed against the live network, not just reread. Specifical
   re-attempted dozens of times to see if it is consistent, since the mechanism (§2's third gotcha)
   already explains it and the Rust test suite proves the underlying formula matches bit-for-bit
   when no time passes between quote and execution.
+- §4.2's five Router-level quotes were deliberately **not** verified against a fresh live
+  deployment (every other change in this document was) — the reasoning, not just the choice, is in
+  `docs/ROUTER_QUOTES.md` §4: each is a read-only composition of two primitives already verified
+  live independently (`MarketPool`'s quotes, `SYWrapper.exchange_rate()`), and the same doc's §2
+  proves exactness by induction over every input the current `SYWrapper` contract can ever produce,
+  not just the handful of values a live run would have sampled. The Rust regression
+  (`router_quotes_for_underlying_denominated_flows_match_the_real_outcome_exactly`, alongside the
+  existing `router_underlying_denominated_flows_and_keep_yt_work_end_to_end`) asserts exact
+  equality against the real executed outcome, not an approximate check.
 - `settle_all`/`redeem` (§5.3 step 5) were added after this market's maturity actually passed
   during the writing of this guide (not simulated, not assumed) — settled at 10,500,000, redeemed
   594,317,500 PT and 1,364,317,500 YT for 566,016,666 raw STA, 0 from the YT leg.
@@ -703,6 +732,9 @@ This document was reviewed against the live network, not just reread. Specifical
 - `docs/ORACLE_SAFETY_EXTENSION.md` — the primary/fallback source, deviation guard, and
   availability-signaling extension to `OracleAdapter`, with live Testnet evidence and its own
   breaking-ABI migration note
+- `docs/ROUTER_QUOTES.md` — the five Router-level quotes for the underlying-denominated flows in
+  §4.1, and the proof that `SYWrapper.exchange_rate()` cannot drift within one of these calls under
+  the current contract
 - `docs/MARKET_FACTORY.md` — factory design, the single-call design's real Testnet failure, API
 - `docs/DAPP_INTEGRATION_AND_MARKET_CREATION.md` — the matured-market investigation this guide
   continues from
