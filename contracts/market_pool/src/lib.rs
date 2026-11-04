@@ -31,8 +31,18 @@
 //! `MINIMUM_LIQUIDITY` LP. `remove_liquidity` works before and after maturity (the pool pause halts it only while the market is live).
 //!
 //! # YT trading (flash-mint / flash-redeem)
-//! * **Buy YT** is `Router.swap_sy_for_yt`: mint PT + YT from the user's SY, then sell the PT into
-//!   this pool with `swap_pt_for_sy`; the user keeps the YT and the SY proceeds.
+//! * **Buy YT, capital-up-front** is `Router.swap_sy_for_yt`: mint PT + YT from the user's SY, then
+//!   sell the PT into this pool with `swap_pt_for_sy`; the user keeps the YT and the SY proceeds.
+//!   The user must hold the full notional being tokenized, not just the net cost.
+//! * **Buy YT, true flash swap** is `flash_mint_yt` here: the pool funds the mint leg from its
+//!   *own* SY reserves instead of the user's, keeps the PT the mint produces (exactly as if it had
+//!   just bought it via `swap_pt_for_sy`), and the user pays only the net cost up front -- the same
+//!   amount `Router.swap_sy_for_yt` charges net of its SY proceeds, just advanced differently. See
+//!   that function's own docs for the accounting identity and why it holds. Deliberately *not*
+//!   named `swap_sy_for_yt` at this level: that name already means something different here
+//!   (nothing -- it only exists at the Router level today), and giving a pool-level function the
+//!   same name as a Router-level one with a different return shape would invite exactly the
+//!   confusion this note is avoiding.
 //! * **Sell YT** is `swap_yt_for_sy` here: the pool takes the user's YT, uses `yt_in` of its own PT
 //!   reserve to `PrincipalManager.recombine` PT + YT into SY, keeps the curve price of that PT (plus
 //!   fee) and pays the user the remainder -- all in one call, so nothing is ever borrowed across
@@ -53,8 +63,9 @@
 pub mod math;
 
 use soroban_sdk::{
+    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
     contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error,
-    symbol_short, Address, Env,
+    symbol_short, vec, Address, Env, IntoVal, Symbol,
 };
 
 use principal_compliance as compliance;
@@ -78,6 +89,15 @@ const ZAP_ITERATIONS: u32 = 18;
 // External interfaces
 // ---------------------------------------------------------------------------
 
+/// Mirrors `PrincipalManager`'s own `MintResult`, field-for-field.
+#[contracttype]
+#[derive(Clone)]
+pub struct MintResult {
+    pub pt_minted: i128,
+    pub yt_minted: i128,
+    pub fee_shares: i128,
+}
+
 #[contractclient(name = "ManagerClient")]
 pub trait ManagerInterface {
     fn underlying_address(env: Env) -> Address;
@@ -89,6 +109,7 @@ pub trait ManagerInterface {
     fn permissioning_address(env: Env) -> Address;
     fn maturity(env: Env) -> u64;
     fn recombine(env: Env, from: Address, amount: i128) -> i128;
+    fn mint(env: Env, from: Address, sy_shares: i128) -> MintResult;
 }
 
 #[contractclient(name = "SYClient")]
@@ -396,6 +417,170 @@ impl MarketPoolContract {
             (from, to, yt_in, payout, q.fee_shares),
         );
         payout
+    }
+
+    /// **True flash-mint**: tokenize `sy_in` SY into PT + YT, keep the PT in this pool's own
+    /// reserves (exactly as if the pool had just bought it via `swap_pt_for_sy`), and send `to`
+    /// only the YT. `from` ends up paying just the *net* cost -- `sy_in` minus what the pool would
+    /// have paid for that PT -- not the full `sy_in`, because the pool funds the rest of the mint
+    /// from its own reserves instead of from `from`'s balance. `from` must authorize transferring
+    /// `max_net_cost` (not `net_cost` -- see "why `max_net_cost` is pulled, not `net_cost`" below);
+    /// any unused portion is refunded. Reverts `SlippageExceeded` if fewer than `min_yt_out` YT
+    /// would be minted or the net cost would exceed `max_net_cost`.
+    ///
+    /// Returns `(yt_out, net_cost)`.
+    ///
+    /// # Why this is safe: the accounting identity
+    /// Let `gross` be the SY value `calc_sell_pt(yt_out)` assigns the PT the mint produces (the
+    /// same `gross` a real seller of that PT would face), `fee` its swap-fee component, and
+    /// `sy_back = gross - fee` (what a real seller would be paid). Reserves move exactly like a
+    /// sell-PT trade: `pt_reserve += yt_out`, `sy_reserve -= gross`, `fee` accrues to the fee
+    /// buckets. The pool's own token balance only has to give up `sy_back` -- the fee portion was
+    /// never going to leave the pool's balance either way, same as in a real `swap_pt_for_sy` where
+    /// only `amount_out = gross - fee` is actually transferred out. Pulling `max_net_cost` from
+    /// `from` and refunding `max_net_cost - net_cost` nets to exactly `-net_cost` on `from`'s
+    /// balance and exactly `-sy_back` on the pool's -- same algebra, worked through in full in
+    /// `docs/AMM_FLASH_SWAP_AND_SIDEREAL_REVIEW.md` §5, reordered into two fixed-amount transfers
+    /// instead of one derived one (see below). Since `net_cost = sy_in - sy_back` by construction,
+    /// `net_cost + sy_back = sy_in`: the buyer's payment plus the pool's own contribution exactly
+    /// funds the mint. The existing reserves-plus-fee-buckets-equal-token-balance invariant
+    /// (`pool_token_balances_always_match_internal_reserves_plus_fees`) is preserved by the same
+    /// algebra that already holds for `swap_pt_for_sy`.
+    ///
+    /// # Why `max_net_cost` is pulled, not `net_cost`
+    /// `net_cost` depends on `calc_sell_pt`, which reads `seconds_to_maturity` live -- the same
+    /// curve-derived-value staleness class documented in
+    /// `docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md` §2's third gotcha. A first version of this
+    /// function transferred `net_cost` straight from `from`, and reverted `Error(Auth,
+    /// InvalidAction)` at submission (not simulation) live on Testnet: the value Soroban had
+    /// `from` pre-authorize at simulation time no longer matched what real execution computed
+    /// moments later. `max_net_cost` is a plain literal `from` already chooses and signs for
+    /// (exactly like every other `min_*_out`/`max_*_cost` in this Router), so pulling that instead
+    /// and refunding the unused remainder -- the same fix family as `add_liquidity_single_sy`'s own
+    /// `Error(Auth, InvalidAction)` fix -- leaves nothing stale in the authorized invocation.
+    ///
+    /// # Why `net_cost` cannot be negative
+    /// The curve prices PT at or below par throughout the market's life (the first deposit cannot
+    /// seed it above par, and it only ever converges upward *to* par at maturity), while minting
+    /// costs slightly *more* than par per unit via the tokenization fee. So `sy_back` (PT's curve
+    /// value) is always below `sy_in` (what minting that same notional cost), by at least the fee
+    /// -- matching `Router.swap_sy_for_yt`'s own documented economics ("YT price ~ 1 - PT price").
+    /// Checked defensively anyway: panics `InsufficientLiquidity` rather than trust the inequality
+    /// blindly.
+    pub fn flash_mint_yt(
+        env: Env,
+        from: Address,
+        to: Address,
+        sy_in: i128,
+        min_yt_out: i128,
+        max_net_cost: i128,
+    ) -> (i128, i128) {
+        from.require_auth();
+        Self::assert_active(&env);
+        Self::assert_trader(&env, &from);
+        if sy_in <= 0 {
+            panic_with_error!(&env, Error::ZeroAmount);
+        }
+        let st = Self::state_fresh(&env);
+
+        // Preview the mint leg exactly like `quote_sy_for_yt`, and the sell-PT leg exactly like
+        // `swap_pt_for_sy` -- same formulas, so the real mint below is proven to match (checked
+        // defensively, not just assumed).
+        let fee_bps = ConfigClient::new(&env, &Self::addr(&env, &DataKey::Config))
+            .tokenization_fee_bps() as i128;
+        let mint_fee_shares = Self::ceil_div(sy_in * fee_bps, BPS);
+        let net_shares = sy_in - mint_fee_shares;
+        if net_shares <= 0 {
+            panic_with_error!(&env, Error::ZeroAmount);
+        }
+        let yt_out = net_shares * st.rate / SCALE;
+        if yt_out <= 0 {
+            panic_with_error!(&env, Error::ZeroAmount);
+        }
+        if yt_out < min_yt_out {
+            panic_with_error!(&env, Error::SlippageExceeded);
+        }
+        let (sell_quote, gross) = Self::calc_sell_pt(&env, &st, yt_out);
+        let sy_back = sell_quote.amount_out;
+        if sy_back >= sy_in {
+            // Cannot happen -- see the module doc's "why net_cost cannot be negative" -- but a
+            // rate/fee-schedule change this call did not anticipate must fail closed, not hand the
+            // buyer a free mint funded by LP reserves.
+            panic_with_error!(&env, Error::InsufficientLiquidity);
+        }
+        let net_cost = sy_in - sy_back;
+        if net_cost > max_net_cost {
+            panic_with_error!(&env, Error::SlippageExceeded);
+        }
+
+        // Effects: reserves move exactly like a sell-PT trade for `yt_out` PT (see the module doc).
+        Self::set_reserves(&env, st.pt_reserve + yt_out, st.sy_reserve - gross);
+        Self::accrue_fee(&env, sell_quote.fee_shares);
+
+        // Interactions.
+        let this = env.current_contract_address();
+        let manager_addr = Self::addr(&env, &DataKey::Manager);
+        let sy_addr = Self::addr(&env, &DataKey::SY);
+        let sy = SYClient::new(&env, &sy_addr);
+        // Pull `from`'s full, *fixed* `max_net_cost` up front and refund the unused remainder
+        // below -- not the mid-execution-derived `net_cost` directly. `net_cost` depends on
+        // `calc_sell_pt`, which reads `seconds_to_maturity` live, so it can drift by a few raw
+        // units between this call's simulation and its real execution moments later; pulling it
+        // straight as `from`'s authorized transfer amount would make that pre-signed authorization
+        // stale by the time the transaction lands, reverting `Error(Auth, InvalidAction)` --
+        // reproduced live on Testnet while this function was first written. `max_net_cost` is a
+        // plain literal `from` chose and signed for, so there is nothing to go stale. Same fix
+        // family as `add_liquidity_single_sy`'s own `Error(Auth, InvalidAction)` fix.
+        if max_net_cost > 0 {
+            sy.transfer(&from, &this, &max_net_cost);
+        }
+        // The pool funds the *full* `sy_in` from its own balance -- `max_net_cost` just received
+        // from `from` (of which only `net_cost` is kept; the rest is refunded below), plus
+        // `sy_back`'s worth it already held as part of its reserves (freed by the reserve decrease
+        // above). `mint`'s own `from.require_auth()` (with `from = this`) is a *direct* call this
+        // contract is making, which Soroban always considers authorized -- but `mint` in turn
+        // calls `SYWrapper.transfer(this, manager, sy_in)` on *its own* frame, two hops from this
+        // one, and self-authorization does not propagate past the immediately invoking frame.
+        // That one nested call needs an explicit entry (the same mechanism, and the same reason,
+        // documented in `docs/AMM_FLASH_SWAP_AND_SIDEREAL_REVIEW.md` §5 as the one part of a
+        // competitor's design confirmed sound by their own audit). Its `sy_in` argument is the
+        // same fixed literal the caller already authorized this whole call with, so it carries no
+        // staleness risk of its own.
+        env.authorize_as_current_contract(vec![
+            &env,
+            InvokerContractAuthEntry::Contract(SubContractInvocation {
+                context: ContractContext {
+                    contract: sy_addr.clone(),
+                    fn_name: Symbol::new(&env, "transfer"),
+                    args: vec![
+                        &env,
+                        this.into_val(&env),
+                        manager_addr.clone().into_val(&env),
+                        sy_in.into_val(&env),
+                    ],
+                },
+                sub_invocations: vec![&env],
+            }),
+        ]);
+        let minted = ManagerClient::new(&env, &manager_addr).mint(&this, &sy_in);
+        if minted.yt_minted != yt_out || minted.pt_minted != yt_out {
+            // Cannot happen while the manager mints against the same rate and fee this call just
+            // read: under-minting would short the buyer, over-minting would leave PT/YT the
+            // reserve update above never accounted for. Either way, fail closed rather than trust
+            // it silently.
+            panic_with_error!(&env, Error::InsufficientLiquidity);
+        }
+        let refund = max_net_cost - net_cost;
+        if refund > 0 {
+            sy.transfer(&this, &from, &refund);
+        }
+        TokenClient::new(&env, &Self::addr(&env, &DataKey::YT)).transfer(&this, &to, &yt_out);
+
+        env.events().publish(
+            (symbol_short!("flash_yt"),),
+            (from, to, sy_in, yt_out, net_cost),
+        );
+        (yt_out, net_cost)
     }
 
     // -------------------------------------------------------------- liquidity

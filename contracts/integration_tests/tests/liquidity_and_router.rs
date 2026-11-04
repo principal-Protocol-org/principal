@@ -763,6 +763,78 @@ fn underlying_to_shares_for_test(s: &Stack<'_>, underlying_amount: i128) -> i128
     underlying_amount * SCALE / s.sy.exchange_rate()
 }
 
+// ------------------------------------------------- true flash-mint YT, via the Router
+
+/// `Router.flash_mint_yt` is a thin forward to `MarketPool.flash_mint_yt`: the buyer funds only
+/// the net cost, quoted beforehand via `MarketPool.quote_sy_for_yt`, never the full `sy_in`
+/// notional `Router.swap_sy_for_yt` requires.
+#[test]
+fn router_flash_mint_yt_only_requires_the_net_cost() {
+    let (s, _, _) = seeded(UnderlyingKind::Sac);
+    let pool = s.pool.address.clone();
+    let sy_in = 100 * SCALE;
+    let quote = s.pool.quote_sy_for_yt(&sy_in);
+    let net_cost = sy_in - quote.sy_back;
+
+    let buyer = s.new_user();
+    deposit_sy(&s, &buyer, net_cost);
+    let (yt_out, charged) = s
+        .router
+        .flash_mint_yt(&buyer, &pool, &sy_in, &0, &net_cost, &u64::MAX);
+
+    assert_eq!(yt_out, quote.yt_out);
+    assert_eq!(charged, net_cost);
+    assert_eq!(s.yt.balance(&buyer), yt_out);
+    assert_eq!(s.sy.balance_of(&buyer), 0);
+
+    // Deadline and slippage guards apply, same as every other Router flow.
+    let past = s.env.ledger().timestamp() - 1;
+    assert_eq!(
+        s.router
+            .try_flash_mint_yt(&buyer, &pool, &sy_in, &0, &net_cost, &past)
+            .err(),
+        err_code(RouterError::DeadlineExpired as u32)
+    );
+}
+
+/// Same true flash-mint, for a caller who holds the underlying rather than SY: the Router wraps
+/// only `underlying_budget`, not the full notional, leaving any surplus between the budget and
+/// the real net cost in the caller's own SY balance.
+#[test]
+fn router_flash_mint_yt_from_underlying_wraps_only_the_budget() {
+    let (s, _, _) = seeded(UnderlyingKind::Sac);
+    let pool = s.pool.address.clone();
+    let sy_in = 100 * SCALE;
+    let quote = s.pool.quote_sy_for_yt(&sy_in);
+    let net_cost = sy_in - quote.sy_back;
+    let underlying_budget = net_cost + 5 * SCALE; // generous: covers the cost plus a margin
+
+    let buyer = s.new_user();
+    s.mint_underlying(&buyer, underlying_budget);
+    let underlying_before = underlying_balance(&s, &buyer);
+
+    let (yt_out, charged) = s.router.flash_mint_yt_from_underlying(
+        &buyer,
+        &pool,
+        &sy_in,
+        &0,
+        &net_cost,
+        &underlying_budget,
+        &u64::MAX,
+    );
+
+    assert_eq!(yt_out, quote.yt_out);
+    assert_eq!(charged, net_cost);
+    assert_eq!(s.yt.balance(&buyer), yt_out);
+    // Only `underlying_budget` of underlying ever left the buyer's wallet (wrapped to SY); the
+    // margin above the real net cost sits in the buyer's own SY balance, not stranded or donated.
+    assert_eq!(
+        underlying_balance(&s, &buyer),
+        underlying_before - underlying_budget
+    );
+    assert_eq!(s.sy.balance_of(&buyer), underlying_budget - net_cost);
+}
+
 #[test]
 fn router_acts_as_the_user_so_a_deauthorized_user_gains_nothing_by_using_it() {
     for kind in [UnderlyingKind::Sac, UnderlyingKind::Rwa] {

@@ -284,8 +284,10 @@ not new code.
 | `swap_underlying_for_pt` *(new, §4.1)* | `Router.swap_underlying_for_pt(from, pool, underlying_amount, min_pt_out, deadline)` | `SYWrapper.deposit` → `MarketPool.swap_sy_for_pt` |
 | `swap_pt_for_sy` | `Router.swap_pt_for_sy(from, pool, pt_in, min_sy_out, deadline)` | `MarketPool.swap_pt_for_sy` |
 | `swap_pt_for_underlying` *(new, §4.1)* | `Router.swap_pt_for_underlying(from, pool, pt_in, min_underlying_out, deadline)` | `MarketPool.swap_pt_for_sy` → `SYWrapper.withdraw_all` |
-| `swap_sy_for_yt` (flash-mint) | `Router.swap_sy_for_yt(from, pool, sy_in, min_yt_out, max_net_cost, deadline)` | `PrincipalManager.mint` → `MarketPool.swap_pt_for_sy` |
+| `swap_sy_for_yt` (flash-mint, capital up front) | `Router.swap_sy_for_yt(from, pool, sy_in, min_yt_out, max_net_cost, deadline)` | `PrincipalManager.mint` → `MarketPool.swap_pt_for_sy` |
 | `swap_underlying_for_yt` *(new, §4.1)* | `Router.swap_underlying_for_yt(from, pool, underlying_amount, min_yt_out, max_net_cost, deadline)` | `SYWrapper.deposit` → `PrincipalManager.mint` → `MarketPool.swap_pt_for_sy` → `SYWrapper.withdraw_all` |
+| `flash_mint_yt` (**true flash-mint**) *(new, §4.3)* | `Router.flash_mint_yt(from, pool, sy_in, min_yt_out, max_net_cost, deadline)` | `MarketPool.flash_mint_yt` |
+| `flash_mint_yt_from_underlying` *(new, §4.3)* | `Router.flash_mint_yt_from_underlying(from, pool, sy_in, min_yt_out, max_net_cost, underlying_budget, deadline)` | `SYWrapper.deposit` → `MarketPool.flash_mint_yt` |
 | `swap_yt_for_sy` (flash-redeem) | `Router.swap_yt_for_sy(from, pool, yt_in, min_sy_out, deadline)` | `MarketPool.swap_yt_for_sy` |
 | `swap_yt_for_underlying` *(new, §4.1)* | `Router.swap_yt_for_underlying(from, pool, yt_in, min_underlying_out, deadline)` | `MarketPool.swap_yt_for_sy` → `SYWrapper.withdraw_all` |
 | `add_liquidity` | `Router.add_liquidity(from, pool, pt_in, sy_in, min_lp_out, deadline)` | `MarketPool.add_liquidity` |
@@ -315,9 +317,10 @@ PT or YT already in hand. The five rows marked *(new)* above close that gap, plu
 `swap_sy_for_yt` already had.** `swap_underlying_for_yt` still needs `from` to hold the *full*
 `underlying_amount` being tokenized up front, not just the eventual net cost — buying YT at 45×
 leverage to spend 100 USDY still means holding ~4,500 USDY during the call. The Router sequences
-existing calls inside one atomic transaction; it does not advance capital. A true flash swap,
-where the pool fronts the capital, is a larger change to how `MarketPool`/`PrincipalManager`
-custody funds and is out of scope here.
+existing calls inside one atomic transaction; it does not advance capital. **This limitation is
+now optional, not fundamental**: §4.3 adds `flash_mint_yt`/`flash_mint_yt_from_underlying`, a true
+flash swap where the pool fronts the capital, built after this guide was first written. Both forms
+stay available — `swap_sy_for_yt`/`swap_underlying_for_yt` are unchanged.
 
 **The real bug, found live while adding these:** a first version of `swap_pt_for_underlying`
 (`MarketPool.swap_pt_for_sy` then `SYWrapper.withdraw(from, sy_out, from, min_underlying_out)`,
@@ -393,6 +396,47 @@ experiences:
 Full design, the exactness argument for why these need no "quote vs. live execution" drift caveat
 of their own (beyond the usual seconds-to-maturity one every `MarketPool` quote already carries),
 and the regression test proving it: `docs/ROUTER_QUOTES.md`.
+
+### 4.3 True flash-mint for YT
+
+Closes the capital-advance limitation §4.1 flags for `swap_sy_for_yt`/`swap_underlying_for_yt`:
+`MarketPool.flash_mint_yt` funds the mint leg from the pool's **own** SY reserves instead of the
+caller's, keeps the minted PT in reserves (exactly as if the pool had just bought it), and sends
+the caller only the YT. The caller authorizes transferring `max_net_cost`, not the full `sy_in`
+notional — verified live tokenizing a 50,000,000-SY-share notional for a caller holding only
+5,000,000 SY. `quote_sy_for_yt` (§4.2/§5.1) already previews this exactly: its `sy_in - sy_back`
+*is* `flash_mint_yt`'s `net_cost`.
+
+| Dapp action | Router call | Downstream |
+|---|---|---|
+| `flash_mint_yt` | `Router.flash_mint_yt(from, pool, sy_in, min_yt_out, max_net_cost, deadline)` | `MarketPool.flash_mint_yt` |
+| `flash_mint_yt_from_underlying` | `Router.flash_mint_yt_from_underlying(from, pool, sy_in, min_yt_out, max_net_cost, underlying_budget, deadline)` | `SYWrapper.deposit` → `MarketPool.flash_mint_yt` |
+
+`flash_mint_yt_from_underlying` wraps only `underlying_budget` of underlying into SY — not the full
+notional, since that would defeat the point — so `underlying_budget` only needs to cover
+`max_net_cost` SY shares at the live `SYWrapper.exchange_rate()`, a plain off-chain conversion like
+every other `_for_underlying` caller already does. Any surplus stays in the caller's own SY
+balance; there is no zero-pre-existing-SY precondition, unlike the other `_for_underlying`
+functions, because this one never calls `SYWrapper.withdraw_all`.
+
+**Two real bugs found live while building this, both in the capital-advance mechanism itself, not
+the curve:**
+
+1. A first version transferred the mid-execution-computed `net_cost` directly as the caller's
+   authorized amount. Reverted `InvokeHostFunction(Trapped)` at submission — the same
+   `Error(Auth, InvalidAction)` staleness class as §2's third gotcha and the `add_liquidity_single_sy`
+   fix in §5.2: `net_cost` depends on the live curve, so the pre-signed amount drifted by the time
+   the transaction landed. Fixed the same way: the caller authorizes the full, fixed `max_net_cost`
+   instead, and the function refunds the unused remainder once the real cost is known.
+2. Soroban's "a contract's direct calls are always authorized" only covers the *immediate* hop.
+   `MarketPool` calling `PrincipalManager.mint` is fine on its own, but `mint` in turn calls
+   `SYWrapper.transfer` on *its own* frame — one hop further than self-authorization reaches.
+   Reverted `Error(Auth, InvalidAction)` ("a contract earlier in the call stack") until
+   `flash_mint_yt` added one explicit `env.authorize_as_current_contract` entry for that nested
+   call.
+
+Full accounting proof, the Sidereal mechanism this borrowed, and the live transaction evidence:
+`docs/AMM_FLASH_SWAP_AND_SIDEREAL_REVIEW.md` §5.
 
 ---
 
@@ -729,6 +773,9 @@ This document was reviewed against the live network, not just reread. Specifical
 
 ## 9. References
 
+- `docs/AMM_FLASH_SWAP_AND_SIDEREAL_REVIEW.md` — the comparative AMM audit behind §4.3's true
+  flash-mint, the two capital-flow bugs found and fixed while building it, and the live Testnet
+  evidence
 - `docs/ORACLE_SAFETY_EXTENSION.md` — the primary/fallback source, deviation guard, and
   availability-signaling extension to `OracleAdapter`, with live Testnet evidence and its own
   breaking-ABI migration note

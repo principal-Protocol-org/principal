@@ -519,6 +519,213 @@ fn flash_mint_enforces_min_yt_out_and_the_deadline() {
     );
 }
 
+// ------------------------------------------------ true flash-mint YT (pool-funded)
+
+/// `MarketPool.flash_mint_yt` must produce the identical `(yt_out, net_cost)` as the
+/// capital-up-front route (`Router.swap_sy_for_yt`'s `yt_out` and `sy_in - sy_back`) for the same
+/// `sy_in` on the same pool state -- the whole point is that only *who fronts the capital*
+/// changes, never the economics.
+#[test]
+fn true_flash_mint_matches_the_capital_up_front_route_economically() {
+    // Two independently, identically seeded pools -- not one pool used twice -- so the second
+    // trade is not pricing against a curve the first trade already moved.
+    let sy_in = 100 * SCALE;
+
+    let (ref_s, _) = seeded(Config::with_example_fees(T0 + 180 * DAY));
+    let reference_buyer = ref_s.new_user();
+    deposit_sy(&ref_s, &reference_buyer, sy_in);
+    let (ref_yt_out, ref_sy_back) = ref_s.router.swap_sy_for_yt(
+        &reference_buyer,
+        &ref_s.pool.address,
+        &sy_in,
+        &0,
+        &sy_in,
+        &u64::MAX,
+    );
+    let ref_net_cost = sy_in - ref_sy_back;
+
+    let (s, _) = seeded(Config::with_example_fees(T0 + 180 * DAY));
+    let flash_buyer = s.new_user();
+    // Funded with exactly the reference's net cost -- not the full sy_in -- since
+    // `max_net_cost` (not `sy_in`) is what the buyer must actually hold and authorize.
+    deposit_sy(&s, &flash_buyer, ref_net_cost);
+    let (yt_out, net_cost) =
+        s.pool
+            .flash_mint_yt(&flash_buyer, &flash_buyer, &sy_in, &0, &ref_net_cost);
+
+    assert_eq!(
+        yt_out, ref_yt_out,
+        "yt_out must match the capital-up-front route exactly"
+    );
+    assert_eq!(
+        net_cost, ref_net_cost,
+        "net_cost must match sy_in - sy_back exactly"
+    );
+    assert_eq!(s.yt.balance(&flash_buyer), yt_out);
+    assert_eq!(
+        pt_bal(&s, &flash_buyer),
+        0,
+        "the buyer keeps no PT, same as the old route"
+    );
+}
+
+/// The capability this function exists for: the buyer never holds the full `sy_in` notional, only
+/// the net cost -- quoted off-chain beforehand via the existing `quote_sy_for_yt`, exactly the
+/// pattern every other pre-quoted literal argument in this Router already uses.
+#[test]
+fn true_flash_mint_only_requires_the_net_cost_not_the_full_notional() {
+    let (s, _) = seeded(Config::with_example_fees(T0 + 180 * DAY));
+    let sy_in = 100 * SCALE;
+
+    let quote = s.pool.quote_sy_for_yt(&sy_in);
+    let net_cost = sy_in - quote.sy_back;
+    assert!(
+        net_cost < sy_in / 10,
+        "sanity: net cost {net_cost} should be a small fraction of the {sy_in} notional"
+    );
+
+    let buyer = s.new_user();
+    // Fund the buyer with *only* the quoted net cost -- nowhere near the full notional.
+    deposit_sy(&s, &buyer, net_cost);
+    assert_eq!(s.sy.balance_of(&buyer), net_cost);
+
+    let (yt_out, charged) = s.pool.flash_mint_yt(&buyer, &buyer, &sy_in, &0, &net_cost);
+
+    assert_eq!(yt_out, quote.yt_out);
+    assert_eq!(charged, net_cost);
+    assert_eq!(
+        s.sy.balance_of(&buyer),
+        0,
+        "the buyer's entire (small) SY balance was spent, not the full notional"
+    );
+    assert_eq!(s.yt.balance(&buyer), yt_out);
+}
+
+#[test]
+fn true_flash_mint_enforces_min_yt_out_and_max_net_cost() {
+    let (s, _) = seeded(Config::with_example_fees(T0 + 180 * DAY));
+    let sy_in = 100 * SCALE;
+    let quote = s.pool.quote_sy_for_yt(&sy_in);
+    let net_cost = sy_in - quote.sy_back;
+
+    let buyer = s.new_user();
+    deposit_sy(&s, &buyer, net_cost);
+
+    assert_eq!(
+        s.pool
+            .try_flash_mint_yt(&buyer, &buyer, &sy_in, &(quote.yt_out + 1), &net_cost)
+            .err(),
+        err_code(PoolError::SlippageExceeded as u32),
+        "min_yt_out one above the real amount must revert"
+    );
+    assert_eq!(
+        s.pool
+            .try_flash_mint_yt(&buyer, &buyer, &sy_in, &0, &(net_cost - 1))
+            .err(),
+        err_code(PoolError::SlippageExceeded as u32),
+        "max_net_cost one below the real cost must revert"
+    );
+    // Exactly at both bounds still succeeds.
+    let (yt_out, charged) = s
+        .pool
+        .flash_mint_yt(&buyer, &buyer, &sy_in, &quote.yt_out, &net_cost);
+    assert_eq!(yt_out, quote.yt_out);
+    assert_eq!(charged, net_cost);
+}
+
+/// The reserve/fee-bucket bookkeeping must stay consistent with the pool's real token balances
+/// after a true flash-mint, exactly like `pool_token_balances_always_match_internal_reserves_plus_fees`
+/// already asserts for ordinary swaps -- this function moves SY in and out of the pool's own
+/// balance in a way no other function does, so it is the one most likely to drift the invariant
+/// if the accounting in its own doc comment were wrong.
+#[test]
+fn true_flash_mint_preserves_the_reserves_plus_fees_invariant() {
+    let (s, _) = seeded(Config::with_example_fees(T0 + 180 * DAY));
+    let sy_in = 100 * SCALE;
+    let quote = s.pool.quote_sy_for_yt(&sy_in);
+    let net_cost = sy_in - quote.sy_back;
+
+    let buyer = s.new_user();
+    deposit_sy(&s, &buyer, net_cost);
+    s.pool.flash_mint_yt(&buyer, &buyer, &sy_in, &0, &net_cost);
+
+    let (pt_res, sy_res) = s.pool.reserves();
+    let (fp, fc) = s.pool.accrued_fees();
+    assert_eq!(s.pt.balance(&s.pool.address), pt_res);
+    assert_eq!(s.sy.balance_of(&s.pool.address), sy_res + fp + fc);
+}
+
+/// Same rate sweep as `sweeping_the_oracle_rate_keeps_the_curve_in_value_units`, applied to the
+/// true flash-mint specifically -- the dimension a comparable protocol's own property suite
+/// missed for its equivalent function (pinned to rate = 1.0, "where the defect vanishes
+/// identically"). `net_cost` must stay positive and small relative to `sy_in` at every rate.
+#[test]
+fn true_flash_mint_stays_correct_across_a_rate_sweep() {
+    for &(num, den) in &[(100_i128, 100_i128), (101, 100), (105, 100), (110, 100)] {
+        let maturity = T0 + 180 * DAY;
+        let s = deploy(Config::with_example_fees(maturity));
+        let rate = SCALE * num / den;
+        s.advance(T0 + 1, rate);
+
+        let lp = s.new_user();
+        let sy_for_pool = 950 * SCALE * SCALE / rate;
+        let shares_for_pt = 1_000 * SCALE * SCALE / rate;
+        deposit_sy(&s, &lp, shares_for_pt + sy_for_pool);
+        let minted = s.pm.mint(&lp, &shares_for_pt);
+        s.pool
+            .add_liquidity(&lp, &minted.pt_minted, &sy_for_pool, &0);
+
+        let sy_in = 50 * SCALE * SCALE / rate; // 50 notional worth, whatever the rate
+        let quote = s.pool.quote_sy_for_yt(&sy_in);
+        let net_cost = sy_in - quote.sy_back;
+        assert!(
+            net_cost > 0 && net_cost < sy_in,
+            "rate {num}/{den}: net_cost {net_cost} out of [0, sy_in={sy_in}) range"
+        );
+
+        let buyer = s.new_user();
+        deposit_sy(&s, &buyer, net_cost);
+        let (yt_out, charged) = s.pool.flash_mint_yt(&buyer, &buyer, &sy_in, &0, &net_cost);
+
+        assert_eq!(yt_out, quote.yt_out, "rate {num}/{den}: yt_out mismatch");
+        assert_eq!(charged, net_cost, "rate {num}/{den}: net_cost mismatch");
+        assert_eq!(s.yt.balance(&buyer), yt_out);
+        assert_eq!(s.sy.balance_of(&buyer), 0);
+
+        // The invariant holds at every rate, not only at par.
+        let (pt_res, sy_res) = s.pool.reserves();
+        let (fp, fc) = s.pool.accrued_fees();
+        assert_eq!(s.pt.balance(&s.pool.address), pt_res, "rate {num}/{den}");
+        assert_eq!(
+            s.sy.balance_of(&s.pool.address),
+            sy_res + fp + fc,
+            "rate {num}/{den}"
+        );
+    }
+}
+
+#[test]
+fn true_flash_mint_rejects_zero_amount_and_a_non_compliant_caller() {
+    let (s, _) = seeded(Config::with_example_fees(T0 + 180 * DAY));
+    let buyer = s.new_user();
+    deposit_sy(&s, &buyer, 100 * SCALE);
+
+    assert_eq!(
+        s.pool.try_flash_mint_yt(&buyer, &buyer, &0, &0, &0).err(),
+        err_code(PoolError::ZeroAmount as u32)
+    );
+
+    // A raw address, never granted compliance standing (unlike `s.new_user()`, which grants it):
+    // `assert_trader` must reject it before any curve math or mint call runs.
+    let stranger = Address::generate(&s.env);
+    assert_eq!(
+        s.pool
+            .try_flash_mint_yt(&stranger, &stranger, &(10 * SCALE), &0, &(10 * SCALE))
+            .err(),
+        err_code(PoolError::PermissionDenied as u32)
+    );
+}
+
 // ----------------------------------------------------- flash-redeem YT
 
 #[test]

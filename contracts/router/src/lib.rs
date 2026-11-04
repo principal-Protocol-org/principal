@@ -163,6 +163,14 @@ pub trait PoolInterface {
     fn swap_sy_for_pt(env: Env, from: Address, to: Address, sy_in: i128, min_pt_out: i128) -> i128;
     fn swap_pt_for_sy(env: Env, from: Address, to: Address, pt_in: i128, min_sy_out: i128) -> i128;
     fn swap_yt_for_sy(env: Env, from: Address, to: Address, yt_in: i128, min_sy_out: i128) -> i128;
+    fn flash_mint_yt(
+        env: Env,
+        from: Address,
+        to: Address,
+        sy_in: i128,
+        min_yt_out: i128,
+        max_net_cost: i128,
+    ) -> (i128, i128);
     fn add_liquidity(
         env: Env,
         from: Address,
@@ -565,6 +573,60 @@ impl RouterContract {
         PoolClient::new(&env, &pool).swap_pt_for_sy(&from, &from, &minted.pt_minted, &min_sy_back);
         let underlying_back = sy.withdraw_all(&from, &from, &0);
         (minted.yt_minted, underlying_back)
+    }
+
+    /// **True flash-mint** of YT: forwards to `MarketPool.flash_mint_yt`, which funds the mint
+    /// leg from the pool's own SY reserves instead of `from`'s balance. `from` pays only the net
+    /// cost (`MarketPool.flash_mint_yt`'s own docs explain the accounting identity), not the full
+    /// `sy_in` notional `swap_sy_for_yt` above requires. Returns `(yt_out, net_cost)`.
+    pub fn flash_mint_yt(
+        env: Env,
+        from: Address,
+        pool: Address,
+        sy_in: i128,
+        min_yt_out: i128,
+        max_net_cost: i128,
+        deadline: u64,
+    ) -> (i128, i128) {
+        from.require_auth();
+        Self::assert_deadline(&env, deadline);
+        Self::info(&env, &pool);
+        PoolClient::new(&env, &pool).flash_mint_yt(&from, &from, &sy_in, &min_yt_out, &max_net_cost)
+    }
+
+    /// Same true flash-mint as `flash_mint_yt`, for a caller who holds the underlying rather than
+    /// SY. Wraps `underlying_budget` of underlying into SY first -- not the full `sy_in` notional,
+    /// since the whole point of this function is that the caller never needs the full notional --
+    /// so `from`'s SY balance covers whatever the real net cost turns out to be, as long as the
+    /// caller chose `underlying_budget` generously enough to cover `max_net_cost` SY shares at the
+    /// current `SYWrapper.exchange_rate()` (a plain off-chain conversion, the same kind every other
+    /// `_for_underlying` caller already does). `max_net_cost` is SY-denominated and passed through
+    /// to the pool unchanged -- kept as its own parameter, not derived from `underlying_budget`,
+    /// because the two are only numerically equal while `exchange_rate()` is exactly 1.0 (true for
+    /// every `SYWrapper` deployed today, not guaranteed forever; see `docs/ROUTER_QUOTES.md` §2).
+    /// Any surplus (`underlying_budget` wrapped minus the real net cost) is left in `from`'s own SY
+    /// balance -- the same way a generous `mint_amount` leaves a surplus with
+    /// `add_liquidity_keep_yt`'s caller -- and unlike the other `_for_underlying` functions this one
+    /// does not use `SYWrapper.withdraw_all`, so it has no zero-pre-existing-SY-balance
+    /// precondition.
+    #[allow(clippy::too_many_arguments)] // one entrypoint composing a wrap plus a flash-mint, by design.
+    pub fn flash_mint_yt_from_underlying(
+        env: Env,
+        from: Address,
+        pool: Address,
+        sy_in: i128,
+        min_yt_out: i128,
+        max_net_cost: i128,
+        underlying_budget: i128,
+        deadline: u64,
+    ) -> (i128, i128) {
+        from.require_auth();
+        Self::assert_deadline(&env, deadline);
+        let info = Self::info(&env, &pool);
+        if underlying_budget > 0 {
+            SYClient::new(&env, &info.sy).deposit(&from, &underlying_budget, &0);
+        }
+        PoolClient::new(&env, &pool).flash_mint_yt(&from, &from, &sy_in, &min_yt_out, &max_net_cost)
     }
 
     /// **Flash-redeem** sale of YT: the pool recombines the YT with PT from its own reserve and

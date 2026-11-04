@@ -103,6 +103,10 @@ proven not to have that failure mode.
 
 ## 5. Decision: build the true flash swap for YT, on our own AMM
 
+**Built, tested, and verified live — see §5.5 for the implementation record and evidence.** The
+design below is kept as written (it is what was actually built), followed by what changed during
+implementation and the live results.
+
 The capital-advance limitation this review was asked about is real and worth removing — but the
 *mechanism* Sidereal uses to remove it (not their specific code, which has H1/H2/M6) is a sound,
 reusable pattern, and Soroban supports it cleanly:
@@ -144,10 +148,50 @@ findings rather than discovered independently**:
 - **Refund, never donate, any unspent budget** (H2) — if the pool cannot fully fund the requested `sy_in`'s worth of mint within its own liquidity, the unused portion must return to `from`, not silently accrue to LP reserves as an invisible, unbounded donation.
 - **Charge the swap fee on the real SY the curve leg prices, not on the minted PT's leveraged face** (M6) — our existing `fee_rate` application inside `calc_sell_pt`/`calc_buy_exact_pt` already does this correctly (fee is computed on `gross`/`net_shares`, SY-denominated quantities, never on raw PT face), so this is a matter of reusing those same helpers for the new pool-funded leg rather than inventing a new fee computation.
 
-This is a real, separately-scoped engineering task — new pool-custody logic, a new self-authorization
-tree, new tests across the rate sweep, and a live Testnet verification before it ships — not
-something to fold into this review. Flagging it as the next concrete follow-on if you want it
-built now.
+### 5.5 What actually got built, and the bug found while building it
+
+`MarketPool.flash_mint_yt(from, to, sy_in, min_yt_out, max_net_cost) -> (yt_out, net_cost)` plus
+two Router wrappers, `flash_mint_yt` (SY-denominated) and `flash_mint_yt_from_underlying` (wraps
+only a caller-chosen `underlying_budget`, not the full notional, into SY first). The three
+requirements above all held: the new path is covered by its own rate sweep
+(`true_flash_mint_stays_correct_across_a_rate_sweep`), a capped/short fill fails closed
+(`InsufficientLiquidity`/`SlippageExceeded`, never a short payout), and the fee is computed by
+reusing `calc_sell_pt`'s existing SY-denominated fee math unchanged.
+
+**A real, live bug was found and fixed during implementation — not in the curve, in the capital
+flow itself.** The first version pulled `from`'s authorized transfer as the mid-execution-computed
+`net_cost` directly. Reproduced live on Testnet: the transaction reverted
+`InvokeHostFunction(Trapped)` at *submission*, not simulation — the exact `Error(Auth,
+InvalidAction)` staleness class already documented in
+`docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md` §2's third gotcha and fixed there for
+`add_liquidity_single_sy`. `net_cost` depends on `calc_sell_pt`, which reads `seconds_to_maturity`
+live, so the value Soroban had `from` pre-authorize during simulation no longer matched what real
+execution computed moments later. Fixed the same way `add_liquidity_single_sy` was: `from`
+authorizes transferring the full, *fixed* `max_net_cost` instead (a plain literal with nothing to
+go stale), and the function refunds `max_net_cost - net_cost` once the real cost is known — the
+same net effect on both balances, reordered into two fixed-amount transfers instead of one derived
+one. The full accounting proof is in `flash_mint_yt`'s own doc comment in
+`contracts/market_pool/src/lib.rs`.
+
+A second, separate mechanism had to be gotten right for the self-authorized mint call itself:
+Soroban's "a contract's direct calls are always considered authorized" only covers the *immediate*
+hop. `MarketPool` calling `PrincipalManager.mint(this, sy_in)` is fine on its own, but `mint` in
+turn calls `SYWrapper.transfer(this, manager, sy_in)` on `PrincipalManager`'s own frame — two hops
+from `MarketPool`'s, which self-authorization does not reach. This also reverted
+(`Error(Auth, InvalidAction)`, "encountered unauthorized call for a contract earlier in the call
+stack") until `flash_mint_yt` added one explicit `env.authorize_as_current_contract` entry for
+exactly that nested call — confirmed against the Soroban SDK's own documented three-contract
+example (`soroban-sdk-26.0.1/src/env.rs`), which states only the deepest call needs an entry, not
+every hop in between.
+
+**Live evidence** (Testnet, a fresh market, pool seeded 100,000,000 PT / 80,000,000 SY, 1.05
+oracle rate): a trader holding only 5,000,000 SY successfully tokenized a 50,000,000 SY notional —
+ten times her own balance — receiving 52,473,750 YT for a net cost of 3,213,999 SY (quoted
+3,214,008; the nine-unit difference is the same quote-vs-execution ledger-close drift already
+documented and accepted for `quote_sy_for_yt` in §5.4 of the integration guide, not a new issue).
+Both Router wrappers were verified the same way, including `flash_mint_yt_from_underlying` wrapping
+only a 2,000,000-underlying budget against a 10,000,000 SY notional. Every refund matched the
+`max_net_cost - net_cost` arithmetic exactly in each run.
 
 ## 6. What this review did not do
 

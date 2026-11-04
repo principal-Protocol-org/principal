@@ -179,11 +179,14 @@ all under the 128 KB limit. The CI `wasm` job gates on it.
   exchange rate drifts from 1.0 would need the two rates reconciled (out of scope until onboarded).
 * **Swap fees do not reach LPs** (§4).
 * **Time stretch is a fixed per-pool parameter**, chosen by the market creator at pool creation.
-* **`swap_sy_for_yt`/`swap_underlying_for_yt` are not a true flash swap**: the caller must hold the
+* **`swap_sy_for_yt`/`swap_underlying_for_yt` are not a true flash swap** (the caller must hold the
   full notional being tokenized up front, not just the net cost, because the mint leg pulls SY from
-  the caller rather than from the pool's own reserves. `docs/AMM_FLASH_SWAP_AND_SIDEREAL_REVIEW.md`
-  reviews a competitor's AMM (Sidereal) that removes this via pool-funded self-authorization,
-  rejects adopting that AMM itself (two unfixed Critical findings in its own internal audit, one
-  already live on an immutable mainnet contract), and scopes building the same capability on this
-  AMM instead — this curve already passes the specific rate-sweep test that found Sidereal's
-  defect, so the mechanism, not the math, is the remaining work.
+  the caller rather than from the pool's own reserves) -- **but `flash_mint_yt` now is.** It funds
+  the mint leg from the pool's own SY reserves instead, keeps the minted PT, and charges the caller
+  only the net cost. `docs/AMM_FLASH_SWAP_AND_SIDEREAL_REVIEW.md` reviews a competitor's AMM
+  (Sidereal) whose equivalent mechanism inspired this, while rejecting adopting that AMM itself
+  (two unfixed Critical findings in its own internal audit, one already live on an immutable
+  mainnet contract) -- this curve already passed the specific rate-sweep test that found Sidereal's
+  defect before this function existed, and `flash_mint_yt` was verified live on Testnet minting
+  against a notional larger than the caller's own SY balance. `swap_sy_for_yt`/
+  `swap_underlying_for_yt` remain as the capital-up-front alternative, unchanged.
