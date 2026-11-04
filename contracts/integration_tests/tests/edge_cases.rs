@@ -9,7 +9,13 @@ use soroban_sdk::{
 
 use principal_integration_tests::stack::*;
 use principal_manager::Error as PmError;
+use principal_market_config::Error as ConfigError;
+use principal_market_pool::Error as PoolError;
+use principal_oracle_adapter::Error as OracleError;
+use principal_permissioning::Error as PermError;
 use principal_pt_token::Error as PtError;
+use principal_risk_control::Error as RcError;
+use principal_router::Error as RouterError;
 use principal_sy_wrapper::Error as SyError;
 use principal_yt_token::Error as YtError;
 
@@ -380,37 +386,97 @@ fn every_admin_only_function_rejects_a_caller_that_is_not_the_admin() {
         s.yt.try_set_recovery_escrow(&x, &x).err(),
         err_code(YtError::Unauthorized as u32)
     );
-    // MarketPool / Router / RiskControl / MarketConfig / Permissioning / Oracle
-    assert!(s.pool.try_set_paused(&x, &true).is_err());
-    assert!(s.pool.try_transfer_admin(&x, &x).is_err());
-    assert!(s.pool.try_set_recovery_escrow(&x, &x).is_err());
-    assert!(s.router.try_register_market(&x, &x).is_err());
-    assert!(s.router.try_transfer_admin(&x, &x).is_err());
-    assert!(s.risk.try_set_cb_limit(&x, &5).is_err());
-    assert!(s.risk.try_set_asset_limit(&x, &s.underlying, &5).is_err());
-    assert!(s.risk.try_set_window_ledgers(&x, &5).is_err());
-    assert!(s.risk.try_add_consumer(&x, &x).is_err());
-    assert!(s.risk.try_add_pauser(&x, &x).is_err());
-    assert!(s.risk.try_unpause(&x).is_err());
-    assert!(s.config.try_set_fees(&x, &1, &1, &1).is_err());
-    assert!(s.config.try_set_protocol_share(&x, &1).is_err());
-    assert!(s.config.try_set_treasury(&x, &x).is_err());
-    assert!(s.perm.try_grant_account(&x, &x).is_err());
-    assert!(s.perm.try_revoke_account(&x, &x).is_err());
-    assert!(s.perm.try_grant_asset(&x, &x, &x).is_err());
-    assert!(s
-        .oracle
-        .try_set_reference_value(&x, &s.oracle_source, &(SCALE * 2), &(T0 + 5))
-        .is_err());
-    assert!(s
-        .oracle
-        .try_set_sources(&x, &s.oracle_source, &None)
-        .is_err());
-    assert!(s
-        .oracle
-        .try_set_safety_params(&x, &ORACLE_MAX_STALE_SECONDS, &ORACLE_MAX_DEVIATION_BPS)
-        .is_err());
-    assert!(s.oracle.try_set_value_bounds(&x, &1, &i128::MAX).is_err());
+    // MarketPool / Router / RiskControl / MarketConfig / Permissioning / Oracle -- each checked
+    // against its own specific `Unauthorized` code, not just "some error," so a mutation that
+    // changes which guard fires first (e.g. a different error entirely) would be caught here.
+    assert_eq!(
+        s.pool.try_set_paused(&x, &true).err(),
+        err_code(PoolError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.pool.try_transfer_admin(&x, &x).err(),
+        err_code(PoolError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.pool.try_set_recovery_escrow(&x, &x).err(),
+        err_code(PoolError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.router.try_register_market(&x, &x).err(),
+        err_code(RouterError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.router.try_transfer_admin(&x, &x).err(),
+        err_code(RouterError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.risk.try_set_cb_limit(&x, &5).err(),
+        err_code(RcError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.risk.try_set_asset_limit(&x, &s.underlying, &5).err(),
+        err_code(RcError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.risk.try_set_window_ledgers(&x, &5).err(),
+        err_code(RcError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.risk.try_add_consumer(&x, &x).err(),
+        err_code(RcError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.risk.try_add_pauser(&x, &x).err(),
+        err_code(RcError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.risk.try_unpause(&x).err(),
+        err_code(RcError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.config.try_set_fees(&x, &1, &1, &1).err(),
+        err_code(ConfigError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.config.try_set_protocol_share(&x, &1).err(),
+        err_code(ConfigError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.config.try_set_treasury(&x, &x).err(),
+        err_code(ConfigError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.perm.try_grant_account(&x, &x).err(),
+        err_code(PermError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.perm.try_revoke_account(&x, &x).err(),
+        err_code(PermError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.perm.try_grant_asset(&x, &x, &x).err(),
+        err_code(PermError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.oracle
+            .try_set_reference_value(&x, &s.oracle_source, &(SCALE * 2), &(T0 + 5))
+            .err(),
+        err_code(OracleError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.oracle.try_set_sources(&x, &s.oracle_source, &None).err(),
+        err_code(OracleError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.oracle
+            .try_set_safety_params(&x, &ORACLE_MAX_STALE_SECONDS, &ORACLE_MAX_DEVIATION_BPS)
+            .err(),
+        err_code(OracleError::Unauthorized as u32)
+    );
+    assert_eq!(
+        s.oracle.try_set_value_bounds(&x, &1, &i128::MAX).err(),
+        err_code(OracleError::Unauthorized as u32)
+    );
 }
 
 #[test]
@@ -678,22 +744,29 @@ fn remaining_slippage_and_dust_guards_on_the_pool_and_manager() {
 
     // Selling PT: min_sy_out is a hard floor at the exact quote.
     let q = s.pool.quote_pt_for_sy(&(10 * SCALE));
-    assert!(s
-        .pool
-        .try_swap_pt_for_sy(&u, &u, &(10 * SCALE), &(q.amount_out + 1))
-        .is_err());
+    assert_eq!(
+        s.pool
+            .try_swap_pt_for_sy(&u, &u, &(10 * SCALE), &(q.amount_out + 1))
+            .err(),
+        err_code(PoolError::SlippageExceeded as u32)
+    );
     assert_eq!(
         s.pool.swap_pt_for_sy(&u, &u, &(10 * SCALE), &q.amount_out),
         q.amount_out
     );
 
     // Single-sided deposit: min_lp_out floor.
-    assert!(s
-        .pool
-        .try_add_liquidity_single_sy(&u, &(20 * SCALE), &(1_000 * SCALE))
-        .is_err());
+    assert_eq!(
+        s.pool
+            .try_add_liquidity_single_sy(&u, &(20 * SCALE), &(1_000 * SCALE))
+            .err(),
+        err_code(PoolError::SlippageExceeded as u32)
+    );
     // A dust single-sided deposit that rounds to no LP is refused rather than minting nothing.
-    assert!(s.pool.try_add_liquidity_single_sy(&u, &3, &0).is_err());
+    assert_eq!(
+        s.pool.try_add_liquidity_single_sy(&u, &3, &0).err(),
+        err_code(PoolError::ZeroAmount as u32)
+    );
 
     // A recombine of a dust amount at a high rate would return zero shares: refused. The move
     // only needs to clear SCALE (any rate above 1.0 floors 1 raw unit's worth of shares to
@@ -747,6 +820,13 @@ fn sy_wrapper_pause_and_escrow_exemption_and_views() {
         s.sy.try_seize(&s.escrow.address, &u, &0).err(),
         err_code(SyError::ZeroAmount as u32)
     );
+    // The test's own name promises an "escrow exemption" from the pause -- a zero-amount seize
+    // alone doesn't prove that (it would be rejected either way). A real, nonzero seize must
+    // still go through while every ordinary flow above is frozen.
+    let balance_before = s.sy.balance_of(&u);
+    let seized = s.sy.seize(&s.escrow.address, &u, &(5 * SCALE));
+    assert_eq!(seized, 5 * SCALE);
+    assert_eq!(s.sy.balance_of(&u), balance_before - 5 * SCALE);
     s.sy.set_paused(&s.admin, &false);
     s.sy.withdraw(&u, &SCALE, &u, &0);
 }

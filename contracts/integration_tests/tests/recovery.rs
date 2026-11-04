@@ -520,24 +520,73 @@ fn escrow_initialization_is_one_time_and_validates_the_wiring() {
             .err(),
         err_code(EscrowError::AlreadyInitialized as u32)
     );
-    // A second stack's contracts are a different underlying: rejected.
-    let other = setup(UnderlyingKind::Sac, Config::free(T0 + 300 * DAY));
+    // A plain, non-contract address in place of a position contract: this cannot be wired in at
+    // all -- Soroban refuses the cross-contract call before this escrow's own
+    // `PositionUnderlyingMismatch` validation ever runs, surfacing as a host-level invocation
+    // error rather than one of this contract's own typed codes. (A *deployed* SYWrapper for a
+    // genuinely different underlying would exercise `PositionUnderlyingMismatch` itself, but
+    // needs its own separate `Env` -- see `escrow_initialization_rejects_a_genuinely_different_
+    // underlying` below, which builds one.)
     let fresh = principal_recovery_escrow::RecoveryEscrowContractClient::new(
         &s.env,
         &s.env
             .register(principal_recovery_escrow::RecoveryEscrowContract, ()),
     );
-    let _ = other;
     let foreign = Address::generate(&s.env);
-    assert!(fresh
-        .try_initialize(
-            &s.underlying,
-            &foreign,
-            &s.pt.address,
-            &s.yt.address,
-            &s.pm.address,
-            &s.pool.address
-        )
-        .is_err());
+    assert_eq!(
+        fresh
+            .try_initialize(
+                &s.underlying,
+                &foreign,
+                &s.pt.address,
+                &s.yt.address,
+                &s.pm.address,
+                &s.pool.address
+            )
+            .err(),
+        Some(Ok(soroban_sdk::Error::from_type_and_code(
+            soroban_sdk::xdr::ScErrorType::Context,
+            soroban_sdk::xdr::ScErrorCode::InvalidAction,
+        )))
+    );
     assert_eq!(s.escrow.underlying_address(), s.underlying);
+}
+
+/// The real `PositionUnderlyingMismatch` path: a *deployed* SYWrapper, just one belonging to a
+/// genuinely different underlying asset. `setup`/`deploy_kind` gives every stack its own fresh
+/// `Env`, so this can't reuse `s`'s `SYWrapperContractClient` across environments -- instead it
+/// deploys a second, real SYWrapper directly inside `s.env` for an unrelated underlying asset,
+/// and wires that in place of the real one.
+#[test]
+fn escrow_initialization_rejects_a_genuinely_different_underlying() {
+    let s = setup(UnderlyingKind::Sac, Config::free(T0 + 300 * DAY));
+
+    let other_admin = Address::generate(&s.env);
+    let other_sac = s
+        .env
+        .register_stellar_asset_contract_v2(other_admin.clone());
+    let other_underlying = other_sac.address();
+    let other_sy_id = s.env.register(principal_sy_wrapper::SYWrapperContract, ());
+    let other_sy = principal_sy_wrapper::SYWrapperContractClient::new(&s.env, &other_sy_id);
+    other_sy.initialize(&other_admin, &other_underlying, &s.perm.address);
+    assert_ne!(other_sy.underlying_address(), s.underlying);
+
+    let fresh = principal_recovery_escrow::RecoveryEscrowContractClient::new(
+        &s.env,
+        &s.env
+            .register(principal_recovery_escrow::RecoveryEscrowContract, ()),
+    );
+    assert_eq!(
+        fresh
+            .try_initialize(
+                &s.underlying, // this stack's underlying ...
+                &other_sy_id,  // ... paired with a SYWrapper for a *different* one.
+                &s.pt.address,
+                &s.yt.address,
+                &s.pm.address,
+                &s.pool.address
+            )
+            .err(),
+        err_code(EscrowError::PositionUnderlyingMismatch as u32)
+    );
 }

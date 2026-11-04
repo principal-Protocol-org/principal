@@ -361,7 +361,7 @@ impl PrincipalManagerContract {
             .instance()
             .get::<_, Address>(&DataKey::RiskControl)
         {
-            let underlying_value = sy_shares * sy_client.exchange_rate() / SCALE;
+            let underlying_value = Self::mul_div(&env, sy_shares, sy_client.exchange_rate(), SCALE);
             let amount = if underlying_value > 0 {
                 underlying_value
             } else {
@@ -376,12 +376,12 @@ impl PrincipalManagerContract {
 
         // Tokenization fee, rounded up so it is never zero on a non-zero fee rate.
         let fee_bps = Self::config(&env).tokenization_fee_bps() as i128;
-        let fee_shares = (sy_shares * fee_bps + BPS - 1) / BPS;
+        let fee_shares = Self::ceil_mul_div(&env, sy_shares, fee_bps, BPS);
         let net_shares = sy_shares - fee_shares;
 
         // Compute notional principal: net shares valued at the current oracle rate.
         let rate = Self::get_oracle_rate(&env);
-        let notional = net_shares * rate / SCALE;
+        let notional = Self::mul_div(&env, net_shares, rate, SCALE);
         if notional <= 0 {
             panic_with_error!(&env, Error::ZeroAmount);
         }
@@ -429,7 +429,7 @@ impl PrincipalManagerContract {
         Self::assert_permitted(&env, &from);
 
         let rate = Self::get_oracle_rate(&env);
-        let shares = amount * SCALE / rate;
+        let shares = Self::mul_div(&env, amount, SCALE, rate);
         if shares <= 0 {
             panic_with_error!(&env, Error::ZeroAmount);
         }
@@ -493,8 +493,9 @@ impl PrincipalManagerContract {
             PTTokenClient::new(&env, &pt_token).burn(&from, &pt_amount);
 
             // PT: notional units → underlying = floor(pt_amount * SCALE / final_rate)
-            let desired_underlying = pt_amount * SCALE / final_rate;
-            let shares = Self::underlying_to_shares(sy_client.exchange_rate(), desired_underlying);
+            let desired_underlying = Self::mul_div(&env, pt_amount, SCALE, final_rate);
+            let shares =
+                Self::underlying_to_shares(&env, sy_client.exchange_rate(), desired_underlying);
             if shares > 0 {
                 from_pt = sy_client.withdraw(&this_contract, &shares, &from, &0);
             }
@@ -767,9 +768,10 @@ impl PrincipalManagerContract {
             return 0;
         }
         let sy_client = SYWrapperClient::new(env, &Self::get_sy_wrapper(env));
-        let gross_shares = Self::underlying_to_shares(sy_client.exchange_rate(), gross_underlying);
+        let gross_shares =
+            Self::underlying_to_shares(env, sy_client.exchange_rate(), gross_underlying);
         let fee_bps = Self::config(env).yt_fee_bps() as i128;
-        let fee_shares = (gross_shares * fee_bps + BPS - 1) / BPS;
+        let fee_shares = Self::ceil_mul_div(env, gross_shares, fee_bps, BPS);
         let net_shares = gross_shares - fee_shares;
         Self::accrue_fee(env, fee_shares);
         if net_shares <= 0 {
@@ -901,8 +903,31 @@ impl PrincipalManagerContract {
     /// Convert a desired underlying payout into the SY shares needed to withdraw it, at
     /// SYWrapper's current exchange rate (a different rate from the Oracle's pricing feed --
     /// see this module's doc comment). Inverts SYWrapper's own `shares * rate / RATE_SCALE`.
-    fn underlying_to_shares(exchange_rate: i128, underlying: i128) -> i128 {
-        underlying * SCALE / exchange_rate
+    fn underlying_to_shares(env: &Env, exchange_rate: i128, underlying: i128) -> i128 {
+        Self::mul_div(env, underlying, SCALE, exchange_rate)
+    }
+
+    /// `a * b / c`, raising this contract's own typed `ArithmeticOverflow` error on overflow
+    /// rather than letting a bare Rust arithmetic-overflow panic through. Found as a gap during
+    /// an audit review: `ArithmeticOverflow` was declared but never actually raised anywhere in
+    /// this contract, so every multiplication here relied entirely on the workspace's
+    /// `overflow-checks = true` release-profile setting to fail closed -- which it does, but as
+    /// a generic panic rather than this contract's own observable error code.
+    fn mul_div(env: &Env, a: i128, b: i128, c: i128) -> i128 {
+        a.checked_mul(b)
+            .and_then(|v| v.checked_div(c))
+            .unwrap_or_else(|| panic_with_error!(env, Error::ArithmeticOverflow))
+    }
+
+    /// `ceil(a * b / c)`, same overflow behavior as `mul_div`.
+    fn ceil_mul_div(env: &Env, a: i128, b: i128, c: i128) -> i128 {
+        let product = a
+            .checked_mul(b)
+            .unwrap_or_else(|| panic_with_error!(env, Error::ArithmeticOverflow));
+        product
+            .checked_add(c - 1)
+            .and_then(|v| v.checked_div(c))
+            .unwrap_or_else(|| panic_with_error!(env, Error::ArithmeticOverflow))
     }
 
     fn require_admin(env: &Env) -> Address {

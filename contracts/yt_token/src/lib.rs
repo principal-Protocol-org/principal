@@ -132,6 +132,12 @@ pub enum Error {
     IssuerMismatch = 12,
     RecoveryEscrowAlreadySet = 13,
     NotRecoveryEscrow = 14,
+    /// A fixed-point intermediate overflowed `i128`. Found during an audit review: declared
+    /// here but never actually raised anywhere in this contract until `settle`'s pending-yield
+    /// calculation was wired to it below, so it previously relied entirely on the workspace's
+    /// `overflow-checks = true` release-profile setting to fail closed, as a generic Rust panic
+    /// rather than this contract's own observable error code.
+    ArithmeticOverflow = 15,
 }
 
 // ---------------------------------------------------------------------------
@@ -699,11 +705,14 @@ impl YTTokenContract {
         if index < last {
             let bal = Self::get_balance(env, account);
             if bal > 0 && last - index > 1 {
-                let pending = bal * (last - index - 1) / INDEX_SCALE;
+                let pending = Self::mul_div(env, bal, last - index - 1, INDEX_SCALE);
                 if pending > 0 {
                     let pc_key = DataKey::PendingClaim(account.clone());
                     let acc: i128 = env.storage().persistent().get(&pc_key).unwrap_or(0);
-                    env.storage().persistent().set(&pc_key, &(acc + pending));
+                    let updated = acc
+                        .checked_add(pending)
+                        .unwrap_or_else(|| panic_with_error!(env, Error::ArithmeticOverflow));
+                    env.storage().persistent().set(&pc_key, &updated);
                     env.storage().persistent().extend_ttl(
                         &pc_key,
                         BALANCE_TTL_LEDGERS,
@@ -721,6 +730,14 @@ impl YTTokenContract {
     /// `INDEX_SCALE * SCALE / rate`, rounded up (so any rounding under-pays YT, never over-pays).
     fn index_for(rate: i128) -> i128 {
         (INDEX_SCALE * SCALE + rate - 1) / rate
+    }
+
+    /// `a * b / c`, raising this contract's own typed `ArithmeticOverflow` error on overflow
+    /// rather than a bare Rust arithmetic-overflow panic.
+    fn mul_div(env: &Env, a: i128, b: i128, c: i128) -> i128 {
+        a.checked_mul(b)
+            .and_then(|v| v.checked_div(c))
+            .unwrap_or_else(|| panic_with_error!(env, Error::ArithmeticOverflow))
     }
 
     fn assert_permitted(env: &Env, account: &Address) {

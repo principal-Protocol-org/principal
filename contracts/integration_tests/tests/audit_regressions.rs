@@ -2,12 +2,13 @@
 //! Each test reproduces the scenario an auditor demonstrated and asserts the corrected behaviour.
 
 use soroban_sdk::{
-    testutils::{Address as _, Ledger as _},
+    testutils::{storage::Instance as _, Address as _, Ledger as _},
     Address, Vec,
 };
 
 use principal_integration_tests::stack::*;
 use principal_market_pool::Error as PoolError;
+use principal_oracle_adapter::Error as OracleError;
 use principal_recovery_escrow::{Error as EscrowError, SeizeRequest};
 use principal_router::Error as RouterError;
 
@@ -235,7 +236,7 @@ fn a_future_dated_oracle_update_is_rejected_and_the_market_keeps_working() {
     let r =
         s.oracle
             .try_set_reference_value(&s.admin, &s.oracle_source, &SCALE, &((T0 + 5) * 1_000));
-    assert!(r.is_err());
+    assert_eq!(r.err(), err_code(OracleError::TimestampInFuture as u32));
     s.advance(T0 + 5, SCALE);
     s.pm.mint(&u, &shares);
 }
@@ -279,8 +280,27 @@ fn router_markets_can_be_unregistered_and_contracts_can_be_bumped() {
         err_code(RouterError::MarketNotRegistered as u32)
     );
 
-    // Permissionless instance-TTL keeper calls exist on every long-lived contract and need no auth.
+    // Permissionless instance-TTL keeper calls exist on every long-lived contract and need no
+    // auth. Each is checked against the instance's own TTL actually extending, not just that the
+    // call didn't panic -- a `bump()` that silently became a no-op (e.g. a mistaken early
+    // return) would otherwise slip through undetected.
     s.env.mock_auths(&[]);
+    let addrs = [
+        s.sy.address.clone(),
+        s.pt.address.clone(),
+        s.yt.address.clone(),
+        s.pm.address.clone(),
+        s.pool.address.clone(),
+        s.router.address.clone(),
+        s.config.address.clone(),
+        s.escrow.address.clone(),
+    ];
+    let ttl_of = |a: &Address| {
+        s.env
+            .as_contract(a, || s.env.storage().instance().get_ttl())
+    };
+    let ttl_before: [u32; 8] = core::array::from_fn(|i| ttl_of(&addrs[i]));
+
     s.sy.bump();
     s.pt.bump();
     s.yt.bump();
@@ -289,4 +309,18 @@ fn router_markets_can_be_unregistered_and_contracts_can_be_bumped() {
     s.router.bump();
     s.config.bump();
     s.escrow.bump();
+
+    // Every contract's instance TTL moved to the same 518,400-ledger horizon `bump()` targets
+    // (~30 days at 5s/ledger), and none regressed relative to what it was before.
+    for i in 0..addrs.len() {
+        let after = ttl_of(&addrs[i]);
+        assert_eq!(after, 518_400, "{:?} ttl after bump", addrs[i]);
+        assert!(
+            after >= ttl_before[i],
+            "{:?} ttl regressed: {} -> {}",
+            addrs[i],
+            ttl_before[i],
+            after
+        );
+    }
 }

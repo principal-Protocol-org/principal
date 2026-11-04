@@ -139,3 +139,50 @@ fn isqrt_is_floor_sqrt() {
     assert_eq!(isqrt(16), 4);
     assert_eq!(isqrt(1_000_000_000_000_000_000_000_000), 1_000_000_000_000);
 }
+
+#[test]
+fn solve_handles_extreme_reserve_skew() {
+    // q outweighs p by 1e15x: p's contribution to the invariant is negligible, but the result
+    // must stay sane (no panic, no overflow) and close to q, not wildly off or zero.
+    let qn = solve(1, 1_000_000_000_000_000, 2, wad(0.5)).unwrap();
+    let diff = 1_000_000_000_000_000 - qn;
+    assert!((0..1_000_000_000).contains(&diff), "{qn}");
+
+    // The other direction: p outweighs q by 1e15x, and the move consumes almost all of q's
+    // tiny contribution to the invariant -- the result is small (dominated by the rounding
+    // pad), but must still be a sane non-negative integer, not a panic or a negative/garbage
+    // value.
+    let qn2 = solve(1_000_000_000_000_000, 1, 1_000_000_000_000_002, wad(0.5)).unwrap();
+    assert!((0..1_000).contains(&qn2), "{qn2}");
+}
+
+#[test]
+fn solve_succeeds_at_exactly_the_minimum_exponent() {
+    // Only `MIN_EXPONENT - 1` (rejected) was tested before; the boundary itself must work.
+    let qn = solve(100_000_000, 110_000_000, 105_000_000, MIN_EXPONENT).unwrap();
+    assert!(qn > 0, "{qn}");
+}
+
+#[test]
+fn solve_handles_the_smallest_possible_trade_size() {
+    // A single-raw-unit move on reserves far below `PAD_DIVISOR`: the rounding pad `u /
+    // PAD_DIVISOR` floors to exactly 0 at this magnitude, so this exercises that the `+1` flat
+    // pad alone is still applied correctly and the result is neither zero nor rejected.
+    let qn = solve(10, 10, 11, WAD).unwrap();
+    assert!((9..=11).contains(&qn), "{qn}");
+}
+
+#[test]
+fn solve_overflows_gracefully_rather_than_panicking_near_i128_magnitude() {
+    // Reserves this large never occur in practice (SCALE = 1e7; even an absurd market is well
+    // under 1e18 raw units), but `solve` must fail closed with a typed error, not panic, if it
+    // ever is asked to. 1e20 is the largest magnitude this constant-sum case still solves;
+    // 1e21 overflows the final `u.checked_mul(w)` step.
+    let u_ok: i128 = 100_000_000_000_000_000_000; // 1e20
+    assert!(solve(u_ok, u_ok, u_ok + u_ok / 1000, WAD).is_ok());
+    let u_overflow: i128 = 1_000_000_000_000_000_000_000; // 1e21
+    assert_eq!(
+        solve(u_overflow, u_overflow, u_overflow + u_overflow / 1000, WAD),
+        Err(MathError::Overflow)
+    );
+}

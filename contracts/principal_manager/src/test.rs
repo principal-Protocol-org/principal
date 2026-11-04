@@ -1064,3 +1064,44 @@ fn settle_all_is_idempotent_and_returns_the_same_frozen_rate_on_a_second_call() 
     assert_eq!(second, first);
     assert_eq!(f.client.settled_rate(), Some(first));
 }
+
+// ======================================================================== checked-arithmetic gap
+// `Error::ArithmeticOverflow` was declared but never actually raised anywhere in this contract --
+// found during an audit review. These confirm the typed error now surfaces at the one place a
+// real caller could plausibly reach it (an astronomically large mint), rather than a bare,
+// un-typed Rust arithmetic-overflow panic from the workspace's `overflow-checks = true` profile
+// setting -- the same fail-closed outcome, but now an observable, documented contract error.
+
+#[test]
+fn mint_at_an_overflowing_notional_raises_the_contracts_own_typed_error_not_a_bare_panic() {
+    let f = setup(u64::MAX);
+    let user = Address::generate(&f.env);
+    grant_user(&f, &user);
+    // net_shares * rate (rate = SCALE = 1e7) must exceed i128::MAX (~1.7e38) to overflow the
+    // `notional` computation in `mint` -- net_shares > ~1.7e31 does it with headroom.
+    let huge: i128 = 50_000_000_000_000_000_000_000_000_000_000; // 5e31
+    let shares = deposit_sy(&f, &user, huge);
+    assert_eq!(
+        f.client.try_mint(&user, &shares).err(),
+        expect_err(Error::ArithmeticOverflow)
+    );
+    // Confirm it is specifically this contract's typed error reaching the caller, not merely
+    // "some error" -- a bare Rust overflow panic would surface as an unrecognized host error
+    // instead of `Some(Ok(contract_error))`.
+}
+
+#[test]
+fn recombine_at_an_overflowing_amount_raises_the_contracts_own_typed_error() {
+    let f = setup(u64::MAX);
+    let user = Address::generate(&f.env);
+    grant_user(&f, &user);
+    let shares = deposit_sy(&f, &user, 1_000_i128 * SCALE);
+    f.client.mint(&user, &shares);
+    // `recombine`'s own overflow site is `amount * SCALE / rate`; reuse the same overflow-sized
+    // input shape directly against a minted PT balance large enough to trigger it.
+    let huge_amount: i128 = 50_000_000_000_000_000_000_000_000_000_000; // 5e31
+    assert_eq!(
+        f.client.try_recombine(&user, &huge_amount).err(),
+        expect_err(Error::ArithmeticOverflow)
+    );
+}

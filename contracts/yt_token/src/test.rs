@@ -6,7 +6,12 @@ use soroban_sdk::{
 use principal_oracle_adapter::{OracleAdapterContract, OracleAdapterContractClient};
 use principal_permissioning::{PermissioningContract, PermissioningContractClient};
 
-use super::{YTTokenContract, YTTokenContractClient, INDEX_SCALE, SCALE};
+use super::{Error, YTTokenContract, YTTokenContractClient, INDEX_SCALE, SCALE};
+
+/// The value `try_*` returns for a contract-defined error `e`.
+fn expect_err(e: Error) -> Option<Result<soroban_sdk::Error, soroban_sdk::InvokeError>> {
+    Some(Ok(soroban_sdk::Error::from_contract_error(e as u32)))
+}
 
 const T0: u64 = 1_000;
 /// `OracleAdapter`'s own configured staleness policy for every fixture in this file --
@@ -898,4 +903,36 @@ fn pt_plus_yt_claims_never_exceed_the_deposited_shares_at_any_mint_rate() {
             shares - total
         );
     }
+}
+
+// ======================================================================== checked-arithmetic gap
+// `settle`'s `pending = bal * (last - index - 1) / INDEX_SCALE` used raw `i128` operators with
+// no typed overflow error anywhere in this contract -- found during an audit review. On a
+// balance large enough, this now raises `Error::ArithmeticOverflow` rather than a bare,
+// un-typed Rust arithmetic-overflow panic from the workspace's `overflow-checks = true` setting.
+
+#[test]
+fn settle_at_an_overflowing_pending_yield_raises_the_contracts_own_typed_error() {
+    let f = setup();
+    let minter = Address::generate(&f.env);
+    f.client.set_minter(&f.admin, &minter);
+    let user = Address::generate(&f.env);
+    grant(&f, &user);
+    // A balance far beyond any realistic notional, chosen so that `bal * (last - index - 1)`
+    // overflows i128 before `settle` ever divides it back down by INDEX_SCALE.
+    let huge_balance: i128 = 500_000_000_000_000_000_000_000_000; // 5e26
+    f.client.mint(&user, &huge_balance);
+
+    // Doubling the rate (the largest single-step increase this fixture's 100%-deviation bound
+    // allows) roughly halves the index, giving `last - index` a magnitude of ~5e11 -- enough to
+    // overflow against a 5e26 balance.
+    f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
+    f.oracle
+        .set_reference_value(&f.oracle_admin, &f.oracle_source, &(2 * SCALE), &(T0 + 1));
+    f.client.update_yield_index();
+
+    assert_eq!(
+        f.client.try_claim_yield(&minter, &user).err(),
+        expect_err(Error::ArithmeticOverflow)
+    );
 }

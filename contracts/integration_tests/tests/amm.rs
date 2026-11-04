@@ -349,10 +349,10 @@ fn swap_input_validation_and_liquidity_bounds() {
         err_code(PoolError::InsufficientLiquidity as u32)
     );
     // Selling an absurd amount of PT drains more SY than exists.
-    assert!(s
-        .pool
-        .try_quote_pt_for_sy(&(1_000_000_000 * SCALE))
-        .is_err());
+    assert_eq!(
+        s.pool.try_quote_pt_for_sy(&(1_000_000_000 * SCALE)).err(),
+        err_code(PoolError::InsufficientLiquidity as u32)
+    );
 }
 
 #[test]
