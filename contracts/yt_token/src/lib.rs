@@ -968,9 +968,9 @@ mod test {
         f.client.mint(&user, &(1_000 * SCALE)); // notional 1000 units at SCALE
 
         // Rate goes from 1.0 to 1.03.
+        f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
         f.oracle
             .set_reference_value(&f.oracle_admin, &10_300_000, &(T0 + 1));
-        f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
         f.client.update_yield_index();
 
         // new_factor = factor * last_rate / now_rate = SCALE * SCALE / 10_300_000
@@ -1012,8 +1012,8 @@ mod test {
         for i in 1..=n_steps {
             ts += 1;
             let r = SCALE + (final_rate - SCALE) * (i as i128) / (n_steps as i128);
-            f.oracle.set_reference_value(&f.oracle_admin, &r, &ts);
             f.env.ledger().with_mut(|li| li.timestamp = ts);
+            f.oracle.set_reference_value(&f.oracle_admin, &r, &ts);
             f.client.update_yield_index();
         }
 
@@ -1046,9 +1046,9 @@ mod test {
         f.client.mint(&alice, &(1_000 * SCALE));
 
         // Rate rises before Bob ever holds YT.
+        f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
         f.oracle
             .set_reference_value(&f.oracle_admin, &10_300_000, &(T0 + 1));
-        f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
         f.client.update_yield_index();
 
         // Bob receives YT only now, after the index already moved.
@@ -1074,9 +1074,9 @@ mod test {
         grant(&f, &bob);
 
         f.client.mint(&alice, &(1_000 * SCALE));
+        f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
         f.oracle
             .set_reference_value(&f.oracle_admin, &10_300_000, &(T0 + 1));
-        f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
         f.client.update_yield_index();
 
         // Alice transfers everything to Bob; her accrued yield up to this point must
@@ -1146,9 +1146,9 @@ mod test {
         f.client.mint(&bad_actor, &(1_000 * SCALE));
 
         // Rate rises before the seizure.
+        f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
         f.oracle
             .set_reference_value(&f.oracle_admin, &10_300_000, &(T0 + 1));
-        f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
         f.client.update_yield_index();
 
         let seized = f.client.seize(&escrow, &bad_actor, &(1_000 * SCALE));

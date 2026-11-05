@@ -31,6 +31,7 @@
 
 - Only the stored admin may call `set_reference_value`. The caller must pass their address explicitly and call `require_auth()` — Soroban's auth model verifies the signature.
 - Timestamps are monotonically increasing: a new price with a timestamp ≤ the stored timestamp is rejected with `TimestampTooOld`.
+- Timestamps cannot be ahead of the ledger clock: a future-dated submission is rejected with `TimestampInFuture`. Otherwise one mistaken submission (milliseconds, or a skewed relay clock) would leave the feed stale and reject every correct update until the ledger clock caught up with it.
 - Values are monotonically non-decreasing: a new value below the currently stored one is rejected with `ValueDecreased` (equal values are allowed — a same-price heartbeat refresh is not a decrease). This is enforced because the entire PT/YT settlement model already, silently, assumes it: `YTToken.update_yield_index` only ever accrues on a rate increase, and PT's redemption formula would release more underlying than was ever deposited if the rate could fall below its value at issuance.
 - `is_fresh` uses `env.ledger().timestamp()` — the ledger clock — not a caller-supplied value, preventing time manipulation.
 - Admin transfers emit an on-chain event and require the current admin to authorize.

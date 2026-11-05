@@ -31,6 +31,7 @@ pub enum Error {
     TimestampTooOld = 4,
     NotInitialized = 5,
     ValueDecreased = 6,
+    TimestampInFuture = 7,
 }
 
 #[contracttype]
@@ -73,6 +74,13 @@ impl OracleAdapterContract {
             .unwrap_or(0u64);
         if timestamp <= current_ts {
             panic_with_error!(&env, Error::TimestampTooOld);
+        }
+        // A timestamp ahead of the ledger clock would become the floor every later update has
+        // to beat: one submitted in milliseconds, or with a skewed clock, would leave the feed
+        // stale for mint, redeem and update_yield_index, and reject every correct update, until
+        // the ledger clock caught up with it.
+        if timestamp > env.ledger().timestamp() {
+            panic_with_error!(&env, Error::TimestampInFuture);
         }
         env.storage().instance().set(&DataKey::Price, &value);
         env.storage()
@@ -155,6 +163,8 @@ mod test {
         let client = OracleAdapterContractClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
         client.initialize(&admin);
+        // Past every timestamp the tests below submit.
+        env.ledger().with_mut(|li| li.timestamp = 1_800_000_000);
         (env, client, admin)
     }
 
@@ -272,14 +282,30 @@ mod test {
     }
 
     #[test]
-    fn is_fresh_false_when_stored_timestamp_is_ahead_of_ledger_clock() {
-        // set_reference_value only checks the new timestamp against the previously *stored*
-        // one, not against the ledger clock -- so a future-dated submission (by mistake or
-        // otherwise) is possible. is_fresh must not treat that as fresh via an underflowed
-        // subtraction; it should explicitly return false instead.
+    #[should_panic(expected = "Error(Contract, #7)")]
+    fn future_timestamp_rejected() {
+        // Without this check, a future-dated submission became the floor for every later one:
+        // here, a correct update at 1_100 would be rejected TimestampTooOld until the ledger
+        // clock passed 5_000, and is_fresh stayed false meanwhile.
         let (env, client, admin) = setup();
         env.ledger().with_mut(|li| li.timestamp = 1_000);
         client.set_reference_value(&admin, &10_000_000_i128, &5_000_u64);
-        assert!(!client.is_fresh(&3_600_u64));
+    }
+
+    #[test]
+    #[should_panic(expected = "Error(Contract, #7)")]
+    fn millisecond_timestamp_rejected() {
+        let (env, client, admin) = setup();
+        env.ledger().with_mut(|li| li.timestamp = 1_700_000_000);
+        client.set_reference_value(&admin, &10_000_000_i128, &1_700_000_000_000_u64);
+    }
+
+    #[test]
+    fn timestamp_equal_to_ledger_clock_accepted() {
+        let (env, client, admin) = setup();
+        env.ledger().with_mut(|li| li.timestamp = 1_000);
+        client.set_reference_value(&admin, &10_000_000_i128, &1_000_u64);
+        assert_eq!(client.get_reference_timestamp(), 1_000_u64);
+        assert!(client.is_fresh(&0_u64));
     }
 }
