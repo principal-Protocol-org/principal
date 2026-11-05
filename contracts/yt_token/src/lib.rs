@@ -476,7 +476,12 @@ impl YTTokenContract {
             let pc_to = DataKey::PendingClaim(caller.clone());
             let held: i128 = env.storage().persistent().get(&pc_to).unwrap_or(0);
             env.storage().persistent().set(&pc_from, &0_i128);
-            env.storage().persistent().set(&pc_to, &(held + moved));
+            env.storage().persistent().set(
+                &pc_to,
+                &held
+                    .checked_add(moved)
+                    .unwrap_or_else(|| panic_with_error!(&env, Error::ArithmeticOverflow)),
+            );
             env.storage()
                 .persistent()
                 .extend_ttl(&pc_to, BALANCE_TTL_LEDGERS, BALANCE_TTL_LEDGERS);

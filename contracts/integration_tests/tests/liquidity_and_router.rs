@@ -896,6 +896,18 @@ fn router_acts_as_the_user_so_a_deauthorized_user_gains_nothing_by_using_it() {
             .router
             .try_swap_sy_for_pt(&user, &pool, &SCALE, &0, &u64::MAX)
             .is_err());
+        // The true flash-mint variants too -- found as a coverage gap during a final audit
+        // review: both are thin forwards to MarketPool.flash_mint_yt with from.require_auth()
+        // first, same as every other Router call above, but neither had its own dedicated
+        // deauthorized-user check.
+        assert!(s
+            .router
+            .try_flash_mint_yt(&user, &pool, &SCALE, &0, &SCALE, &u64::MAX)
+            .is_err());
+        assert!(s
+            .router
+            .try_flash_mint_yt_from_underlying(&user, &pool, &SCALE, &0, &SCALE, &SCALE, &u64::MAX)
+            .is_err());
         // The Router itself holds nothing and has no balance anywhere.
         assert_eq!(s.sy.balance_of(&s.router.address), 0);
         assert_eq!(s.pt.balance(&s.router.address), 0);

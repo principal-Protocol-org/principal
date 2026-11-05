@@ -789,8 +789,16 @@ impl PrincipalManagerContract {
         let s = env.storage().instance();
         let p: i128 = s.get(&DataKey::AccruedProtocol).unwrap_or(0);
         let c: i128 = s.get(&DataKey::AccruedCreator).unwrap_or(0);
-        s.set(&DataKey::AccruedProtocol, &(p + protocol));
-        s.set(&DataKey::AccruedCreator, &(c + creator));
+        s.set(
+            &DataKey::AccruedProtocol,
+            &p.checked_add(protocol)
+                .unwrap_or_else(|| panic_with_error!(env, Error::ArithmeticOverflow)),
+        );
+        s.set(
+            &DataKey::AccruedCreator,
+            &c.checked_add(creator)
+                .unwrap_or_else(|| panic_with_error!(env, Error::ArithmeticOverflow)),
+        );
     }
 
     fn claim_fee_bucket(env: &Env, key: &DataKey, protocol: bool) -> i128 {

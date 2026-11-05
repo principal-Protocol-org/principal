@@ -347,6 +347,40 @@ fn set_value_bounds_validates_the_range() {
 }
 
 #[test]
+fn set_value_bounds_rejects_a_range_excluding_the_current_price() {
+    // Found during a final audit review: without this check, an admin could set (or re-tighten)
+    // bounds that exclude the live price. After that, no future submission could ever be both
+    // "within bounds" and "not a decrease" -- a self-inflicted version of exactly the brick this
+    // mechanism exists to prevent.
+    let (_env, client, admin, primary) = setup();
+    client.set_reference_value(&admin, &primary, &10_000_000_i128, &1_700_000_000_u64);
+
+    // Entirely below the current price.
+    assert_eq!(
+        client
+            .try_set_value_bounds(&admin, &1_i128, &9_999_999_i128)
+            .err(),
+        err(Error::InvalidValue)
+    );
+    // Entirely above the current price.
+    assert_eq!(
+        client
+            .try_set_value_bounds(&admin, &10_000_001_i128, &100_000_000_i128)
+            .err(),
+        err(Error::InvalidValue)
+    );
+    // A range that actually contains the current price is still accepted.
+    client.set_value_bounds(&admin, &5_000_000_i128, &20_000_000_i128);
+    assert_eq!(
+        client.value_bounds(),
+        Some((5_000_000_i128, 20_000_000_i128))
+    );
+    // The boundary itself (current price exactly equal to min or max) is inclusive, not rejected.
+    client.set_value_bounds(&admin, &10_000_000_i128, &20_000_000_i128);
+    client.set_value_bounds(&admin, &5_000_000_i128, &10_000_000_i128);
+}
+
+#[test]
 fn set_value_bounds_by_non_admin_panics() {
     let (env, client, _admin, _primary) = setup();
     let impostor = Address::generate(&env);

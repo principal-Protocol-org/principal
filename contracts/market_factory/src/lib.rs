@@ -86,6 +86,17 @@ pub enum Error {
     /// one-time wiring (`set_minter`, `set_recovery_escrow`) is consumed irreversibly against the
     /// wrong contract -- found during an audit review: nothing previously checked this on-chain,
     /// even though `predict_market` could trivially recompute and assert the same addresses.
+    ///
+    /// This proves `tokens`/`engine` is salt-arithmetic-consistent -- the one value derivable
+    /// from `salt` -- not that the earlier phase was actually run for this `salt` (the address
+    /// derivation is a pure function of `salt` alone, independent of whether anything is
+    /// deployed there; confirmed via a final audit review). Skipping a phase entirely is still
+    /// caught, just by a different mechanism: every real wiring call this function makes right
+    /// after (`set_minter`, `set_risk_control`, `set_recovery_escrow`, ...) is a genuine
+    /// cross-contract call, which Soroban fails closed -- atomically, rolling back everything
+    /// this transaction already did -- if nothing is deployed at that address yet. The two
+    /// mechanisms compose to close both the "wrong salt" and the "phase skipped" cases; neither
+    /// alone would be sufficient.
     TopologyMismatch = 1,
 }
 

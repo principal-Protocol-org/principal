@@ -211,6 +211,16 @@ impl OracleAdapterContract {
         if min_value <= 0 || max_value <= min_value {
             panic_with_error!(&env, Error::InvalidValue);
         }
+        // If a value is already on record, the new range must still contain it. Found during a
+        // final audit review: without this, an admin could set (or re-tighten) bounds that
+        // exclude the live price -- after which no future submission could ever satisfy both
+        // "within bounds" and "not a decrease", bricking the feed exactly the way this whole
+        // mechanism exists to prevent, just self-inflicted instead of caused by a bad relay value.
+        if let Some(current_price) = env.storage().instance().get::<_, i128>(&DataKey::Price) {
+            if current_price < min_value || current_price > max_value {
+                panic_with_error!(&env, Error::InvalidValue);
+            }
+        }
         env.storage()
             .instance()
             .set(&DataKey::MinSaneValue, &min_value);
