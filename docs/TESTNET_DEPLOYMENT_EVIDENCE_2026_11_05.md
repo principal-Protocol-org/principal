@@ -225,3 +225,66 @@ Recorded as they happened, including the mistakes, same convention as
 | Compliance recovery: deauthorize → `seize_all_positions` → `finalize_record` | §4 steps 11–12, 18 |
 | `settle_all` + `redeem` (PT leg and a real nonzero YT yield leg) | §4 steps 13–17 |
 | Protocol + creator fee claims | §4 steps 20–21 |
+
+## 9. Follow-up: the final closing-pass audit's fix, redeployed and verified live
+
+After this record was first written, a fourth, final closing-pass audit
+(`docs/AUDIT_2026_11_05_FINAL_REVIEW.md`) found and fixed one real Medium:
+`OracleAdapter.set_value_bounds` never checked the new bounds against the price already on
+record, so a plausible admin mistake (re-tightening bounds, a unit miscalculation) could exclude
+the live price and permanently brick the feed — a self-inflicted version of the exact failure
+this feature exists to prevent. That fix, plus three small consistency items (`checked_add` in
+`PrincipalManager::accrue_fee` and `YTToken::seize`'s pending-claim move; a new Router
+deauthorized-user test; a doc-comment clarification on `MarketFactory`), shipped as commit
+`3194fad`. This section redeploys the four changed contracts and demonstrates the fix live.
+
+### 9.1 What changed and was redeployed
+
+Only `OracleAdapter`, `PrincipalManager`, `YTToken`, and `MarketFactory` changed source since §1's
+deployment; `SYWrapper`, `PTToken`, `MarketPool`, `MarketConfig`, `RecoveryEscrow`, `Router`,
+`RiskControl`, and `Permissioning` did not, so their already-uploaded wasm and already-deployed
+shared instances (`Router`, `Permissioning`, `RiskControl`) were reused unchanged. Fresh wasm
+uploaded for the four that did change; a fresh `OracleAdapter` instance and a fresh
+`MarketFactory` instance deployed from it (`MarketFactory` holds no state, so redeploying it is
+purely to have a from-current-source instance on record, not a functional necessity).
+
+| Contract | New address / instance | Notes |
+|---|---|---|
+| OracleAdapter | `CBKB5RWLSA4PEZF4KBOIVQVUN2DZWQLGDN6ZS5YW6Z34SYX7HNN77JMY` | fresh instance, primary+fallback sources configured, genesis value `10,000,000` |
+| MarketFactory | `CCSIN7W4YPCUR6LZWSVH4EYZ6L4FM5ORU3ATK2O634VCBVQ6KBFXJKFE` | fresh instance from the updated wasm |
+| Market 4 (via the new factory) — maturity `1793887016`, left live | SY `CA2CV5Y2ASZNOK26VBOCLWD5BLPJD3QILE44X46PXWHQG3QJ6CVQ6PYB`, PT `CDNDPSLRAHOHH3J3423S76YYDQJZ3OFSADOKWO25OJUZAT2QFK7J4CCJ`, YT `CA3N4IXXZUUITHHUNOTWRYWV6F4JYRAJSVXF7HXP4C6R75I3V2UWCVQN` (new wasm), Config `CAQOQQQKYUOZZFNN3W6XJQCKQNZS6SXKB33BJZOAWWWNQZXOFYGPBPAV`, PrincipalManager `CBSJW5TN272USBU6UQYCX4SBMEKR5F2BVPS6VKYNXZHF3WFFK5MHD67X` (new wasm), MarketPool `CCQGGDE2Q634BRUDRCPVXBIZ6YJYSIDF7VKR35EQNFR3PYQ2VUFDHR3V`, RecoveryEscrow `CDUQG265OYP63T3PBHSFGD3UR6NWSPKI26ZHX4UY66Y67XFJUEMR7UL3` | points at the new OracleAdapter instance; reuses the existing shared `Router`/`Permissioning`/`RiskControl` |
+
+### 9.2 The fix, demonstrated live, on the fresh OracleAdapter instance
+
+| # | Step | Result | Transaction |
+|---|---|---|---|
+| 1 | `initialize` | | [5ea33375…](https://stellar.expert/explorer/testnet/tx/5ea3337586c0d66323b2a25795b1cb7bddb38a83b13e71f6fbf4753dbdd0841e) |
+| 2 | `set_sources` | | [4ad31aea…](https://stellar.expert/explorer/testnet/tx/4ad31aea084b43a2171b8ebc964686fad3baf13ec07d62c2a2466c13b0cf6cd3) |
+| 3 | `set_reference_value` (genesis, `10,000,000`) | | [bdb50794…](https://stellar.expert/explorer/testnet/tx/bdb507949ca989228b9d56ba07a33d29a6725c7acb5c9d36108f500f5d70d094) |
+| 4 | `set_value_bounds(min=1, max=5,000,000)` — **excludes the live price (10,000,000)** | **reverted `Error::InvalidValue` at simulation — never even reached the network as a submitted transaction** | no hash (rejected client-side, before submission; exactly the fail-fast behavior the fix is meant to produce) |
+| 5 | `set_value_bounds(min=1,000, max=100,000,000,000,000)` — contains the live price | accepted | [f7673d5b…](https://stellar.expert/explorer/testnet/tx/f7673d5b159ca9749c8b6d2d6baa358e2d182e737529bffd451a7fc82aadebcc) |
+
+Step 4 is the exact scenario `set_value_bounds_rejects_a_range_excluding_the_current_price`
+exercises in the Rust test suite — reproduced here live, on a real network, not just in-process.
+
+### 9.3 Market 4 — exercising the two consistency fixes in a real transaction
+
+| # | Step | Result | Transaction |
+|---|---|---|---|
+| 1–3 | `factory.create_tokens`/`create_engine`/`create_pool_and_escrow` (mixing the new `PrincipalManager`/`YTToken` wasm with the unchanged `SYWrapper`/`PTToken`/`MarketConfig`/`MarketPool`/`RecoveryEscrow` wasm) | | [d5d00ec7…](https://stellar.expert/explorer/testnet/tx/d5d00ec7a2b0ced9a5f0627848e25fd8b0635294d0a515199c821f14a33b3f27), [a46a08a6…](https://stellar.expert/explorer/testnet/tx/a46a08a64e27c7556c8518cbf7f1000440dc2355120ca5dac05b5fb61b698266), [41c1edc4…](https://stellar.expert/explorer/testnet/tx/41c1edc4af2dc5d2366e8e3a4b38252755bdc5a260054d398fee4f6b2ea68d14) |
+| 4 | wiring (`add_consumer` ×2, `register_market`) | | [a9ab4521…](https://stellar.expert/explorer/testnet/tx/a9ab4521939652db0b6a2dc237d9f52c6f0c9b069d380ba217fb110e0648db8a), [bc37e544…](https://stellar.expert/explorer/testnet/tx/bc37e544a5a4257038ff36f7030b80c424ee73718b70a73700674c6e873b7a34), [c2ebfd95…](https://stellar.expert/explorer/testnet/tx/c2ebfd955114e108ecc2a2ed0c9aaffff4fa4a7f1e60cb1ac4139c87de58404e) |
+| 5 | Alice: `sy.deposit(20,000,000,000)` + `pm.mint` — **exercises `PrincipalManager::accrue_fee`'s new `checked_add`** | `fee_shares: 10,000,000`, `pt_minted`/`yt_minted`: `19,990,000,000` | [3ce6bb59…](https://stellar.expert/explorer/testnet/tx/3ce6bb5939eaa03d5bfd845f57ce36209374d1a0a7e3f9fb08e1f951de5eb850), [349cba30…](https://stellar.expert/explorer/testnet/tx/349cba3075415416c0b8aae5d54056c5caf31247e85a36c3cdaadff007bed464) |
+| 6 | `pm.accrued_fees()` read back | `(2,000,000, 8,000,000)` — the 20/80 split of the 10,000,000 fee, correctly accumulated via the new checked addition | [cd228a11…](https://stellar.expert/explorer/testnet/tx/cd228a115796129c8660122c0cd931b7001804ed27b7251dd9d829e1187aae1d) |
+| 7 | Bob: `sy.deposit(15,000,000,000)` + `pm.mint` | `fee_shares: 7,500,000`, `pt_minted`/`yt_minted`: `14,992,500,000` | [cbb1dbcf…](https://stellar.expert/explorer/testnet/tx/cbb1dbcf04010d34b2a53192f3852fc5cd90e3d00f2eeedef17c9c9d918a978c), [919e33bc…](https://stellar.expert/explorer/testnet/tx/919e33bcc8a4346b1e10da07a00fe062f3d7b97c317226221e8157e2582ecad1) |
+| 8 | Issuer deauthorizes Bob | | [f370c6f6…](https://stellar.expert/explorer/testnet/tx/f370c6f68a329a424b1f8cf3522116c7c4a0cd46cf0af600009c0f45ae6b5f1f) |
+| 9 | `escrow.seize_all_positions([Bob])` — **the YT leg exercises `YTToken::seize`'s new `checked_add` on the pending-claim move** | record `0` created, `14,992,500,000` PT and YT both moved to the escrow | [fe542e36…](https://stellar.expert/explorer/testnet/tx/fe542e36cc3235f4af9b0bd6cc0a1d1acece23bc8f4a811dbe7fd0ce2323063e) |
+
+Both consistency fixes ran in real transactions with no behavioral change from before them (as
+expected — `checked_add` only changes behavior on overflow, which these ordinary-sized values
+don't trigger), confirming the fix is a pure safety addition, not a regression.
+
+Bob had been deauthorized since §4 step 11 and was re-authorized
+([5305778918…](https://stellar.expert/explorer/testnet/tx/5305778918e267147c237bfef79cc91d85551f22597f7e52335c116aa16a2b97))
+specifically so he could participate in this market before being deauthorized again at step 8 —
+noted here because it's a real operational detail (test accounts carry real, persistent SAC
+authorization state across every market on the same underlying asset), not because it's a defect.
