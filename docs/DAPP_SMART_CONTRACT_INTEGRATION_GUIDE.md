@@ -129,6 +129,16 @@ but an easy trap when composing a demo or a setup script. Budget a dedicated dep
 mint leg and a separate one for the liquidity leg, in that order — see
 `docs/TESTNET_DEPLOYMENT_EVIDENCE_2026_11_05.md` §6 steps 2–5 for the corrected pattern.
 
+A sixth gotcha, found live while producing §9 of that same evidence doc: **the underlying asset's
+compliance authorization is global across every market, not per-market.** Deauthorizing a user
+(the first step of a compliance-recovery `seize`) flips the Stellar Asset Contract's
+`set_authorized` flag for that account on the underlying asset itself — it is not scoped to the
+market that triggered it. A user recovered/seized on one market stays deauthorized on every other
+market built on the same underlying asset until an issuer explicitly re-authorizes them; a dApp
+that reuses one test/demo underlying across many markets needs to track this centrally (one
+authorization flag per account, not one per market-membership row) rather than assuming recovery
+on market A leaves a user untouched on market B.
+
 ---
 
 ## 3. Creating a market: `MarketFactoryContract`
@@ -813,4 +823,6 @@ This document was reviewed against the live network, not just reread. Specifical
 - `docs/TESTNET_DEPLOYMENT_EVIDENCE_2026_11_05.md` — a from-scratch redeployment and full feature
   campaign run after the 4 November 2026 audit, covering every flow in §4–§5 plus the extended
   `OracleAdapter`, `RiskControl`'s circuit breaker, and a full compliance-recovery and
-  settle/redeem cycle, with the five gotchas added to §2 above all found live while producing it
+  settle/redeem cycle, with six of the gotchas in §2 above found live while producing it (its §9
+  also redeploys and live-verifies the one Medium from the later final closing-pass audit,
+  `docs/AUDIT_2026_11_05_FINAL_REVIEW.md`)

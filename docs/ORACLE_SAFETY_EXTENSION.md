@@ -218,6 +218,15 @@ specifically exercise the 3,600-second production boundary narrow their own mark
   since nothing can move the stored value back down without reopening exactly the insolvency path
   the monotonic-value invariant (§1 above) exists to close. A violation rejects gracefully
   (`reason = "oob"`), the same as every other policy rejection in this module.
+- **`set_value_bounds` itself also checks the price already on record, if any.** A later audit
+  review (`docs/AUDIT_2026_11_05_FINAL_REVIEW.md`) found that the original version above checked
+  only `min_value ≤ 0`/`max_value ≤ min_value` — an admin who called it with a range that excluded
+  the live price (re-tightening bounds, a unit miscalculation, simply forgetting what the current
+  value was) would brick the feed exactly the same way a relay bug does: no future submission
+  could ever be both in-range and not-a-decrease. `set_value_bounds` now reads
+  `get_reference_value()` (if initialized) and panics `InvalidValue` if it falls outside the
+  proposed range, before the new bounds are ever stored. Reproduced live on Testnet (not just in
+  the Rust test suite): see `docs/TESTNET_DEPLOYMENT_EVIDENCE_2026_11_05.md` §9.2.
 - **What this doc does not verify live**: the fallback source's timestamp-only-refresh policy
   (§4 explains why — it has no network-timing dependency, and is covered exhaustively by unit
   tests instead) and a literal 3,600-second real-time wait for the production staleness window
