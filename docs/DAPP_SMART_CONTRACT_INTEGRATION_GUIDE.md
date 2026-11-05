@@ -109,6 +109,26 @@ The same risk applies to *any* value a contract computes mid-transaction from ti
 `Error(Auth, InvalidAction)` on a composed call that worked in isolation, suspect this before
 anything else.
 
+A fourth gotcha, found live while producing `docs/TESTNET_DEPLOYMENT_EVIDENCE_2026_11_05.md`'s
+feature campaign: **the built-in Stellar Asset Contract and this protocol's own `PTToken`/
+`YTToken`/`SYWrapper` name their balance-query parameter differently.** The SAC's `balance`
+function takes `id`; this protocol's own tokens take `account`. Passing the wrong name is a
+client-side argument error, not a contract revert, and — unlike most mistakes here — it fails
+*silently* into an empty/undefined result rather than an error a caller is likely to check for,
+which then poisons whatever arithmetic consumes it (observed directly: an empty balance read used
+in a sell-half calculation). Always confirm which contract you're querying before reusing a
+balance-reading helper across both.
+
+A fifth gotcha, same source: **a flow that both mints *and* provides liquidity in one script needs
+two separate SY deposits, not one.** `PrincipalManager.mint` takes custody of the *entire*
+`sy_shares` argument passed to it; depositing once and minting with the full resulting balance
+leaves nothing for an immediately-following `add_liquidity`/`add_liquidity_single_sy` call, which
+then reverts `InsufficientShares` (SYWrapper) or `InsufficientLiquidity` (MarketPool, on an
+unseeded pool) — not a contract bug, exactly the correct response to spending the same SY twice,
+but an easy trap when composing a demo or a setup script. Budget a dedicated deposit for the
+mint leg and a separate one for the liquidity leg, in that order — see
+`docs/TESTNET_DEPLOYMENT_EVIDENCE_2026_11_05.md` §6 steps 2–5 for the corrected pattern.
+
 ---
 
 ## 3. Creating a market: `MarketFactoryContract`
@@ -751,15 +771,15 @@ This document was reviewed against the live network, not just reread. Specifical
 - `settle_all`/`redeem` (§5.3 step 5) were added after this market's maturity actually passed
   during the writing of this guide (not simulated, not assumed) — settled at 10,500,000, redeemed
   594,317,500 PT and 1,364,317,500 YT for 566,016,666 raw STA, 0 from the YT leg.
-- What this guide does **not** verify live: `claim_yield`, `recombine`, `remove_liquidity`, and
-  `add_liquidity_single_sy`'s/the new functions' deadline and slippage *guards specifically*
-  (tripping them) — these are documented from source (§4–§5) and exercised in the repository's own
-  Rust integration tests (`contracts/integration_tests/tests/`,
-  `contracts/market_factory/tests/create_market.rs`), but not independently re-run against Testnet
-  while writing this document. Every function added or fixed in this round
-  (`swap_underlying_for_pt`, `swap_pt_for_underlying`, `swap_underlying_for_yt`,
-  `swap_yt_for_underlying`, `add_liquidity_keep_yt`, `add_liquidity_single_sy`) **was** run live,
-  successfully, post-fix (§4.1, §5.2) — don't read "not verified live" as applying to those.
+- `claim_yield`, `remove_liquidity` (full exit), `add_liquidity_single_sy`, direct
+  `MarketPool.flash_mint_yt`, and both `Router.flash_mint_yt`/`flash_mint_yt_from_underlying` and
+  `Router.add_liquidity_keep_yt` **have since been run live** against a fresh Testnet deployment —
+  `docs/TESTNET_DEPLOYMENT_EVIDENCE_2026_11_05.md` §4 and §6 have the full transaction-by-transaction
+  record, including a real settle/redeem cycle and a full compliance-recovery
+  (deauthorize → seize → finalize) cycle. `recombine` and the deadline/slippage guards *specifically
+  tripping* (as opposed to the calls themselves succeeding) remain verified only via the repository's
+  own Rust integration tests (`contracts/integration_tests/tests/`,
+  `contracts/market_factory/tests/create_market.rs`), not independently re-run against Testnet.
 - `principal-dApp`'s source was read directly (`src/lib/*.ts`, `src/types.ts`,
   `src/config/markets.ts`) to ground §2–§4 and the §3.5 gap analysis in what that codebase actually
   does today, not a guess at what a "typical" dapp might do. Its one registered market
@@ -790,3 +810,7 @@ This document was reviewed against the live network, not just reread. Specifical
 - `docs/API_REFERENCE.md` — every function of every contract, independent of this guide's examples
 - `docs/DEPLOYMENT.md` — the full manual deployment procedure, §11 compliance-standing checklist
 - `docs/TESTNET_CURRENT_DEPLOYMENT_EVIDENCE.md` — the shared infrastructure this guide reuses
+- `docs/TESTNET_DEPLOYMENT_EVIDENCE_2026_11_05.md` — a from-scratch redeployment and full feature
+  campaign run after the 4 November 2026 audit, covering every flow in §4–§5 plus the extended
+  `OracleAdapter`, `RiskControl`'s circuit breaker, and a full compliance-recovery and
+  settle/redeem cycle, with the five gotchas added to §2 above all found live while producing it

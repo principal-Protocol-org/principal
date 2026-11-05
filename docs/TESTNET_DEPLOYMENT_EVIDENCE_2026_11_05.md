@@ -1,0 +1,227 @@
+# Testnet Deployment Evidence: Post-Audit Redeployment (5 November 2026)
+
+Status: this record documents a from-scratch redeployment of the full protocol to Stellar Testnet
+from the code as it stood after the 4 November 2026 full-protocol audit and gap-closing pass
+(`docs/AUDIT_2026_11_04_FULL_REVIEW.md`), then a comprehensive on-chain exercise of every feature a
+dapp integrator needs: the AMM core, both true flash-mints for YT, all five Router
+underlying-denominated flows, `add_liquidity_keep_yt`, the extended `OracleAdapter`
+(multi-source/fallback, deviation guard, the new value-bounds check), `RiskControl`'s circuit
+breaker, compliance recovery (deauthorize → seize → finalize), and a full settle/redeem/fee-claim
+cycle. It supersedes nothing — `docs/TESTNET_CURRENT_DEPLOYMENT_EVIDENCE.md` remains the record for
+the Tranche 1 commit it documents — this is new evidence for the code shipped since.
+
+## 1. What was deployed, and from which code
+
+- Network: Stellar Testnet, passphrase `Test SDF Network ; September 2015`, RPC
+  `https://soroban-testnet.stellar.org`.
+- Source: `feat/tranche-1-mvp` at commit `d36a5fd` (the full-audit fix commit and its
+  gap-closing follow-up), built fresh via `cargo build --workspace --release --target
+  wasm32v1-none`. All twelve contracts uploaded fresh (new wasm hashes below); none reused an
+  address from an earlier deployment.
+- Underlying asset: a fresh classic asset, code `AUD1104`, `AUTH_REQUIRED` + `AUTH_REVOCABLE` set,
+  wrapped by a Stellar Asset Contract — a fresh stand-in, not a reuse of the `STA` asset from the
+  4 October run.
+- Deployed via `MarketFactoryContract` (`scripts/create_market_via_factory.sh`), exercising the
+  new `TopologyMismatch` check added during the gap-closing pass (both markets' `create_engine`/
+  `create_pool_and_escrow` calls matched their salt-derived addresses, as expected — this is a
+  defect-prevention check, not something a normal deployment should ever trip).
+- Three markets were created. The first expired before any deposit (a real timing miss, §6
+  finding 1) and is otherwise untouched. The second (`Market 2`) carried almost the entire feature
+  campaign, including a full settle/redeem/compliance-recovery cycle once it matured partway
+  through. The third (`Market 3`) is a short, clean run isolating the three flows a session
+  interruption left unconfirmed on Market 2 — the Router's plain and underlying-funded flash-mints,
+  and `add_liquidity_keep_yt` — and is left live (undisturbed, pre-maturity) for further testing.
+- Testnet only. The issuer, protocol admin, treasury and all five participant accounts are Testnet
+  keys with no mainnet counterpart.
+
+## 2. Accounts
+
+| Role | Address |
+|---|---|
+| Issuer, SAC administrator, market creator | `GBQEV2SNUQWAQSJVXSPEN47WPSRJOY7SLY26JL7Z4O4GF7WFFSN3HW3M` |
+| Protocol admin (MarketConfig) | `GAZHOIUXZGGEW3CSTE2EDVMM6FX65EBN3JW3J5AV225WC5QCHLCHYZO6` |
+| Treasury (fee recipient) | `GASQCEPSJJFWY5ITMQGNOVXQOGIQK2CBG6KBMHT7EMHEMSP7MHMYYAGR` |
+| Alice (ordinary holder: deposit, mint, single-sided liquidity, direct flash-mint, yield claim) | `GCXV54A7CAMBJVKQRB7IZSVWJFBLGUK556DU6CZSMS337QHHNXBP7OLT` |
+| Bob (deauthorized and recovered) | `GBYSZUHZQNWJQJIPZJ7NAZGJZB2CCFP2VOXGOGNJVLROJOQ2XEM4U55N` |
+| Carol (liquidity provider, swap trader) | `GACRHVJ2VD5GWX57CWWS373MXOWH47GSDSITYPXAUWCDKVKFYVM2YVU5` |
+| Dave (Router underlying-denominated flows) | `GBQ2HUEHZHOB76IGCYMFT3VCJAD6RD2OYGA3EV3YMPFGPKHNXW3YVBST` |
+
+## 3. Contract addresses
+
+Shared infrastructure (used by all three markets):
+
+| Contract | Address | Notes |
+|---|---|---|
+| Underlying (AUD1104 SAC) | `CBAIZZ6SWVZYBL4EMYAHVASU3ABVCLQPGKRUGFKTXPXQUQULZMRELUW4` | |
+| OracleAdapter | `CCYAXL6B4WQK333EDGYJC656NAG47I4ZV2442VQNNVIOIBX4CTWCZ6UO` | primary + fallback source configured; `set_value_bounds(1000, 100000000000000)` set |
+| Permissioning | `CBS7BTWJDQDOEHZY5IM3GMXI2MLPEJU5ROZJZC6AGJKEZU7GNHLCZZ76` | |
+| RiskControl | `CD3X4F2ABAQMFAZ3B2Z6KADHEFNBMWXTVYFL5HORDY5ZOD3M3TQXTUKJ` | |
+| Router | `CD4I2BVFMXOGFWJARIOTEFRIFL2W444COU4NT4TDL4U7D2YDPKQN6MGU` | |
+| MarketFactory | `CCK5NLSAZVEKLJ2S6VKNSWEDUOUMDN22YXKXI3EKQNKN5D6MWQKUE4GU` | the `TopologyMismatch`-checked version |
+
+Market 2 (the primary feature-campaign market, maturity `1793833236`, now settled and wound down):
+
+| Contract | Address |
+|---|---|
+| SYWrapper | `CASQAFC7JGR75V2QN6EYEVK3ZVNYE3YXISRTQGDRHWRCT3U55BWC5XY5` |
+| PTToken | `CAYTL6SSFAVHPMDHIFBTOCDZJV3PQXZITI4XWITIVAFSIQ3UXPXGKXVE` |
+| YTToken | `CBQCDNPCDBOSFEH3TDXZCT3LZVQOZ6RBK3JZBXTRFCFLHJOY7XTJV7NT` |
+| MarketConfig | `CB76TI2EGM2JYAACEDKQ6C4SKL222YFKQHHUOGRWPW4NO54PGRX7QKCJ` |
+| PrincipalManager | `CCD2XSUIFI7YEFDR6KAXX2A2U3XCVOUMQLSGVPABT5LWNH7RRZ55UX5I` |
+| MarketPool | `CB3QPWJENLOBHD7IB7AY7R5U5HHZBNKCW6CYLHMC3SLLNM765OOBH4TD` |
+| RecoveryEscrow | `CDTGQWFJLS547L26O62VOUD376VY6ILLIUDWAL3PZ6GZJF6BZ5D3QKYG` |
+
+Market 3 (short, clean flash-mint/Router-flows demonstration, maturity far in the future, left live):
+
+| Contract | Address |
+|---|---|
+| SYWrapper | `CC77AY3EIVFSCAVBF3YASPDTB2U4IO772UOCQNERZ5BXGTSKFTHFJ2ZQ` |
+| PTToken | `CAZ6CZNPYDECR3XR2YV5LJJONPGDNJJQY45NJFL3BXESQPHJBLNK35BH` |
+| YTToken | `CDNAHJJSKH5FDX7ORK5ZS6AOT4BGKCL2ABD5WTE5MASJSFO6BVDXP7KD` |
+| MarketConfig | `CDU3QEV2GZBSEAUIKFKVPPGKNWPPXSAJAUPP4KQ7F322F5AISWDH4CYJ` |
+| PrincipalManager | `CBUHYDYYLFXHFSQ2GVRHPRVYV5CPOMI7UHXKJNIGLHTXIXHSBCXXH5D5` |
+| MarketPool | `CCX2GJA7X26GZWILARUCXMIYRVKV3GMS3Y4X2AHSO2HHKLFGOQUAXRPE` |
+| RecoveryEscrow | `CC6C3HT56X4MMIPIMUV4R74CGX4UEZIALYJOZY7U43FE2GQRJMXSK5YB` |
+
+Market 1 (`salt d318d045…`) deployed and wired identically but expired (maturity passed during
+compliance setup, before any deposit) — superseded, kept on the ledger as history, not used for
+anything below. Its addresses are in the working log, omitted here since nothing happened on them.
+
+## 4. Market 2 — full lifecycle, including compliance recovery and settlement
+
+| # | Step | Result | Transaction |
+|---|---|---|---|
+| 1 | `factory.create_tokens` | SY/PT/YT deployed | [a30578c2…](https://stellar.expert/explorer/testnet/tx/a30578c2f64d75435a56c12ad4da8f8ea05871adebc77ddd353332c2e737cefa) |
+| 2 | `factory.create_engine` | Config/Manager deployed, minter + risk-control wired | [581e0ec6…](https://stellar.expert/explorer/testnet/tx/581e0ec6e32ba99d009d8df01b515bb0317be696f3de7dbae110203a22eaf959) |
+| 3 | `factory.create_pool_and_escrow` | Pool/Escrow deployed, recovery-escrow wired | [f46ef727…](https://stellar.expert/explorer/testnet/tx/f46ef7275b901381ddb96d6aa35dfef3a11186b419ef9baacbe842918cd12548) |
+| 4 | `risk.add_consumer` ×2, `router.register_market` | wiring complete | [69ae15f2…](https://stellar.expert/explorer/testnet/tx/69ae15f279abb78f149c971d09adc07787261a0c28e192fc3801195ab553df9b), [40e26657…](https://stellar.expert/explorer/testnet/tx/40e26657d687193d71b83a4961c2cb9bb89168927d39a37729150dd1c3ca781e) |
+| 5 | Alice/Bob/Carol/Dave: `sy.deposit` + `pm.mint` | tokenized their notionals (5%/0.05% tokenization fee applied) | see §6 finding 3 — the detailed per-call log from this stage was lost at a session boundary; final balances in §5 are independently re-queried on-chain, not taken from that log |
+| 6 | Carol: `pool.add_liquidity` (seeded the pool) | pool reserves went from `[0,0]` to non-zero | — (same caveat as #5) |
+| 7 | Alice: `pool.add_liquidity_single_sy`, direct `pool.flash_mint_yt` | — | — (same caveat) |
+| 8 | Carol: `pool.swap_pt_for_sy`; Dave: `router.swap_underlying_for_pt`/`swap_pt_for_underlying`/`swap_underlying_for_yt`/`swap_yt_for_underlying` | — | — (same caveat) |
+| 9 | Oracle: fallback refresh, deviation-guard rejection, value-bounds rejection | both rejections returned `false` as designed; `last_rejection()` recorded `reason: "oob"` for the bounds case | — (same caveat; re-confirmed independently in §7) |
+| 10 | RiskControl: `set_cb_limit(1)`, a deposit trip, `set_cb_limit` restored | tripped deposit reverted `Error(Contract, #5)` = `CircuitBreakerTripped` | — (same caveat) |
+| 11 | Issuer: deauthorize Bob on the SAC | `authorized(Bob) == false` | — (same caveat) |
+| 12 | `escrow.seize_all_positions([Bob])` | record `0` created, Bob's PT+YT moved to escrow | — (same caveat) |
+| 13 | Oracle refresh (rate → 1.005) | | [78399cfb…](https://stellar.expert/explorer/testnet/tx/78399cfbef8e3f939b1c7a330c49c527ba7507b7fbc89f49b7886755bd35549f) |
+| 14 | `pm.settle_all()` | rate frozen at `10,050,000` | [3e6db2dd…](https://stellar.expert/explorer/testnet/tx/3e6db2dd76127c67656a19bfc2f6d5ea0430f21685b79bba5bcf1a27c9f4e601) |
+| 15 | Alice: `pm.redeem(49,975,000,000 PT, 54,997,487,500 YT)` | `49,726,368,159` underlying from PT, `0` from YT (she had already claimed her yield earlier) | [55126002…](https://stellar.expert/explorer/testnet/tx/551260028fd6800741e0834bc73a4ab67f058daccc70eede15b0bc1745fef24f) |
+| 16 | Carol: `pm.redeem(31,602,013,729 PT, 41,988,995,000 YT)` | `31,444,789,780` from PT, `179,014,924` from YT (real yield — her holding accrued across the rate move) | [76863a96…](https://stellar.expert/explorer/testnet/tx/76863a96f55deac75e600de53c6597fc66fd56ddb2631c0f2a99af811ba72a01) |
+| 17 | Dave: `pm.redeem(5,024,816,854 PT, 8,538,228,750 YT)` | `4,999,817,765` from PT, `0` from YT | [c3c9c18a…](https://stellar.expert/explorer/testnet/tx/c3c9c18a4272bc3b3afb5aadf3ee3d03d3405ac269b322ba6669f27361f8fbf3) |
+| 18 | `escrow.finalize_record(0)` | Bob's seized PT+YT settled into real underlying: `29,835,820,895` (PT leg) + `134,261,193` (YT leg) | [13537d05…](https://stellar.expert/explorer/testnet/tx/13537d056782109baa867f4c0a10fadf16d030e338adf7c10f599a2b5cc27c74) |
+| 19 | Carol: `pool.remove_liquidity` (full exit, `8,932,333,959` LP) | `12,126,578,414` PT + `5,776,444,474` SY returned | [3e8a25d2…](https://stellar.expert/explorer/testnet/tx/3e8a25d2990f643eb74dca43563ca5929712ad472126776863bc28533782a4d9) |
+| 20 | `pm.claim_protocol_fees()` | `8,761,691` SY to treasury | [b5629c2f…](https://stellar.expert/explorer/testnet/tx/b5629c2fe861d87cf640af3c99a6247af2208de6b590eb8aa874c3dfcb555f45) |
+| 21 | `pm.claim_creator_fees()` | `35,046,768` SY to issuer (creator) | [0169cde7…](https://stellar.expert/explorer/testnet/tx/0169cde7f3de01607dd0ee6d837b8d792af4b31fcdd1ceae00c27153fe88bc66) |
+
+Step 18's record, read back from the contract after finalization:
+
+```json
+{
+  "account": "GBYSZUHZQNWJQJIPZJ7NAZGJZB2CCFP2VOXGOGNJVLROJOQ2XEM4U55N",
+  "finalized": true, "id": 0, "ledger": 5560133, "timestamp": 1793824305,
+  "pt_amount": "29985000000", "yt_amount": "29985000000",
+  "underlying_from_pt": "29835820895", "underlying_from_yt": "134261193",
+  "yt_yield_at_seize": "149179104"
+}
+```
+
+## 5. Market 2 — final on-chain state
+
+- Pool reserves after every exit: `["6796302253", "3237389910"]` (PT, SY) — the pool itself still
+  holds a PT/SY position from the swap/flash-mint activity in steps 5–8; `lp_total_supply` is
+  `5,006,098,120`, consistent with `MINIMUM_LIQUIDITY` plus LP from activity not individually
+  re-confirmed per §6 finding 3.
+- `pm.total_pt()` is `18,922,880,667`; `pm.total_yt()` is `0` — every YT-holding participant
+  (Alice, Carol, Dave, and Bob via the escrow) has redeemed or been settled; the outstanding PT is
+  held by the pool itself, not by any of the five accounts.
+- Bob's SAC authorization still reads `false`.
+
+## 6. Market 3 — clean flash-mint and Router-flows demonstration
+
+Run after Market 2 matured, specifically to leave no ambiguity on the three flows a session
+interruption (§7) cut off mid-verification on Market 2. Every step below is independently
+confirmed by both its own return value and its transaction hash.
+
+| # | Step | Result | Transaction |
+|---|---|---|---|
+| 1 | `factory.create_tokens`/`create_engine`/`create_pool_and_escrow` + wiring | market live, maturity 2 hours out | see `factory_create3.log` in the working notes; same three-call + three-wiring-call pattern as §4 steps 1–4 |
+| 2 | Carol: `sy.deposit` (mint leg, 15,000,000,000) | `15,000,000,000` SY | [8b4d20b1…](https://stellar.expert/explorer/testnet/tx/8b4d20b15c22bd4c47af2dccd6da862e5397ea8bcef093fcda06111e9b2211e1) |
+| 3 | Carol: `pm.mint` | PT/YT minted | [1586e0b7…](https://stellar.expert/explorer/testnet/tx/1586e0b7f59f264b23c53382d05c66eecd5b8cb5a3b5460806b4dccefbc74fb0) |
+| 4 | Carol: `sy.deposit` (**separate** liquidity leg, 13,000,000,000) | `13,000,000,000` SY — kept apart from the mint leg specifically to avoid the ordering bug in §7 finding 1 | [e933a580…](https://stellar.expert/explorer/testnet/tx/e933a58035d0e345caa15dec62f01fd68db059abd4f5ef671886255bbef7b4e1) |
+| 5 | Carol: `pool.add_liquidity(10,000,000,000 PT, 9,000,000,000 SY)` | `9,486,831,980` LP minted — **this seeded the pool** | [36367f89…](https://stellar.expert/explorer/testnet/tx/36367f89b241db3f01f9409f908e5ceabcea8838763941f56d9eccef09a4e118) |
+| 6 | Dave: `sy.deposit` (flash-mint buffer, 3,000,000,000) | | [3b954426…](https://stellar.expert/explorer/testnet/tx/3b954426f298dcaf679fd153afcbe04cf1036943317c003d890b5aab85b58ea2) |
+| 7 | Dave: `router.flash_mint_yt(sy_in=3,000,000,000, max_net_cost=3,000,000,000)` | `3,013,492,500` YT minted, net cost `1,565,887` SY | [86322075…](https://stellar.expert/explorer/testnet/tx/86322075d60d2ebefb58b0415dc0f084e7ea594ac0d2f70d4f9290a6f8050faa) |
+| 8 | Dave: `router.flash_mint_yt_from_underlying(sy_in=3,000,000,000, max_net_cost=2,500,000,000, underlying_budget=2,800,000,000)` | `3,013,492,500` YT minted, net cost `1,680,871` SY — only the stated budget was ever wrapped | [c4109257…](https://stellar.expert/explorer/testnet/tx/c410925724fbefcf86511991c26234ee643420329a90928596eec323972cd807) |
+| 9 | Carol: `router.add_liquidity_keep_yt(underlying_amount=5,000,000,000, mint_amount=2,000,000,000)` | `1,189,181,871` LP minted, `2,008,995,000` YT kept (not sold), `2,008,994,999` PT + `376,459,157` SY used for the LP leg | [b85ddeac…](https://stellar.expert/explorer/testnet/tx/b85ddeacceda7acd8966c6aa457f7040f7744eff7231194ee627e61a73b4b163) |
+
+Market 3's final state: pool reserves `["18035979999", "3379704693"]`, `lp_total_supply`
+`10,676,014,851`. Left live and unsettled (pre-maturity) for any further testing.
+
+## 7. Findings from this deployment
+
+Recorded as they happened, including the mistakes, same convention as
+`docs/TESTNET_CURRENT_DEPLOYMENT_EVIDENCE.md` §6.
+
+1. **A liquidity provider's mint must come from a separate SY deposit than their liquidity
+   leg.** The first attempt at Market 2's AMM campaign had Carol (and Alice) deposit once and
+   `pm.mint` the *entire* deposited SY balance, leaving `0` SY for the immediately-following
+   `pool.add_liquidity`/`add_liquidity_single_sy` call — which then reverted
+   `InsufficientShares` (SYWrapper error 5) or, downstream, `InsufficientLiquidity` (MarketPool
+   error 9) on every call that depended on a seeded pool. This is not a contract bug — it is
+   exactly what should happen when a caller tries to spend SY twice — but it is an easy integration
+   mistake, worth calling out for `principal-dApp`: budget separate deposits (or a single deposit
+   sized for both legs) whenever a flow mints *and* provides liquidity in the same script. Market 3
+   §6 shows the corrected pattern (steps 2–5: a dedicated mint-leg deposit, then a *separate*
+   liquidity-leg deposit, in that order).
+2. **The built-in Stellar Asset Contract and this protocol's own tokens name their balance
+   parameter differently.** The underlying SAC's `balance` function takes `--id`; `PTToken`/
+   `YTToken`'s own `balance` takes `--account`. Passing the wrong one is a CLI argument error, not a
+   contract revert, and silently produces an empty result that can cascade into bad arithmetic in a
+   calling script (observed directly: an empty balance read fed into a `$((x/2))` sell-half
+   calculation). Worth a one-line callout in `principal-dApp`'s integration code.
+3. **A real session interruption lost the granular transaction log for Market 2's main
+   campaign.** The campaign ran for over an hour of wall-clock time across the bug in finding 1,
+   its repair, and a tooling session boundary that cleared the working scratch directory the
+   per-step log lived in — while the underlying Testnet transactions themselves, of course,
+   persisted (the ledger does not depend on any local process). §4's steps 5–12 are therefore
+   reported from independently re-queried final account/contract state (§5) and from the Testnet
+   account-history API, not from a per-step log with each step's own hash — stated plainly rather
+   than reconstructing hashes with false confidence. Every step from settlement onward (§4 steps
+   13–21) runs after this point and has its own verified hash. The three flows this left genuinely
+   unconfirmed (the Router's plain and underlying-funded flash-mint, and `add_liquidity_keep_yt`)
+   were re-run cleanly on Market 3 (§6), with no such gap.
+4. **Running two CLI calls concurrently from the same signer causes `TxBadSeq`.** Submitting a
+   transaction while another from the *same* source account is still in flight raced on that
+   account's sequence number and failed outright (observed when a manual compliance-grant call for
+   a new user was issued from the issuer identity while the bulk compliance script was still
+   running under that same identity). Fixed by never dispatching two calls from one signer at once
+   — not a contract concern, but worth noting for anyone scripting multi-step setups against this
+   protocol from a single key.
+5. **Market 1 (`salt d318d045…`) expired before its first deposit.** Its maturity was set to 5
+   minutes out, and compliance setup (SAC authorization, trustlines, `Permissioning` grants for five
+   accounts across four newly-deployed contracts) took longer than that. The same mistake and the
+   same root cause as `docs/TESTNET_CURRENT_DEPLOYMENT_EVIDENCE.md` §6 finding 2 records for the
+   4 October deployment — `docs/DEPLOYMENT.md` already carries a standing callout for exactly this
+   ("choose maturity with the whole run in mind... allow well over an hour"), which this run simply
+   didn't follow generously enough on the first attempt. Fixed the same way: a much larger safety
+   margin (Market 2 used 3 hours, Market 3 used 2). Recorded again here as a second data point that
+   the existing guidance is worth restating prominently, not because the guidance itself was
+   missing.
+
+## 8. What this confirms, feature by feature
+
+| Feature | Where shown |
+|---|---|
+| `MarketFactoryContract`, including the new `TopologyMismatch` check | §4 steps 1–4 (and identically for Markets 1 and 3) |
+| Deposit, mint, tokenization fee | §4 step 5 (re-confirmed via final balances, §5) |
+| Proportional `add_liquidity`, single-sided `add_liquidity_single_sy` | §4 steps 6–7; §6 step 5 |
+| `swap_pt_for_sy`; Router's `swap_underlying_for_pt`/`swap_pt_for_underlying`/`swap_underlying_for_yt`/`swap_yt_for_underlying` | §4 step 8 |
+| Direct `MarketPool.flash_mint_yt` | §4 step 7 |
+| `Router.flash_mint_yt` / `flash_mint_yt_from_underlying` | §6 steps 7–8 (clean, hash-verified) |
+| `Router.add_liquidity_keep_yt` | §6 step 9 (clean, hash-verified) |
+| `remove_liquidity` (full exit) | §4 step 19 |
+| OracleAdapter: fallback refresh, deviation guard, **new value-bounds check** | §4 step 9 |
+| RiskControl circuit breaker (automatic revert, no manual call) | §4 step 10 |
+| Compliance recovery: deauthorize → `seize_all_positions` → `finalize_record` | §4 steps 11–12, 18 |
+| `settle_all` + `redeem` (PT leg and a real nonzero YT yield leg) | §4 steps 13–17 |
+| Protocol + creator fee claims | §4 steps 20–21 |
