@@ -27,8 +27,10 @@
 //! | `swap_sy_for_pt` / `swap_underlying_for_pt` | SY -> PT, or underlying -> SY -> PT in one call (`MarketPool`) |
 //! | `swap_pt_for_sy` / `swap_pt_for_underlying` | PT -> SY, or PT -> SY -> underlying in one call (`MarketPool`) |
 //! | `swap_sy_for_yt` / `swap_underlying_for_yt` | **flash-mint**: mint PT + YT from the SY (or from underlying, wrapped first), sell the PT back to the pool, keep the YT and the SY (or underlying) proceeds |
+//! | `flash_mint_yt` / `flash_mint_yt_from_underlying` | **true flash-mint**: as above, but funded from the pool's own SY reserves -- `from` pays only the net cost, not the full notional; the underlying-denominated version also returns any unused wrap budget, unwrapped |
 //! | `swap_yt_for_sy` / `swap_yt_for_underlying` | **flash-redeem**: the pool recombines the YT with its own PT and pays out the difference, in SY or unwrapped to underlying |
-//! | `add_liquidity` / `add_liquidity_single_sy` / `add_liquidity_keep_yt` / `remove_liquidity` | `MarketPool` LP operations; `add_liquidity_keep_yt` mints PT+YT from underlying, deposits the PT, and lets the caller keep the YT instead of selling it |
+//! | `add_liquidity` / `add_liquidity_single_sy` / `add_liquidity_single_underlying` / `add_liquidity_keep_yt` | `MarketPool` LP operations; `_single_underlying` wraps first so a holder of the underlying needs one signature, not two; `_keep_yt` mints PT+YT from underlying, deposits the PT, and lets the caller keep the YT instead of selling it |
+//! | `remove_liquidity` / `remove_liquidity_to_underlying` | LP -> PT + SY, or LP -> underlying in one call (sells the PT leg, unwraps both) |
 //! | `recombine`               | PT + YT -> SY before maturity                                     |
 //! | `redeem_at_maturity`      | PT and/or YT -> underlying after maturity                         |
 //! | `claim_yield`             | accrued YT yield -> underlying, without burning YT                |
@@ -43,24 +45,49 @@
 //! scope here; see `docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md` for the current leverage
 //! limitation this implies for YT purchases.
 //!
-//! # Why `swap_pt_for_underlying` / `swap_yt_for_underlying` / `swap_underlying_for_yt` need a
-//! zero SY balance, and `add_liquidity_keep_yt` takes `mint_amount` as an argument
-//! `MarketPool`'s swap price depends on `seconds_to_maturity`, read live from the ledger, so the
-//! exact amount a swap pays out can differ -- by a few raw units -- between a client's
+//! # Why several functions take an amount as an argument instead of deriving it mid-execution,
+//! and why some need a zero pre-existing balance
+//! `MarketPool`'s swap price depends on `seconds_to_maturity`, read live from the ledger, and
+//! `PrincipalManager.mint`'s PT/YT output depends on the live oracle rate -- so an amount
+//! computed mid-transaction from either can differ -- by a few raw units -- between a client's
 //! pre-submission simulation and real execution moments later. Soroban's pre-signed
 //! authorization for a *further* call must match that call's real arguments exactly, so chaining
-//! a swap's payout straight into another call that needs fresh `from.require_auth()` on that
-//! exact amount reverted `Error(Auth, InvalidAction)` live on Testnet while this Router was first
-//! written (see `docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md`) -- through no fault of the
-//! trade itself. The fix used here is `SYWrapper.withdraw_all` (reads `from`'s balance at
-//! execution instead of taking it as an argument, so there is nothing curve-derived left to
-//! authorize -- but it withdraws *everything*, hence the zero-balance precondition) for the three
-//! `_for_underlying`/`_for_yt` swap functions, and a caller-supplied `mint_amount` (quoted via
-//! `MarketPool.zap_swap_amount` before the call is built, the same way every other min-out in
-//! this Router is quoted) instead of deriving the split mid-execution, for `add_liquidity_keep_yt`.
+//! such a derived amount straight into another call that needs fresh `from.require_auth()` on
+//! that exact value reverts `Error(Auth, InvalidAction)` -- through no fault of the trade itself.
+//! This first broke a draft of `swap_pt_for_underlying` live on Testnet (see
+//! `docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md`), and a later integration review found the
+//! same class of bug still live in `add_liquidity_keep_yt` (its `sy_remaining` and
+//! `minted.pt_minted` were both derived, mid-execution, from a deposit's live-rate-dependent
+//! share count and a mint's live-rate-dependent notional) and in `swap_underlying_for_yt` (its
+//! `sy_in` was the same kind of derived deposit output) -- fixed the same way below.
+//!
+//! Two fixes are used throughout this contract, never a derived amount passed straight through:
+//! * **A caller-supplied literal, quoted off-chain before the call is built** -- `mint_amount`,
+//!   now also `pt_desired`/`sy_desired`, for `add_liquidity_keep_yt` (quoted via
+//!   `MarketPool.keep_yt_split` and `reserves()`/`lp_total_supply()`, the same way every other
+//!   min-out in this Router is quoted); `sy_in` for `swap_underlying_for_yt` (quoted via
+//!   `SYWrapper.exchange_rate()`); `sy_in` for `add_liquidity_single_underlying` (same).
+//! * **A sweep that reads the balance at execution time instead of taking it as an argument** --
+//!   `SYWrapper.withdraw_all` (used by `swap_pt_for_underlying`, `swap_yt_for_underlying`,
+//!   `swap_underlying_for_yt`) and `MarketPool.swap_all_pt_for_sy` (used by
+//!   `remove_liquidity_to_underlying`) have nothing curve- or rate-derived left to authorize --
+//!   but they act on *everything* `from` holds, hence the zero-pre-existing-balance precondition
+//!   (`PreexistingSyBalance`/`PreexistingPtBalance`) on every function that uses one.
+//!   `SYWrapper.withdraw_gained` (used by `flash_mint_yt_from_underlying`) relaxes that
+//!   precondition by taking a `baseline` -- the balance `from` held *before* the step that
+//!   produced the gain, read by this Router with a plain `balance_of` call -- and withdrawing
+//!   only the difference, so a caller who already holds unrelated SY does not need to clear it
+//!   first; see its own docs for the much smaller residual risk that `baseline` itself carries.
 
 #![no_std]
-#![allow(deprecated)] // `env.events().publish` / `register_contract`: migration to `#[contractevent]` is tracked separately; event topics are kept stable for indexers.
+#![allow(deprecated)]
+// `env.events().publish` / `register_contract`: migration to `#[contractevent]` is tracked separately; event topics are kept stable for indexers.
+// Several entrypoints here deliberately compose 8-9 calls' worth of arguments into one atomic,
+// one-signature transaction (see the module docs above) -- a per-function `#[allow]` does not
+// reliably suppress this lint for every item `#[contractimpl]`/`#[contractargs]` generates from
+// such a function, so it is allowed crate-wide instead. The per-function `#[allow]`s on those
+// entrypoints are kept anyway, as documentation of exactly which ones are the intentional cases.
+#![allow(clippy::too_many_arguments)]
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error,
@@ -137,18 +164,21 @@ pub struct UnderlyingFlashMintQuote {
     pub swap_fee_underlying: i128,
 }
 
-/// Preview for `add_liquidity_keep_yt`: the `mint_amount`/`sy_remaining` split to pass into the
-/// real call (`mint_amount` is exactly what that call's own `mint_amount` argument expects), and
-/// the YT the mint leg alone would produce. Does not predict `add_liquidity`'s own
-/// `pt_used`/`sy_used`/`lp_minted` -- no quote for that exists anywhere in this protocol today
-/// (not even for the plain `add_liquidity`/`add_liquidity_single_sy` calls this composes with),
-/// since it is ordinary proportional-ratio arithmetic against reserves that can themselves move
-/// before the real call lands, exactly like every other LP deposit in this Router.
+/// Preview for `add_liquidity_keep_yt`. `mint_amount`, `pt_desired` and `sy_desired` are exactly
+/// what the real call's own arguments of the same names expect -- all three are now solved via
+/// `MarketPool.keep_yt_split` against the pool's raw reserve ratio (the ratio `add_liquidity`'s
+/// proportional deposit actually targets), not `zap_swap_amount`'s curve-swap ratio, which a
+/// later integration review found recommended the wrong split and left SY stranded. `lp_estimate`
+/// previews `add_liquidity`'s own `lp_minted` using the same `(pt_desired * total_lp /
+/// pt_reserve).min(sy_desired * total_lp / sy_reserve)` formula -- like every quote in this
+/// protocol, exact only if reserves/`total_lp` do not move between this read and the real call.
 #[contracttype]
 #[derive(Clone)]
 pub struct KeepYtQuote {
     pub mint_amount: i128,
-    pub sy_remaining: i128,
+    pub pt_desired: i128,
+    pub sy_desired: i128,
+    pub lp_estimate: i128,
     pub yt_out: i128,
     pub mint_fee_underlying: i128,
 }
@@ -192,11 +222,15 @@ pub trait PoolInterface {
         min_pt_out: i128,
         min_sy_out: i128,
     ) -> (i128, i128);
+    fn swap_all_pt_for_sy(env: Env, from: Address, to: Address, min_sy_out: i128) -> i128;
     fn zap_swap_amount(env: Env, sy_in: i128) -> i128;
+    fn keep_yt_split(env: Env, sy_shares: i128) -> i128;
     fn quote_sy_for_pt(env: Env, sy_in: i128) -> Quote;
     fn quote_pt_for_sy(env: Env, pt_in: i128) -> Quote;
     fn quote_yt_for_sy(env: Env, yt_in: i128) -> Quote;
     fn quote_sy_for_yt(env: Env, sy_in: i128) -> FlashMintQuote;
+    fn reserves(env: Env) -> (i128, i128);
+    fn lp_total_supply(env: Env) -> i128;
 }
 
 #[contractclient(name = "ManagerClient")]
@@ -222,8 +256,20 @@ pub trait SYInterface {
         min_underlying_out: i128,
     ) -> i128;
     fn withdraw_all(env: Env, from: Address, to: Address, min_underlying_out: i128) -> i128;
+    fn withdraw_gained(
+        env: Env,
+        from: Address,
+        baseline: i128,
+        to: Address,
+        min_underlying_out: i128,
+    ) -> i128;
     fn balance_of(env: Env, account: Address) -> i128;
     fn exchange_rate(env: Env) -> i128;
+}
+
+#[contractclient(name = "PtClient")]
+pub trait PtInterface {
+    fn balance(env: Env, account: Address) -> i128;
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +300,10 @@ pub enum Error {
     /// they withdraw `from`'s *entire* SY balance at the end (see `SYWrapper.withdraw_all`'s
     /// docs), which would sweep away SY the caller did not mean to touch.
     PreexistingSyBalance = 9,
+    /// Returned by `remove_liquidity_to_underlying` when `from` already holds PT before the
+    /// call: it sells `from`'s *entire* PT balance at the end (see `MarketPool.swap_all_pt_for_sy`),
+    /// which would sweep away PT the caller did not mean to touch.
+    PreexistingPtBalance = 10,
 }
 
 /// Everything the Router needs to know about one market, resolved from its pool at registration.
@@ -539,16 +589,26 @@ impl RouterContract {
     /// `swap_sy_for_yt` needs `sy_in` up front (see the Router's module docs on why this is not a
     /// true flash loan).
     ///
+    /// `sy_in` is a caller-supplied literal (quote `SYWrapper.exchange_rate()` off-chain:
+    /// `underlying_amount * RATE_SCALE / exchange_rate()`, matching `SYWrapper.deposit`'s own
+    /// rounding), **not** derived from `deposit`'s return value -- a later integration review
+    /// found that chaining `deposit`'s live-rate-dependent output straight into `mint`'s
+    /// authorized call had exactly the `Error(Auth, InvalidAction)` drift risk the Router's
+    /// module docs describe, just not yet fixed here. If `sy_in` is larger than what `deposit`
+    /// actually credited, `mint`'s own transfer simply fails on insufficient balance (an ordinary
+    /// revert, not an auth error); if smaller, the shortfall is still recovered by the final
+    /// `withdraw_all` sweep below, same as a generous `mint_amount` leaves a recoverable surplus
+    /// with `add_liquidity_keep_yt`.
+    ///
     /// The final unwrap uses `withdraw_all` and so requires `from` to hold no SY before this call
     /// (reverts `PreexistingSyBalance` otherwise) -- see `swap_pt_for_underlying`'s docs for why.
-    /// Everything `deposit` credits to `from` is fully consumed by `mint` a few lines later, so by
-    /// the time `withdraw_all` runs, `from`'s SY balance is exactly the PT sale's proceeds and
-    /// nothing else, as long as that precondition held at the start.
+    #[allow(clippy::too_many_arguments)] // one entrypoint composing a wrap, mint and sell, by design.
     pub fn swap_underlying_for_yt(
         env: Env,
         from: Address,
         pool: Address,
         underlying_amount: i128,
+        sy_in: i128,
         min_yt_out: i128,
         max_net_cost: i128,
         deadline: u64,
@@ -560,7 +620,7 @@ impl RouterContract {
         if sy.balance_of(&from) != 0 {
             panic_with_error!(&env, Error::PreexistingSyBalance);
         }
-        let sy_in = sy.deposit(&from, &underlying_amount, &0);
+        sy.deposit(&from, &underlying_amount, &0);
         let minted = ManagerClient::new(&env, &info.manager).mint(&from, &sy_in);
         if minted.yt_minted < min_yt_out {
             panic_with_error!(&env, Error::SlippageExceeded);
@@ -604,11 +664,16 @@ impl RouterContract {
     /// to the pool unchanged -- kept as its own parameter, not derived from `underlying_budget`,
     /// because the two are only numerically equal while `exchange_rate()` is exactly 1.0 (true for
     /// every `SYWrapper` deployed today, not guaranteed forever; see `docs/ROUTER_QUOTES.md` §2).
-    /// Any surplus (`underlying_budget` wrapped minus the real net cost) is left in `from`'s own SY
-    /// balance -- the same way a generous `mint_amount` leaves a surplus with
-    /// `add_liquidity_keep_yt`'s caller -- and unlike the other `_for_underlying` functions this one
-    /// does not use `SYWrapper.withdraw_all`, so it has no zero-pre-existing-SY-balance
-    /// precondition.
+    ///
+    /// Any surplus (`underlying_budget` wrapped minus the real net cost) is unwrapped back to
+    /// underlying before this call returns, via `SYWrapper.withdraw_gained` with a `baseline`
+    /// read right before the wrap leg -- so, unlike the other `_for_underlying` functions, a
+    /// caller who already holds unrelated SY does **not** need to clear it first (no
+    /// `PreexistingSyBalance` precondition here). An earlier version left the surplus as plain SY
+    /// in `from`'s balance, which a later integration review flagged as a real cost: any further
+    /// same-transaction call using `withdraw_all` (every other `_for_underlying` flow) would then
+    /// revert `PreexistingSyBalance` against that very surplus, needing an extra signature just
+    /// to clear it first. Returns `(yt_out, net_cost, underlying_back)`.
     #[allow(clippy::too_many_arguments)] // one entrypoint composing a wrap plus a flash-mint, by design.
     pub fn flash_mint_yt_from_underlying(
         env: Env,
@@ -618,15 +683,26 @@ impl RouterContract {
         min_yt_out: i128,
         max_net_cost: i128,
         underlying_budget: i128,
+        min_underlying_back: i128,
         deadline: u64,
-    ) -> (i128, i128) {
+    ) -> (i128, i128, i128) {
         from.require_auth();
         Self::assert_deadline(&env, deadline);
         let info = Self::info(&env, &pool);
+        let sy = SYClient::new(&env, &info.sy);
+        let baseline = sy.balance_of(&from);
         if underlying_budget > 0 {
-            SYClient::new(&env, &info.sy).deposit(&from, &underlying_budget, &0);
+            sy.deposit(&from, &underlying_budget, &0);
         }
-        PoolClient::new(&env, &pool).flash_mint_yt(&from, &from, &sy_in, &min_yt_out, &max_net_cost)
+        let (yt_out, net_cost) = PoolClient::new(&env, &pool).flash_mint_yt(
+            &from,
+            &from,
+            &sy_in,
+            &min_yt_out,
+            &max_net_cost,
+        );
+        let underlying_back = sy.withdraw_gained(&from, &baseline, &from, &min_underlying_back);
+        (yt_out, net_cost, underlying_back)
     }
 
     /// **Flash-redeem** sale of YT: the pool recombines the YT with PT from its own reserve and
@@ -699,37 +775,65 @@ impl RouterContract {
         PoolClient::new(&env, &pool).add_liquidity_single_sy(&from, &sy_in, &min_lp_out)
     }
 
+    /// Underlying -> SY (`SYWrapper.deposit`) -> single-sided LP deposit (`MarketPool
+    /// .add_liquidity_single_sy`), in one transaction and one signature, for a user who holds
+    /// the underlying rather than SY -- found missing in an integration review (single-sided LP
+    /// from underlying previously needed a separate `deposit` first, two signatures).
+    ///
+    /// `sy_in` is a caller-supplied literal (quote `SYWrapper.exchange_rate()` off-chain, the
+    /// same `underlying_amount * RATE_SCALE / exchange_rate()` used throughout this Router), not
+    /// derived from `deposit`'s return value, for the same reason `swap_underlying_for_yt` takes
+    /// `sy_in` as an argument rather than deriving it -- see the module docs. The wrap leg is
+    /// unguarded (`min_shares_out = 0`); `min_lp_out` protects the whole round trip.
+    pub fn add_liquidity_single_underlying(
+        env: Env,
+        from: Address,
+        pool: Address,
+        underlying_amount: i128,
+        sy_in: i128,
+        min_lp_out: i128,
+        deadline: u64,
+    ) -> (i128, i128, i128) {
+        from.require_auth();
+        Self::assert_deadline(&env, deadline);
+        let info = Self::info(&env, &pool);
+        SYClient::new(&env, &info.sy).deposit(&from, &underlying_amount, &0);
+        PoolClient::new(&env, &pool).add_liquidity_single_sy(&from, &sy_in, &min_lp_out)
+    }
+
     /// Pendle's "keep YT" deposit: `underlying_amount` of underlying becomes LP *and* YT, with no
     /// swap and so no price-impact slippage (the only guard that applies is `min_lp_out`, exactly
     /// as `add_liquidity`'s own proportional deposit already works). Wraps to SY, mints PT+YT from
-    /// `mint_amount` of it, then adds that PT and the remaining SY as a normal proportional
-    /// deposit -- keeping the YT instead of selling it, which is the one difference from
-    /// `add_liquidity_single_sy`.
+    /// `mint_amount` of it, then adds PT and SY as a normal proportional deposit -- keeping the YT
+    /// instead of selling it, which is the one difference from `add_liquidity_single_sy`.
     ///
-    /// `mint_amount` is a plain argument, computed off-chain (quote `MarketPool.zap_swap_amount`
-    /// for the split that balances the pool's current ratio before building this call, the same
-    /// way every other min-out in this Router is quoted beforehand) rather than something this
-    /// function derives mid-execution. That distinction matters: `zap_swap_amount`, like every
-    /// other curve read, depends on `seconds_to_maturity` taken live from the ledger, so a value
-    /// this function computed itself and then passed as `mint`'s `sy_shares` argument could
-    /// differ -- by a few raw units -- between a client's pre-submission simulation and real
-    /// execution moments later, reverting `Error(Auth, InvalidAction)` on `mint`'s own
-    /// authorization for no reason related to the trade itself (the exact failure
-    /// `swap_pt_for_underlying` hit this same way; see its docs and
-    /// `docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md`). A quote taken moments earlier and signed
-    /// as a literal argument has no such drift to go stale.
+    /// `mint_amount`, `pt_desired` and `sy_desired` are all plain arguments, computed off-chain
+    /// (quote `MarketPool.keep_yt_split` and `reserves()`/`lp_total_supply()` -- or just call
+    /// `quote_add_liquidity_keep_yt`, which does exactly that -- before building this call, the
+    /// same way every other min-out in this Router is quoted beforehand) rather than anything
+    /// this function derives mid-execution. That distinction matters: an earlier version derived
+    /// `sy_remaining` from `deposit`'s live-exchange-rate-dependent output and `pt_desired` from
+    /// `mint`'s live-oracle-rate-dependent output, then passed both straight into `add_liquidity`'s
+    /// own authorized call -- exactly the `Error(Auth, InvalidAction)` drift risk the module docs
+    /// describe, found live in a later integration review. Three literal, pre-quoted arguments
+    /// have no such drift to go stale.
     ///
-    /// A `mint_amount` that doesn't match the pool's current ratio (stale quote, or just a
-    /// round number the caller chose) may leave a small PT or SY remainder unused: that's fine,
+    /// Values that don't match the pool's current state (a stale quote, or just a round number
+    /// the caller chose) may leave a small PT or SY remainder unused, or make `mint`'s own SY
+    /// transfer revert on insufficient balance (an ordinary revert, not an auth error) if
+    /// `mint_amount` was quoted too high against what `deposit` actually credited: that's fine,
     /// `add_liquidity`'s proportional deposit only ever pulls the `pt_used`/`sy_used` it actually
     /// needs (see its implementation) and leaves the rest in `from`'s own balance untouched --
     /// there is nothing to refund and nothing gets stranded.
+    #[allow(clippy::too_many_arguments)] // one entrypoint composing a wrap, mint and LP deposit, by design.
     pub fn add_liquidity_keep_yt(
         env: Env,
         from: Address,
         pool: Address,
         underlying_amount: i128,
         mint_amount: i128,
+        pt_desired: i128,
+        sy_desired: i128,
         min_lp_out: i128,
         deadline: u64,
     ) -> KeepYtResult {
@@ -737,11 +841,10 @@ impl RouterContract {
         Self::assert_deadline(&env, deadline);
         let info = Self::info(&env, &pool);
         let pool_client = PoolClient::new(&env, &pool);
-        let shares = SYClient::new(&env, &info.sy).deposit(&from, &underlying_amount, &0);
+        SYClient::new(&env, &info.sy).deposit(&from, &underlying_amount, &0);
         let minted = ManagerClient::new(&env, &info.manager).mint(&from, &mint_amount);
-        let sy_remaining = shares - mint_amount;
         let (pt_used, sy_used, lp_minted) =
-            pool_client.add_liquidity(&from, &minted.pt_minted, &sy_remaining, &min_lp_out);
+            pool_client.add_liquidity(&from, &pt_desired, &sy_desired, &min_lp_out);
         KeepYtResult {
             pt_used,
             sy_used,
@@ -835,12 +938,22 @@ impl RouterContract {
         let rate = SYClient::new(&env, &info.sy).exchange_rate();
         let shares = underlying_amount * RATE_SCALE / rate;
         let pool_client = PoolClient::new(&env, &pool);
-        let mint_amount = pool_client.zap_swap_amount(&shares);
-        let sy_remaining = shares - mint_amount;
+        let mint_amount = pool_client.keep_yt_split(&shares);
+        let sy_desired = shares - mint_amount;
         let flash = pool_client.quote_sy_for_yt(&mint_amount);
+        let pt_desired = flash.yt_out; // mint's PT/YT output is 1:1 (same notional)
+        let (pt_res, sy_res) = pool_client.reserves();
+        let total_lp = pool_client.lp_total_supply();
+        let lp_estimate = if pt_res > 0 && sy_res > 0 {
+            (pt_desired * total_lp / pt_res).min(sy_desired * total_lp / sy_res)
+        } else {
+            0
+        };
         KeepYtQuote {
             mint_amount,
-            sy_remaining,
+            pt_desired,
+            sy_desired,
+            lp_estimate,
             yt_out: flash.yt_out,
             mint_fee_underlying: flash.mint_fee_shares * rate / RATE_SCALE,
         }
@@ -865,6 +978,47 @@ impl RouterContract {
             &min_pt_out,
             &min_sy_out,
         )
+    }
+
+    /// LP -> PT + SY (`MarketPool.remove_liquidity`) -> sell the PT leg for SY
+    /// (`MarketPool.swap_all_pt_for_sy`) -> unwrap everything to underlying
+    /// (`SYWrapper.withdraw_all`), in one transaction and one signature -- found missing in an
+    /// integration review (landing in underlying previously needed 2-3 separate calls: remove,
+    /// sell the PT, unwrap).
+    ///
+    /// Both intermediate legs are swept with the balance-reading, no-amount-argument primitives
+    /// (`swap_all_pt_for_sy`, `withdraw_all`) rather than chaining `remove_liquidity`'s PT/SY
+    /// payout straight into further authorized calls as explicit arguments -- see the module
+    /// docs. That means this call requires `from` to hold **no** PT and **no** SY beforehand
+    /// (reverts `PreexistingPtBalance`/`PreexistingSyBalance` otherwise): both sweeps act on
+    /// `from`'s entire balance of their respective token, not just what this call itself
+    /// produces. The `remove_liquidity`/swap legs are unguarded; `min_underlying_out` protects
+    /// the whole round trip at the final, underlying-denominated output.
+    pub fn remove_liquidity_to_underlying(
+        env: Env,
+        from: Address,
+        pool: Address,
+        lp_in: i128,
+        min_underlying_out: i128,
+        deadline: u64,
+    ) -> i128 {
+        from.require_auth();
+        Self::assert_deadline(&env, deadline);
+        let info = Self::info(&env, &pool);
+        let pt = PtClient::new(&env, &info.pt);
+        let sy = SYClient::new(&env, &info.sy);
+        if pt.balance(&from) != 0 {
+            panic_with_error!(&env, Error::PreexistingPtBalance);
+        }
+        if sy.balance_of(&from) != 0 {
+            panic_with_error!(&env, Error::PreexistingSyBalance);
+        }
+        let pool_client = PoolClient::new(&env, &pool);
+        pool_client.remove_liquidity(&from, &from, &lp_in, &0, &0);
+        if pt.balance(&from) > 0 {
+            pool_client.swap_all_pt_for_sy(&from, &from, &0);
+        }
+        sy.withdraw_all(&from, &from, &min_underlying_out)
     }
 
     // -------------------------------------------------------------- redemption

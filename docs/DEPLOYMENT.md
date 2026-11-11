@@ -26,6 +26,52 @@ operator role (`--source` must be that key, not a generic deployer key). This is
 and can be initialized by anyone, since it only validates that its contracts share one underlying and
 re-derives all authority live at call time. The `Router` holds nothing and needs no compliance standing.
 
+### Key roles: `ISSUER_KEY` vs `ADMIN_KEY`
+
+Found worth separating during a dApp-integration review: the examples below (and
+`scripts/create_market_via_factory.sh` before this review) use one key, `admin`, for everything —
+convenient for a single deployer, but it means anything that needs *any* admin power on this
+protocol (e.g. a faucet that needs to authorize new users' trustlines) ends up needing full
+control over every contract, since they're the same key. Two distinct roles exist in the contracts
+already; this guide now names them separately.
+
+- **`ISSUER_KEY`** — the underlying asset's real, live issuer authority (for a Stellar SAC,
+  `admin()`; for SEP-57, the operator role). **Hard contract requirement, not a script
+  convention**: `SYWrapper`, `PTToken`, `YTToken`, `MarketConfig`, `PrincipalManager` and
+  `MarketPool` all check their `admin` argument against the underlying's real issuer at
+  `initialize` and revert `IssuerMismatch` otherwise (`principal_compliance::is_authority`) — a
+  deliberate guard against a lower-trust admin key fabricating a market for an asset it does not
+  actually issue. This means **market creation itself cannot be delegated away from the real
+  issuer** — steps 4–9's `initialize`/`set_recovery_escrow` calls, and `MarketFactory`'s
+  `create_tokens`/`create_engine`/`create_pool_and_escrow` (which just relay `issuer` into these
+  same six contracts), all need `ISSUER_KEY`. `MarketConfig.set_fees` also checks the issuer live
+  (`assert_issuer`), not `protocol_admin` — fee tuning stays an issuer action too. `ISSUER_KEY` is
+  also the only key that can ever call the underlying SAC's own `set_authorized` (step 11) — a
+  protocol-level Stellar restriction that has nothing to do with this protocol's own admin model.
+- **`ADMIN_KEY`** — a separate, non-issuer key for every admin action that does *not* carry an
+  `IssuerMismatch` check: `OracleAdapter` (steps 1, plus `set_sources`/`set_reference_value`/
+  `set_safety_params`/`set_value_bounds` afterward), `Permissioning` (step 2, plus
+  `grant_account`/`grant_asset`/`revoke_*`), `RiskControl` (step 3, plus `add_consumer`/
+  `set_cb_limit`/pausing), `Router` (step 10, plus `register_market`/`transfer_admin`), and
+  `MarketConfig`'s `protocol_admin`-gated calls (`set_protocol_share`, `set_treasury`,
+  `transfer_protocol_admin` — distinct from `set_fees`, above). None of these ever check against
+  the underlying's issuer, so `ADMIN_KEY` can safely be a different account, rotated independently,
+  without touching market creation or compliance at all.
+
+**What this does and does not fix.** A faucet that only needs to *fund* test accounts with the
+underlying needs neither key — a funded account with a trustline is enough. A faucet that also
+needs to *authorize new trustlines* (true whenever the asset is `AUTH_REQUIRED`, as this protocol's
+Testnet deployments are) genuinely needs `ISSUER_KEY` for that one call, and — because market
+creation is also gated on the same real issuer, by design, not by choice of script — handing a
+tool `ISSUER_KEY` for trustline authorization still leaves it *able* to create markets too, as an
+inherent property of the Stellar asset model, not something `ADMIN_KEY`'s introduction removes.
+The mitigation available today is operational (scope what the faucet tool's own code ever calls,
+monitor its key's activity), not cryptographic. Fully separating "can authorize trustlines" from
+"can create markets" would need a contract change — a `market_creator` parameter checked
+independently of the SAC issuer in the six `IssuerMismatch`-gated contracts — which is a larger,
+deliberate change to this protocol's trust model and is **not** made here; flagged as a follow-up
+if the dApp team's faucet design needs it.
+
 `PrincipalManager` mints and burns real SEP-41 PT/YT, which is why `PTToken`/`YTToken` (step 5) are deployed
 *before* it and given their minter afterwards, and why the protocol contracts need the standing in step 11.
 
@@ -56,35 +102,40 @@ Artifacts:
 
 ## Testnet deployment
 
-Set your network and identity once:
+Set your network and both identities once (see "Key roles" above — `admin` below is `ISSUER_KEY`;
+a separate `protocol_admin` identity is `ADMIN_KEY`, used for steps 1, 2, 3 and 10):
 
 ```bash
 stellar network add testnet \
   --rpc-url https://soroban-testnet.stellar.org \
   --network-passphrase "Test SDF Network ; September 2015"
 
-stellar keys generate admin --network testnet
-stellar keys address admin   # note this address for initialization
+stellar keys generate admin --network testnet          # ISSUER_KEY — must be the underlying's real issuer
+stellar keys generate protocol_admin --network testnet # ADMIN_KEY — anything else; never checked against the issuer
+stellar keys address admin           # note this address for initialization
+stellar keys address protocol_admin  # note this address too
 ```
 
 ### 1. OracleAdapter
 
+Uses `ADMIN_KEY` (`protocol_admin` below) — `initialize` takes an arbitrary admin, no issuer check.
+
 ```bash
 stellar contract deploy \
   --wasm target/wasm32v1-none/release/principal_oracle_adapter.wasm \
-  --source admin --network testnet \
+  --source protocol_admin --network testnet \
   --alias oracle_adapter
 
 stellar contract invoke --id oracle_adapter \
-  --source admin --network testnet \
-  -- initialize --admin $(stellar keys address admin)
+  --source protocol_admin --network testnet \
+  -- initialize --admin $(stellar keys address protocol_admin)
 
 # Submit an initial reference value now -- YTToken.initialize (step 5) reads this live as its
 # yield-index genesis rate and requires it to be fresh, and PrincipalManager.mint (step 6)
 # requires freshness too. Replace 10_000_000 (1.00) and the timestamp with the real current
 # rate and Unix time.
-stellar contract invoke --id oracle_adapter --source admin --network testnet \
-  -- set_reference_value --caller $(stellar keys address admin) \
+stellar contract invoke --id oracle_adapter --source protocol_admin --network testnet \
+  -- set_reference_value --caller $(stellar keys address protocol_admin) \
      --value 10000000 --timestamp $(date +%s)
 ```
 
@@ -92,29 +143,36 @@ Note: once a value is submitted, every later submission must be `>=` the current
 
 ### 2. Permissioning
 
+Uses `ADMIN_KEY` — `initialize` takes an arbitrary admin, no issuer check. `grant_account`/
+`grant_asset`/`revoke_*` in step 11 below use this same key, not the issuer.
+
 ```bash
 stellar contract deploy \
   --wasm target/wasm32v1-none/release/principal_permissioning.wasm \
-  --source admin --network testnet \
+  --source protocol_admin --network testnet \
   --alias permissioning
 
 stellar contract invoke --id permissioning \
-  --source admin --network testnet \
-  -- initialize --admin $(stellar keys address admin)
+  --source protocol_admin --network testnet \
+  -- initialize --admin $(stellar keys address protocol_admin)
 ```
 
 ### 3. RiskControl
 
+Uses `ADMIN_KEY` — `initialize` takes an arbitrary admin, no issuer check. Its own `add_consumer`
+(steps 4 and 7 below) uses this same key too, even though those steps are otherwise issuer-signed
+for the contract being wired *into* RiskControl.
+
 ```bash
 stellar contract deploy \
   --wasm target/wasm32v1-none/release/principal_risk_control.wasm \
-  --source admin --network testnet \
+  --source protocol_admin --network testnet \
   --alias risk_control
 
 # cb_limit = 0 disables the circuit breaker; set to a non-zero value to enable
 stellar contract invoke --id risk_control \
-  --source admin --network testnet \
-  -- initialize --admin $(stellar keys address admin) --cb-limit 0
+  --source protocol_admin --network testnet \
+  -- initialize --admin $(stellar keys address protocol_admin) --cb-limit 0
 ```
 
 ### 4. SYWrapper
@@ -141,8 +199,8 @@ Wire the circuit breaker (after RiskControl exists) and, if wanted, a per-addres
 stellar contract invoke --id sy_wrapper --source admin --network testnet \
   -- set_risk_control --admin $(stellar keys address admin) \
      --risk_control $(stellar contract id alias risk_control --network testnet)
-stellar contract invoke --id risk_control --source admin --network testnet \
-  -- add_consumer --caller $(stellar keys address admin) \
+stellar contract invoke --id risk_control --source protocol_admin --network testnet \
+  -- add_consumer --caller $(stellar keys address protocol_admin) \
      --consumer $(stellar contract id alias sy_wrapper --network testnet)
 ```
 
@@ -240,8 +298,8 @@ done
 stellar contract invoke --id principal_manager --source admin --network testnet \
   -- set_risk_control --admin $(stellar keys address admin) \
      --risk_control $(stellar contract id alias risk_control --network testnet)
-stellar contract invoke --id risk_control --source admin --network testnet \
-  -- add_consumer --caller $(stellar keys address admin) \
+stellar contract invoke --id risk_control --source protocol_admin --network testnet \
+  -- add_consumer --caller $(stellar keys address protocol_admin) \
      --consumer $(stellar contract id alias principal_manager --network testnet)
 ```
 
@@ -292,12 +350,14 @@ done
 
 ### 10. Router
 
+Uses `ADMIN_KEY` — `initialize` takes an arbitrary admin, no issuer check.
+
 ```bash
 stellar contract deploy --wasm target/wasm32v1-none/release/principal_router.wasm \
-  --source admin --network testnet --alias router
-stellar contract invoke --id router --source admin --network testnet -- initialize --admin $(stellar keys address admin)
-stellar contract invoke --id router --source admin --network testnet \
-  -- register_market --caller $(stellar keys address admin) \
+  --source protocol_admin --network testnet --alias router
+stellar contract invoke --id router --source protocol_admin --network testnet -- initialize --admin $(stellar keys address protocol_admin)
+stellar contract invoke --id router --source protocol_admin --network testnet \
+  -- register_market --caller $(stellar keys address protocol_admin) \
      --pool $(stellar contract id alias market_pool --network testnet)
 ```
 
@@ -307,7 +367,9 @@ standing on the underlying.
 ### 11. Compliance standing for the protocol contracts
 
 Every contract that ever *holds* SY, PT, YT or the underlying is a participant like any other and needs **both**
-compliance layers. Do this for each address below, from the issuer / Permissioning admin:
+compliance layers. Underlying-level authorization (`set_authorized`) is `ISSUER_KEY` only — the one Stellar
+protocol-level restriction nothing here can delegate around. `Permissioning.grant_account`/`grant_asset` use
+`ADMIN_KEY` (`protocol_admin`), since Permissioning was initialized with that key in step 2, not the issuer.
 
 | Address | Underlying-level authorization | `Permissioning.grant_account` | `grant_asset` for PT **and** YT |
 |---|---|---|---|
@@ -319,13 +381,14 @@ compliance layers. Do this for each address below, from the issuer / Permissioni
 | `router` | **none** | – | – |
 
 ```bash
-# Stellar asset / SEP-8 (SAC):
+# Stellar asset / SEP-8 (SAC) -- ISSUER_KEY, no substitute:
 stellar contract invoke --id <USDY_CONTRACT_ID> --source admin --network testnet \
   -- set_authorized --id <CONTRACT_ADDRESS> --authorize true
-stellar contract invoke --id permissioning --source admin --network testnet \
-  -- grant_account --caller $(stellar keys address admin) --account <CONTRACT_ADDRESS>
-stellar contract invoke --id permissioning --source admin --network testnet \
-  -- grant_asset --caller $(stellar keys address admin) --account <CONTRACT_ADDRESS> \
+# Permissioning -- ADMIN_KEY:
+stellar contract invoke --id permissioning --source protocol_admin --network testnet \
+  -- grant_account --caller $(stellar keys address protocol_admin) --account <CONTRACT_ADDRESS>
+stellar contract invoke --id permissioning --source protocol_admin --network testnet \
+  -- grant_asset --caller $(stellar keys address protocol_admin) --account <CONTRACT_ADDRESS> \
      --asset $(stellar contract id alias pt_token --network testnet)      # and again for yt_token
 ```
 
@@ -379,13 +442,23 @@ stellar contract invoke --id risk_control \
   -- pause --caller $(stellar keys address pauser_key)
 ```
 
-Only the admin can unpause:
+Only the admin can unpause — RiskControl's own admin, `ADMIN_KEY`, not the issuer:
 
 ```bash
 stellar contract invoke --id risk_control \
-  --source admin --network testnet \
-  -- unpause --caller $(stellar keys address admin)
+  --source protocol_admin --network testnet \
+  -- unpause --caller $(stellar keys address protocol_admin)
 ```
+
+## Testnet manifest for `principal-dApp`
+
+[`testnet.json`](../testnet.json) (repo root) collects the current Testnet addresses and wasm
+hashes a dApp integration needs: the shared infrastructure, the wasm hashes for whichever
+contracts most recently changed, and every live market's full address set. It is this session's
+best-effort inference of what `principal-dApp`'s `ContractMap`/`markets.ts` types expect (see
+`docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md` §3.5) — **not** a schema confirmed with the dApp
+team; the file's own `_note` fields flag exactly which parts are a guess. Regenerate or hand-edit
+it after any redeployment; nothing currently automates keeping it in sync.
 
 ## Mainnet
 

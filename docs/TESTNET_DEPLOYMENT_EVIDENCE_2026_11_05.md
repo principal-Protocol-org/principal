@@ -288,3 +288,169 @@ Bob had been deauthorized since §4 step 11 and was re-authorized
 specifically so he could participate in this market before being deauthorized again at step 8 —
 noted here because it's a real operational detail (test accounts carry real, persistent SAC
 authorization state across every market on the same underlying asset), not because it's a defect.
+
+## 10. A second dApp-integration review round: five gaps closed, redeployed and verified live
+
+A second round of dApp-integration feedback, after the team studied the commits since §9, reported
+five further gaps. All five were independently confirmed against the code (not taken on the
+report's word) and fixed: `add_liquidity_keep_yt` and `swap_underlying_for_yt` still had the
+`Error(Auth, InvalidAction)` drift class §9 ascribed to `set_value_bounds` elsewhere — both passed
+a live-rate-derived value into a nested authorized call; `quote_add_liquidity_keep_yt` quoted the
+wrong split (via `MarketPool.zap_swap_amount`, calibrated for a different flow);
+`flash_mint_yt_from_underlying` stranded its unused wrap budget as plain SY instead of unwrapping
+it; and single-sided liquidity to/from the underlying had no one-signature path. Full narrative and
+API changes: `docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md` §4.1's "Update" and
+`docs/ROUTER_QUOTES.md`'s "Update". This section redeploys the four changed contracts
+(`Router`, `MarketPool`, `SYWrapper`, `PrincipalManager`) and proves each fix live.
+
+One claim from the same report — an `add_liquidity_single_sy` refund failure, "1 of 12" in their
+testing — could not be reproduced by reading the current code (its refund path looks correct and
+unconditional) and was not exercised further here; it needs the team's exact failing call to
+pin down, and is tracked as open, not fixed.
+
+### 10.1 What was redeployed
+
+Only `Router`, `MarketPool`, `SYWrapper` and `PrincipalManager` changed source since §9.
+`PTToken`, `YTToken`, `MarketConfig` and `RecoveryEscrow` did not, so Market 5 below reuses their
+exact §9 wasm (fetched from the live Market 4 instances and re-hashed to confirm:
+`PT_WASM=44fd470c…`, `YT_WASM=3fe7f27d…`, `CONFIG_WASM=11b0cbdf…`, `ESCROW_WASM=a4d46832…`).
+`OracleAdapter`, `MarketFactory`, `RiskControl` and `Permissioning` did not change either, so this
+round reuses the §9 `OracleAdapter` (`ORACLE2_ID`) and `MarketFactory` (`FACTORY2_ID`) instances,
+and the original shared `RiskControl`/`Permissioning` instances, unchanged.
+
+| Contract | New wasm hash | Notes |
+|---|---|---|
+| Router | `d7cb3b06a5af8b43965edfd28d66d22e004798df4c298a7464abb845c9f3f0eb` | fresh instance required — Router's own wasm changed and Soroban code cannot be upgraded in place |
+| MarketPool | `f54168d927909d8cffcd91644ab7a830f9a6d1067123b8c47896d20925e43b48` | |
+| SYWrapper | `6c867d21fd0c18fe7dc00548f716d5310c4dec8be0a57e92f80a2ba1d1d077d4` | |
+| PrincipalManager | `819ae7ba616bc078369fe2b6e9a984b9b788fbb43dc62501494241b5e1b6f584` | |
+
+New Router instance: `CD6DLGULJWNU3AEGXT7UWUVNZGQ7DJXN57BW3OOYU5XUEOWYWAURRMVB`, initialized with
+the new `ADMIN_KEY` role (§10.2) as admin — the first contract in this session initialized under
+the key-separation convention introduced below.
+
+Market 5 (via the existing factory, maturity `1794420744`, ~4 hours out, left live):
+
+| Contract | Address |
+|---|---|
+| SYWrapper | `CCPVLAIPZURBFV7N6EYDYOGK4AW5W3J6JY5PDKASXRWJYGLRHRJOL6HT` |
+| PTToken | `CDTSKAAGPLX6ABALWR7U7M53QO2FEKVRUQ4CC57C2JTSOQ6HXARXKTNG` |
+| YTToken | `CDGNKRD7P24DL66DAAASQHFVUOGSAGN5JN2GF3ZHF6277WIQKZ4RHTCU` |
+| MarketConfig | `CAHYM2WVTCXX5MBUFK36MFQTY6J6LGYUDFYI3R2TSV2NDWS3DC4HU3JB` |
+| PrincipalManager | `CBMWXDLENPF6UAFTZXM5MT7FYQHKB66IGOGCPCBN36RNKJSR7ZAKWUYE` |
+| MarketPool | `CCID66COTQO3GNQNWSE22ZL2JUFIKW7LMWDTQNIUIZRQIP664OCT6HAU` |
+| RecoveryEscrow | `CB7BNUF76LK2S3YOLYTLMMJHG56TO6MIW3MFGCV244AJAISJVUR475V2` |
+
+Created via the updated `scripts/create_market_via_factory.sh` (§10.2), using the oracle's
+existing primary source (refreshed first — it had gone stale between sessions:
+[b34ff1f4…](https://stellar.expert/explorer/testnet/tx/b34ff1f4aa18eea435df988023aedd43397bddab8efc0fe57c82dc053d055966)).
+`create_tokens`/`create_engine`/`create_pool_and_escrow` all signed by `ISSUER_KEY`, as the
+updated `docs/DEPLOYMENT.md` now documents these as hard-gated on the real issuer regardless of
+which key owns everything else. One real gap found live while wiring Market 5: the compliance
+table in `docs/DEPLOYMENT.md` §11 already said `market_pool` and `recovery_escrow` need
+`grant_asset` for PT **and** YT, same as `grant_account` — but the first wiring attempt only did
+`grant_account` for them, and `add_liquidity`'s very first call reverted `PermissionDenied`
+(PTToken error 7) transferring PT into the pool. Fixed by granting PT/YT asset standing to
+`CCID66…` and `CB7BN…` before retrying — a reminder that the account-level and asset-level grants
+are both required for anything that *holds* PT/YT, not just the account-level one.
+
+### 10.2 Deployment key separation, proven live
+
+`docs/DEPLOYMENT.md` now names two roles: `ISSUER_KEY` (the underlying's real issuer — hard-gated
+by `IssuerMismatch` on `SYWrapper`/`PTToken`/`YTToken`/`MarketConfig`/`PrincipalManager`/
+`MarketPool`, so market creation cannot be delegated away from it) and `ADMIN_KEY` (everything
+that takes an arbitrary admin with no issuer check: `OracleAdapter`, `Permissioning`,
+`RiskControl`, `Router`, and `MarketConfig`'s `protocol_admin`-gated calls). Full reasoning,
+including the residual limitation this does **not** fix (a faucet holding `ISSUER_KEY` for
+trustline authorization can still create markets, since both are gated on the same real issuer by
+design): `docs/DEPLOYMENT.md` "Key roles."
+
+Proven live, not just asserted: the new Router instance (`CD6DLGULJWNU3AEGXT7UWUVNZGQ7DJXN57BW3OOYU5XUEOWYWAURRMVB`)
+was deployed and initialized entirely with `ADMIN_KEY` (`v11-protocol-admin`,
+`GAZHOIUXZGGEW3CSTE2EDVMM6FX65EBN3JW3J5AV225WC5QCHLCHYZO6`) — its `register_market` call for
+Market 5's pool used `ADMIN_KEY` alone, with `ISSUER_KEY` never involved
+([a581b620…](https://stellar.expert/explorer/testnet/tx/a581b620ec0d1c91b21cc0eb854455be66c66177cfd0a2f3247c47968c171335)).
+
+**What this round did not change**: the shared `RiskControl`/`Permissioning`/`OracleAdapter`
+instances reused from §9 were deployed *before* this convention existed, and their on-chain
+`admin` is still `ISSUER_KEY` — confirmed live (`get_admin` on each returned the issuer address,
+not `ADMIN_KEY`). Migrating them would mean calling `transfer_admin` from `ISSUER_KEY` to
+`ADMIN_KEY` on live, shared infrastructure that Markets 2–4 also depend on — a deliberately
+irreversible-feeling action on shared state, correctly held back pending an explicit decision
+rather than done unilaterally here. Market 5's `risk_control.add_consumer` calls therefore still
+used `ISSUER_KEY`, matching that instance's actual current admin, not the new convention — the
+convention applies cleanly to every *fresh* deployment from here on (as Router's own instance
+above shows), not retroactively to what already exists.
+
+### 10.3 Live proof of each fix
+
+**`set_value_bounds`-style auth-drift, now also fixed in `add_liquidity_keep_yt` and
+`swap_underlying_for_yt`.** The strongest proof available for this bug class is a real gap between
+quoting and submission with live state actually moving in between — not just a unit test. Market
+5's pool was seeded by Carol
+([ea81e8a4…](https://stellar.expert/explorer/testnet/tx/ea81e8a4023376c96cb2c50128d44abeb3a7b94580c2a803aaed56c0d38519f3),
+pt_used `10,000,000,000`, sy_used `9,000,000,000`, lp `9,486,831,980`), then:
+
+1. Quoted `Router.quote_add_liquidity_keep_yt(underlying_amount=2,000,000,000)` at oracle rate
+   `10,000,000`: `mint_amount=1,083,457,945`, `pt_desired=1,082,916,216`,
+   `sy_desired=916,542,055`, `lp_estimate=998,342,333`.
+2. Bumped the oracle's live reference value `10,000,000 -> 10,050,000` (+0.5%) — a real
+   `set_reference_value` transaction landing on-chain between the quote and the next step, not a
+   simulated gap
+   ([f242d542…](https://stellar.expert/explorer/testnet/tx/f242d54292f5b47ae1ae7f1ee1cbd991f3d5a68a9242bd2e6329b9949c080fec)).
+3. Submitted `Router.add_liquidity_keep_yt` with the *same, now-stale* `mint_amount`/`pt_desired`/
+   `sy_desired` from step 1
+   ([390f801c…](https://stellar.expert/explorer/testnet/tx/390f801c2860bae82b692953dd5a26d289ebdc4b78fa1e2e9f4b8e49e4ba3213)).
+   **Succeeded** — no `Error(Auth, InvalidAction)` — even though the live `mint` call, at the new
+   rate, actually produced `1,088,330,797` PT/YT, not the quoted `1,082,916,216`: `add_liquidity`
+   used exactly the literal `pt_desired`/`sy_desired` (`lp_minted=998,342,333`, matching the
+   `lp_estimate` exactly since reserves hadn't moved), and the `5,414,581`-PT difference between
+   what `mint` produced and what `pt_desired` asked for was left untouched in Carol's own balance,
+   precisely as the function's docs describe — not stranded, not an error.
+
+This is a direct, honest demonstration of the fix's point: a caller-supplied literal survives a
+real intervening state change that would have broken the old, derived-argument version. (A
+two-phase `tx simulate`/`sign`/`send` reproduction, building the authorization tree from a stale
+simulation and only then changing live state before `send`, was considered as a closer mirror of
+the original failure mode's exact mechanics, but the oracle-rate-change method above already
+exercises the identical class of risk — a live value moving between off-chain quoting and
+on-chain execution — with less CLI-tooling risk, so it was used instead.)
+
+**`swap_underlying_for_yt`'s `sy_in` literal.** Alice, holding zero pre-existing SY, called it
+with `sy_in` quoted off-chain (`SYWrapper.exchange_rate()` was `10,000,000` i.e. 1.0 at the time):
+underlying `2,000,000,000` in, `yt_out=1,999,000,000`, `underlying_back=1,999,030,192`
+([504baecb…](https://stellar.expert/explorer/testnet/tx/504baecbd5d322b2799d91999a7e7e7775dc6d069cd6c6c05fd033467d213995)).
+
+**`flash_mint_yt_from_underlying`'s surplus now auto-unwraps.** Alice called it with a generous
+`underlying_budget=100,000,000` against a real net cost of `508,029` (quoted via
+`MarketPool.quote_sy_for_yt` beforehand): `yt_out=999,500,000`, `net_cost=508,029`,
+`underlying_back=99,491,971`
+([31131c27…](https://stellar.expert/explorer/testnet/tx/31131c27f633f9028ac13042c682b792a840b7e2d5fdbaaad64e307867437528)).
+Confirmed directly, not just from the return value: Alice's SY balance read exactly `0` after the
+call (`balance_of` query, no hash — a read), and her underlying balance moved by exactly
+`-508,029` net (before: `59,949,167,007`; after: `59,948,658,978`) — the surplus came back as
+underlying, not as stranded SY.
+
+**`add_liquidity_single_underlying` and `remove_liquidity_to_underlying`, the two new one-signature
+functions.** Alice, paying `5,000,000,000` underlying in a single call, got `lp_minted=2,496,506,668`
+([d79c3a35…](https://stellar.expert/explorer/testnet/tx/d79c3a3540bbcf4f3ba5f7e282538129b67f7441af04f6862f120d0423c5e35e)).
+Dave did the same with `3,000,000,000` underlying, got `lp_minted=1,497,888,764`
+([69cadbca…](https://stellar.expert/explorer/testnet/tx/69cadbca5b3df6a0335a29d2a0eff20bd1f245d910c8166e956df62373fadf58)),
+then (after clearing a `5,649`-unit SY dust refund to meet the zero-pre-existing-balance
+precondition) called `remove_liquidity_to_underlying` with that entire LP position in one further
+signature: `remove_liquidity` (`1,111,092,192` PT + `1,888,853,146` SY) ->
+`MarketPool.swap_all_pt_for_sy` (sold **all** of Dave's PT, reading his balance live rather than
+taking it as an argument) -> `SYWrapper.withdraw_all`, landing `2,999,989,559` underlying
+([1817c0fb…](https://stellar.expert/explorer/testnet/tx/1817c0fbb9ec1b8ddb1657a2ccbe9a9bc6da4e6f8421ad4f98003cf76ddc3bde)).
+
+**`PrincipalManager.is_paused()`.** Read `false` on Market 5's live, unpaused `PrincipalManager`
+(`CBMWXDLENPF6UAFTZXM5MT7FYQHKB66IGOGCPCBN36RNKJSR7ZAKWUYE`) — a one-line, trivial proof, included
+for completeness since it's a real on-chain read, not a assumption.
+
+### 10.4 `testnet.json`
+
+A manifest at [`testnet.json`](../testnet.json) collects every address and wasm hash in this
+section (plus Market 4's, still live) in a shape this session inferred from
+`docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md`'s description of `principal-dApp`'s
+`ContractMap`/`markets.ts` types — **not** a schema confirmed with the dApp team; the file's own
+header says so and names the specific fields that are a guess.

@@ -1,0 +1,45 @@
+{
+  "_note": "Best-effort inference of principal-dApp's expected ContractMap/markets.ts shape, written by the smart-contracts repo during a dApp-integration review round -- NOT confirmed with the dApp team. Field names (camelCase contract roles, matching the `factory: string` example in docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md §3.5) are this session's best guess from that doc, not a verified contract. Treat every field name here as provisional until the dApp team confirms or corrects it.",
+  "network": "testnet",
+  "networkPassphrase": "Test SDF Network ; September 2015",
+  "rpcUrl": "https://soroban-testnet.stellar.org",
+  "underlying": "CBAIZZ6SWVZYBL4EMYAHVASU3ABVCLQPGKRUGFKTXPXQUQULZMRELUW4",
+  "shared": {
+    "oracle": "CBKB5RWLSA4PEZF4KBOIVQVUN2DZWQLGDN6ZS5YW6Z34SYX7HNN77JMY",
+    "permissioning": "CBS7BTWJDQDOEHZY5IM3GMXI2MLPEJU5ROZJZC6AGJKEZU7GNHLCZZ76",
+    "riskControl": "CD3X4F2ABAQMFAZ3B2Z6KADHEFNBMWXTVYFL5HORDY5ZOD3M3TQXTUKJ",
+    "factory": "CCSIN7W4YPCUR6LZWSVH4EYZ6L4FM5ORU3ATK2O634VCBVQ6KBFXJKFE",
+    "router": "CD6DLGULJWNU3AEGXT7UWUVNZGQ7DJXN57BW3OOYU5XUEOWYWAURRMVB"
+  },
+  "wasmHashes": {
+    "_note": "Only the four contracts this round changed. OracleAdapter/MarketFactory/RiskControl/Permissioning/PTToken/YTToken/MarketConfig/RecoveryEscrow wasm is unchanged from the prior round documented in docs/TESTNET_DEPLOYMENT_EVIDENCE_2026_11_05.md §9/§1 -- not repeated here.",
+    "router": "d7cb3b06a5af8b43965edfd28d66d22e004798df4c298a7464abb845c9f3f0eb",
+    "marketPool": "f54168d927909d8cffcd91644ab7a830f9a6d1067123b8c47896d20925e43b48",
+    "syWrapper": "6c867d21fd0c18fe7dc00548f716d5310c4dec8be0a57e92f80a2ba1d1d077d4",
+    "principalManager": "819ae7ba616bc078369fe2b6e9a984b9b788fbb43dc62501494241b5e1b6f584"
+  },
+  "markets": [
+    {
+      "id": "principal-testnet-2026-11-11-m5",
+      "maturity": 1794420744,
+      "syWrapper": "CCPVLAIPZURBFV7N6EYDYOGK4AW5W3J6JY5PDKASXRWJYGLRHRJOL6HT",
+      "ptToken": "CDTSKAAGPLX6ABALWR7U7M53QO2FEKVRUQ4CC57C2JTSOQ6HXARXKTNG",
+      "ytToken": "CDGNKRD7P24DL66DAAASQHFVUOGSAGN5JN2GF3ZHF6277WIQKZ4RHTCU",
+      "marketConfig": "CAHYM2WVTCXX5MBUFK36MFQTY6J6LGYUDFYI3R2TSV2NDWS3DC4HU3JB",
+      "principalManager": "CBMWXDLENPF6UAFTZXM5MT7FYQHKB66IGOGCPCBN36RNKJSR7ZAKWUYE",
+      "marketPool": "CCID66COTQO3GNQNWSE22ZL2JUFIKW7LMWDTQNIUIZRQIP664OCT6HAU",
+      "recoveryEscrow": "CB7BNUF76LK2S3YOLYTLMMJHG56TO6MIW3MFGCV244AJAISJVUR475V2"
+    },
+    {
+      "id": "principal-testnet-2026-11-05-m4",
+      "maturity": 1793887016,
+      "syWrapper": "CA2CV5Y2ASZNOK26VBOCLWD5BLPJD3QILE44X46PXWHQG3QJ6CVQ6PYB",
+      "ptToken": "CDNDPSLRAHOHH3J3423S76YYDQJZ3OFSADOKWO25OJUZAT2QFK7J4CCJ",
+      "ytToken": "CA3N4IXXZUUITHHUNOTWRYWV6F4JYRAJSVXF7HXP4C6R75I3V2UWCVQN",
+      "marketConfig": "CAQOQQQKYUOZZFNN3W6XJQCKQNZS6SXKB33BJZOAWWWNQZXOFYGPBPAV",
+      "principalManager": "CBSJW5TN272USBU6UQYCX4SBMEKR5F2BVPS6VKYNXZHF3WFFK5MHD67X",
+      "marketPool": "CCQGGDE2Q634BRUDRCPVXBIZ6YJYSIDF7VKR35EQNFR3PYQ2VUFDHR3V",
+      "recoveryEscrow": "CDUQG265OYP63T3PBHSFGD3UR6NWSPKI26ZHX4UY66Y67XFJUEMR7UL3"
+    }
+  ]
+}

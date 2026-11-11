@@ -312,6 +312,40 @@ impl SYWrapperContract {
         Self::do_withdraw(&env, &from, shares, &to, min_underlying_out)
     }
 
+    /// Withdraw only the SY `from` gained *since* `baseline` -- the balance `from` already held
+    /// before whatever produced the gain, read by the caller (typically a Router composing a
+    /// wrap-then-flash-mint flow) via a plain `balance_of` call immediately before that step.
+    ///
+    /// Unlike `withdraw_all`, pre-existing SY above `baseline` is left untouched, so a caller
+    /// who already holds unrelated SY for another position does not need to clear it first --
+    /// found to matter live while composing `Router.flash_mint_yt_from_underlying`: its surplus
+    /// (the wrapped budget minus the real net cost) could previously only be swept with
+    /// `withdraw_all`, which refuses to run at all if the caller holds any other SY, costing an
+    /// extra signature to clear it first.
+    ///
+    /// `shares = balance_of(from) - baseline` is computed internally rather than taken as a
+    /// direct argument, for the same reason `withdraw_all` reads the balance instead of a
+    /// passed-in amount: the gain itself is usually a curve- or oracle-derived amount that can
+    /// drift by a few raw units between a client's pre-submission simulation and real execution,
+    /// and an explicit `shares` argument equal to that gain would revert `Error(Auth,
+    /// InvalidAction)` the same way a naive `withdraw` call did for `Router.swap_pt_for_underlying`
+    /// (see its docs). `baseline` itself carries a much smaller version of the same risk -- it can
+    /// only be wrong if some other transaction changes `from`'s SY balance in the narrow gap
+    /// between signing and inclusion, not the guaranteed drift a continuously time- or
+    /// rate-dependent amount has -- and is the caller's own choice to supply, not something this
+    /// function derives.
+    pub fn withdraw_gained(
+        env: Env,
+        from: Address,
+        baseline: i128,
+        to: Address,
+        min_underlying_out: i128,
+    ) -> i128 {
+        from.require_auth();
+        let shares = Self::get_balance(&env, &from) - baseline;
+        Self::do_withdraw(&env, &from, shares, &to, min_underlying_out)
+    }
+
     fn do_withdraw(
         env: &Env,
         from: &Address,

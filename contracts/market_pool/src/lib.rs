@@ -120,6 +120,7 @@ pub trait SYInterface {
 #[contractclient(name = "TokenClient")]
 pub trait TokenInterface {
     fn transfer(env: Env, from: Address, to: Address, amount: i128);
+    fn balance(env: Env, account: Address) -> i128;
 }
 
 #[contractclient(name = "OracleClient")]
@@ -910,6 +911,62 @@ impl MarketPoolContract {
     pub fn zap_swap_amount(env: Env, sy_in: i128) -> i128 {
         let st = Self::state(&env);
         Self::zap_split(&env, &st, sy_in)
+    }
+
+    /// How much of `sy_shares` `Router.add_liquidity_keep_yt` should mint (rather than swap) so
+    /// that the minted PT and the remaining SY land in this pool's current raw reserve ratio --
+    /// the exact ratio `add_liquidity`'s own proportional deposit targets.
+    ///
+    /// Deliberately **not** `zap_swap_amount`: that helper solves a different problem (buying PT
+    /// from this pool at the curve price, for `add_liquidity_single_sy`'s zap), and reusing it
+    /// here was found, during a later integration review, to recommend the wrong split --
+    /// `PrincipalManager.mint` issues PT 1:1 with the net SY shares valued at the *oracle* rate,
+    /// not at the curve's swap price, so balancing against the curve-swap ratio generally leaves
+    /// SY stranded in the subsequent `add_liquidity` call instead of being fully used.
+    pub fn keep_yt_split(env: Env, sy_shares: i128) -> i128 {
+        if sy_shares <= 0 {
+            panic_with_error!(&env, Error::ZeroAmount);
+        }
+        let st = Self::state(&env);
+        Self::assert_seeded(&env, &st);
+        let fee_bps = ConfigClient::new(&env, &Self::addr(&env, &DataKey::Config))
+            .tokenization_fee_bps() as i128;
+        let mut lo: i128 = 0;
+        let mut hi: i128 = sy_shares;
+        let mut i = 0;
+        while i < ZAP_ITERATIONS && hi - lo > 1 {
+            let mid = (lo + hi) / 2;
+            let fee = Self::ceil_div(mid * fee_bps, BPS);
+            let pt_minted = Self::value_of(mid - fee, st.rate);
+            let sy_remaining = sy_shares - mid;
+            // Target: pt_minted / sy_remaining == pt_reserve / sy_reserve (raw), i.e.
+            // pt_minted * sy_reserve ?= sy_remaining * pt_reserve. Monotonically increasing in
+            // `mid`, so a plain bisection suffices -- same technique as `zap_split` above.
+            let f = pt_minted * st.sy_reserve - sy_remaining * st.pt_reserve;
+            if f < 0 {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+            i += 1;
+        }
+        if lo <= 0 {
+            panic_with_error!(&env, Error::ZeroAmount);
+        }
+        lo
+    }
+
+    /// Sell `from`'s **entire** PT balance for SY, crediting `to`. Mirrors `swap_pt_for_sy`
+    /// exactly except for reading the amount instead of taking it as an argument -- the same
+    /// reason `SYWrapper.withdraw_all` exists: a caller composing this after a call whose PT
+    /// payout is derived mid-transaction (e.g. `remove_liquidity`) cannot safely pass that
+    /// payout as an explicit, pre-signed `pt_in` argument to a further `require_auth`'d call
+    /// without risking `Error(Auth, InvalidAction)` if reserves move between simulation and
+    /// real execution; reading the balance at execution time removes that argument entirely.
+    /// Safe only when the caller is certain `from` holds no other PT it wants to keep separate.
+    pub fn swap_all_pt_for_sy(env: Env, from: Address, to: Address, min_sy_out: i128) -> i128 {
+        let pt_in = TokenClient::new(&env, &Self::addr(&env, &DataKey::PT)).balance(&from);
+        Self::swap_pt_for_sy(env, from, to, pt_in, min_sy_out)
     }
 
     /// Preview `swap_yt_for_sy` (the flash-redeem behind `Router.swap_yt_for_sy` /

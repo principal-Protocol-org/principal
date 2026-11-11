@@ -663,6 +663,15 @@ impl PrincipalManagerContract {
         env.events().publish((symbol_short!("paused"),), paused);
     }
 
+    /// Read-only counterpart to `set_paused`. Before this existed, a dApp could only infer the
+    /// paused state indirectly, by attempting a call and catching `Error::Paused`.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
     /// Wire the RiskControl this market reports mints to. This contract must also be registered
     /// as a consumer on that RiskControl or every mint reverts.
     pub fn set_risk_control(env: Env, admin: Address, risk_control: Address) {

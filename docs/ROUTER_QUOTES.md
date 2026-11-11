@@ -16,21 +16,43 @@ pays or receives.
 | `quote_pt_for_underlying(pool, pt_in)` | `swap_pt_for_underlying` | `UnderlyingQuote{amount_out, amount_in, fee_underlying}` — both converted to underlying |
 | `quote_underlying_for_yt(pool, underlying_amount)` | `swap_underlying_for_yt` | `UnderlyingFlashMintQuote{yt_out, underlying_back, mint_fee_underlying, swap_fee_underlying}` |
 | `quote_yt_for_underlying(pool, yt_in)` | `swap_yt_for_underlying` | `UnderlyingQuote{amount_out, amount_in, fee_underlying}` |
-| `quote_add_liquidity_keep_yt(pool, underlying_amount)` | `add_liquidity_keep_yt` | `KeepYtQuote{mint_amount, sy_remaining, yt_out, mint_fee_underlying}` |
+| `quote_add_liquidity_keep_yt(pool, underlying_amount)` | `add_liquidity_keep_yt` | `KeepYtQuote{mint_amount, pt_desired, sy_desired, lp_estimate, yt_out, mint_fee_underlying}` |
 
 Each is pure composition: a `MarketPool` quote this protocol already shipped and verified
-(`quote_sy_for_pt`, `quote_pt_for_sy`, `quote_yt_for_sy`, `quote_sy_for_yt`, `zap_swap_amount`) plus
-one `SYWrapper.exchange_rate()` read, applying the exact same
-`underlying * RATE_SCALE / rate` / `shares * rate / RATE_SCALE` formula `SYWrapper.deposit`/
-`withdraw_all` themselves use. No new on-chain math was invented for this change.
+(`quote_sy_for_pt`, `quote_pt_for_sy`, `quote_yt_for_sy`, `quote_sy_for_yt`) plus one
+`SYWrapper.exchange_rate()` read, applying the exact same `underlying * RATE_SCALE / rate` /
+`shares * rate / RATE_SCALE` formula `SYWrapper.deposit`/`withdraw_all` themselves use. No new
+on-chain math was invented for this change.
 
-`quote_add_liquidity_keep_yt` returns the `mint_amount` to pass directly into the real call's own
-`mint_amount` argument — the thing a caller actually needed `exchange_rate()` for before this
-change — plus `yt_out` from the mint leg. It does **not** predict `add_liquidity`'s own
-`pt_used`/`sy_used`/`lp_minted`: no quote for that exists anywhere in this protocol, not even for
-the plain `add_liquidity`/`add_liquidity_single_sy` calls it composes with, since that is ordinary
-proportional-ratio arithmetic against reserves that can move before the real call lands regardless
-of what any quote says.
+`quote_add_liquidity_keep_yt` returns `mint_amount`, `pt_desired` and `sy_desired` to pass
+directly into the real call's own arguments of the same names, plus `lp_estimate` (a preview of
+`add_liquidity`'s own `lp_minted`) and `yt_out` from the mint leg.
+
+**Update, a later integration review**: this quote originally derived `mint_amount` from
+`MarketPool.zap_swap_amount` — the wrong formula. `zap_swap_amount` solves for the ratio
+`add_liquidity_single_sy`'s zap needs (PT *bought* from the pool at the curve price); Keep YT's PT
+is *minted* 1:1 (minus the tokenization fee) at the oracle rate instead, a different ratio
+entirely, so reusing it generally left SY stranded in the subsequent `add_liquidity` call rather
+than fully used. Fixed by a new `MarketPool.keep_yt_split`, which bisects for the `mint_amount`
+that actually balances minted PT against remaining SY in the pool's raw reserve ratio — the ratio
+`add_liquidity`'s own proportional deposit targets. The real call (`add_liquidity_keep_yt`) was
+fixed the same way at the same time, and for an independent reason: it used to derive
+`sy_remaining` from `deposit`'s live-exchange-rate-dependent output and `pt_desired` from
+`mint`'s live-oracle-rate-dependent output, then pass both straight into `add_liquidity`'s own
+authorized call — exactly the `Error(Auth, InvalidAction)` drift class `swap_pt_for_underlying`
+hit (§2 below describes the mechanism for `SYWrapper`; the same mechanism applies to any
+live-state-derived value, including `PrincipalManager.mint`'s oracle-rate-dependent notional).
+Both `mint_amount` and the now-separate `pt_desired`/`sy_desired` are literal, pre-quoted
+arguments on the real call today, with no such drift to go stale.
+
+`lp_estimate` previews `add_liquidity`'s own `lp_minted` via the identical
+`(pt_desired * total_lp / pt_reserve).min(sy_desired * total_lp / sy_reserve)` formula, reading
+`reserves()`/`lp_total_supply()` the same way the real call's own internals do. Like every quote
+in this protocol, it is exact only if reserves/`total_lp` do not move between this read and the
+real call — see `contracts/integration_tests/tests/liquidity_and_router.rs`'s
+`router_quotes_for_underlying_denominated_flows_match_the_real_outcome_exactly`, which asserts
+`lp_estimate` against the real `lp_minted` with no tolerance, in a sequence with no intervening
+trade.
 
 ## 2. Exactness, proven, not just tested
 
@@ -88,10 +110,11 @@ whatever the new mechanism does. Flagged here so it isn't rediscovered the hard 
 `contracts/integration_tests/tests/liquidity_and_router.rs`:
 `router_quotes_for_underlying_denominated_flows_match_the_real_outcome_exactly` quotes each of the
 five flows, then runs the real call, and asserts exact equality on every comparable field
-(`amount_out`, `yt_out`, `underlying_back`) — not an approximate/tolerance check. A separate
-assertion confirms `quote_add_liquidity_keep_yt`'s `mint_amount + sy_remaining` accounts for the
-full wrapped amount. `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets --locked
--- -D warnings`, and `cargo test --workspace` all pass clean.
+(`amount_out`, `yt_out`, `underlying_back`, and now `lp_estimate` against `lp_minted`) — not an
+approximate/tolerance check. A separate assertion confirms `quote_add_liquidity_keep_yt`'s
+`mint_amount + sy_desired` accounts for the full wrapped amount. `cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace` all
+pass clean.
 
 ## 4. What this does not cover (by choice)
 

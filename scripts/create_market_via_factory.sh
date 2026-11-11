@@ -13,12 +13,29 @@
 # or reuse hashes already on-chain if byte-identical code is already deployed there).
 #
 # Usage:
-#   FACTORY_ID=... ISSUER_KEY=admin UNDERLYING_ID=... MATURITY_TS=$(date -d '+90 days' +%s) \
+#   FACTORY_ID=... ISSUER_KEY=admin ADMIN_KEY=protocol_admin UNDERLYING_ID=... \
+#   MATURITY_TS=$(date -d '+90 days' +%s) \
 #   PERMISSIONING_ID=... ORACLE_ID=... RISK_CONTROL_ID=... ROUTER_ID=... \
 #   PROTOCOL_ADMIN_ADDR=... TREASURY_ADDR=... \
 #   SY_WASM=... PT_WASM=... YT_WASM=... CONFIG_WASM=... MANAGER_WASM=... POOL_WASM=... ESCROW_WASM=... \
 #   ./scripts/create_market_via_factory.sh
 #
+# ISSUER_KEY must be the underlying asset's real, live issuer authority -- the three create_*
+# calls relay it into six IssuerMismatch-checked contracts (see docs/DEPLOYMENT.md "Key roles"),
+# a hard contract requirement, not a convenience choice. ADMIN_KEY is a separate, non-issuer key
+# for the two wiring calls below (risk_control.add_consumer, router.register_market), since
+# RiskControl and Router take an arbitrary admin with no issuer check -- found worth separating
+# during a dApp-integration review: a single key for both roles meant anything needing *either*
+# needed full issuer authority too. PROTOCOL_ADMIN_ADDR (MarketConfig's stored protocol_admin,
+# a plain address not a signing key here) is unrelated to ADMIN_KEY -- don't conflate the two.
+#
+# ADMIN_KEY must resolve to the address RISK_CONTROL_ID/ROUTER_ID were themselves initialized or
+# transfer_admin'd to -- the wiring calls check the caller against each contract's own stored
+# admin, not just that some key signed. Pointed at an existing RiskControl/Router that predates
+# this convention and still has ISSUER_KEY as its real admin (true of every instance deployed
+# before this script was updated; see docs/TESTNET_DEPLOYMENT_EVIDENCE_2026_11_05.md §10.2), the
+# wiring calls below will revert Unauthorized -- run with SKIP_WIRING=1 and do them by hand with
+# whichever key that instance's own `get_admin()` actually names, until/unless it is migrated.
 # Optional: SALT (64 hex chars, default: random), PT_NAME, PT_SYMBOL, YT_NAME, YT_SYMBOL
 # (defaults below), DECIMALS (default 7), TOKENIZATION_FEE_BPS (5), YT_FEE_BPS (1000),
 # SWAP_FEE_TIER_BPS (10), PROTOCOL_SHARE_BPS (2000), TIME_STRETCH_YEARS (4), NETWORK (testnet),
@@ -32,6 +49,7 @@ set -euo pipefail
 
 : "${FACTORY_ID:?set FACTORY_ID to the deployed MarketFactoryContract id}"
 : "${ISSUER_KEY:?set ISSUER_KEY to the stellar CLI identity for the live issuer authority of the underlying asset}"
+: "${ADMIN_KEY:?set ADMIN_KEY to the stellar CLI identity RiskControl/Router were initialized with (not the issuer)}"
 : "${UNDERLYING_ID:?set UNDERLYING_ID}"
 : "${MATURITY_TS:?set MATURITY_TS to a future Unix timestamp}"
 : "${PERMISSIONING_ID:?set PERMISSIONING_ID}"
@@ -61,6 +79,7 @@ TIME_STRETCH_YEARS="${TIME_STRETCH_YEARS:-4}"
 SALT="${SALT:-$(openssl rand -hex 32 2>/dev/null || printf '%064d' "$(date +%s%N)")}"
 
 ISSUER_ADDR="$(stellar keys address "$ISSUER_KEY")"
+ADMIN_ADDR="$(stellar keys address "$ADMIN_KEY")"
 NOW="$(date +%s)"
 if [ "$MATURITY_TS" -le "$NOW" ]; then
   echo "ERROR: MATURITY_TS ($MATURITY_TS) is not in the future (now=$NOW)." >&2
@@ -88,7 +107,11 @@ echo "== MarketFactory $FACTORY_ID -- salt $SALT -- maturity $MATURITY_TS =="
 # create_tokens will revert OracleStale (YTToken error 10) otherwise.
 if [ -n "${ORACLE_ID:-}" ] && [ -n "${ORACLE_CALLER:-}" ] && [ -n "${ORACLE_VALUE:-}" ]; then
   echo "-- Refreshing oracle before create_tokens --"
-  stellar contract invoke --id "$ORACLE_ID" --source "$ISSUER_KEY" --network "$NETWORK" \
+  # --source must be a key whose address resolves to ORACLE_CALLER (a configured source on the
+  # oracle, not necessarily its admin -- see OracleAdapter.set_sources). Defaults to ADMIN_KEY
+  # (OracleAdapter is admin-gated, not issuer-gated -- see docs/DEPLOYMENT.md "Key roles");
+  # override with ORACLE_CALLER_KEY if the actual source key differs from both.
+  stellar contract invoke --id "$ORACLE_ID" --source "${ORACLE_CALLER_KEY:-$ADMIN_KEY}" --network "$NETWORK" \
     -- set_reference_value --caller "$ORACLE_CALLER" --value "$ORACLE_VALUE" --timestamp "$(($(date +%s) - 2))"
 fi
 
@@ -128,14 +151,14 @@ POOL_ADDR="$(echo "$POOLESC" | field market_pool)"
 ESCROW_ADDR="$(echo "$POOLESC" | field recovery_escrow)"
 
 if [ "${SKIP_WIRING:-0}" != "1" ]; then
-  echo "-- Wiring: risk_control.add_consumer x2, router.register_market --"
-  stellar contract invoke --id "$RISK_CONTROL_ID" --source "$ISSUER_KEY" --network "$NETWORK" \
-    -- add_consumer --caller "$ISSUER_ADDR" --consumer "$SY_ADDR"
-  stellar contract invoke --id "$RISK_CONTROL_ID" --source "$ISSUER_KEY" --network "$NETWORK" \
-    -- add_consumer --caller "$ISSUER_ADDR" --consumer "$MANAGER_ADDR"
+  echo "-- Wiring (ADMIN_KEY, not the issuer): risk_control.add_consumer x2, router.register_market --"
+  stellar contract invoke --id "$RISK_CONTROL_ID" --source "$ADMIN_KEY" --network "$NETWORK" \
+    -- add_consumer --caller "$ADMIN_ADDR" --consumer "$SY_ADDR"
+  stellar contract invoke --id "$RISK_CONTROL_ID" --source "$ADMIN_KEY" --network "$NETWORK" \
+    -- add_consumer --caller "$ADMIN_ADDR" --consumer "$MANAGER_ADDR"
   if [ -n "${ROUTER_ID:-}" ]; then
-    stellar contract invoke --id "$ROUTER_ID" --source "$ISSUER_KEY" --network "$NETWORK" \
-      -- register_market --caller "$ISSUER_ADDR" --pool "$POOL_ADDR"
+    stellar contract invoke --id "$ROUTER_ID" --source "$ADMIN_KEY" --network "$NETWORK" \
+      -- register_market --caller "$ADMIN_ADDR" --pool "$POOL_ADDR"
   else
     echo "ROUTER_ID not set -- skipping router.register_market."
   fi

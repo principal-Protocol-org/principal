@@ -661,10 +661,18 @@ fn router_underlying_denominated_flows_and_keep_yt_work_end_to_end() {
     assert_eq!(underlying_balance(&s, &user), 400 * SCALE + underlying_back);
 
     // swap_underlying_for_yt: flash-mint YT directly from underlying, no SY left in the caller's
-    // hands mid-flow.
-    let (yt_out, _underlying_change) =
-        s.router
-            .swap_underlying_for_yt(&user, &pool, &(50 * SCALE), &0, &i128::MAX, &u64::MAX);
+    // hands mid-flow. `sy_in` is quoted off-chain first (SYWrapper.exchange_rate()), exactly as a
+    // real caller would, rather than derived mid-execution -- see the function's own docs.
+    let sy_in_yt = underlying_to_shares_for_test(&s, 50 * SCALE);
+    let (yt_out, _underlying_change) = s.router.swap_underlying_for_yt(
+        &user,
+        &pool,
+        &(50 * SCALE),
+        &sy_in_yt,
+        &0,
+        &i128::MAX,
+        &u64::MAX,
+    );
     assert!(yt_out > 0);
     assert_eq!(s.yt.balance(&user), yt_out);
 
@@ -675,13 +683,22 @@ fn router_underlying_denominated_flows_and_keep_yt_work_end_to_end() {
     assert!(underlying_from_yt > 0);
     assert_eq!(s.yt.balance(&user), 0);
 
-    // add_liquidity_keep_yt: underlying -> LP + YT, no swap leg at all. `mint_amount` is quoted
-    // off-chain first (MarketPool.zap_swap_amount), exactly as a real caller would, rather than
-    // derived mid-execution -- see the function's own docs for why that distinction matters.
-    let mint_amount = s.pool.zap_swap_amount(&(100 * SCALE));
-    let result =
-        s.router
-            .add_liquidity_keep_yt(&user, &pool, &(100 * SCALE), &mint_amount, &0, &u64::MAX);
+    // add_liquidity_keep_yt: underlying -> LP + YT, no swap leg at all. `mint_amount`,
+    // `pt_desired` and `sy_desired` are all quoted off-chain first via
+    // `quote_add_liquidity_keep_yt` (which itself uses `MarketPool.keep_yt_split`), exactly as a
+    // real caller would, rather than derived mid-execution -- see the function's own docs for why
+    // that distinction matters.
+    let q = s.router.quote_add_liquidity_keep_yt(&pool, &(100 * SCALE));
+    let result = s.router.add_liquidity_keep_yt(
+        &user,
+        &pool,
+        &(100 * SCALE),
+        &q.mint_amount,
+        &q.pt_desired,
+        &q.sy_desired,
+        &0,
+        &u64::MAX,
+    );
     assert!(result.lp_minted > 0, "lp_minted {}", result.lp_minted);
     assert!(result.yt_minted > 0, "yt_minted {}", result.yt_minted);
     assert_eq!(s.pool.lp_balance(&user), result.lp_minted);
@@ -737,10 +754,17 @@ fn router_quotes_for_underlying_denominated_flows_match_the_real_outcome_exactly
         .swap_pt_for_underlying(&user, &pool, &pt_out, &0, &u64::MAX);
     assert_eq!(q.amount_out, underlying_back, "quote_pt_for_underlying");
 
+    let sy_in_yt = underlying_to_shares_for_test(&s, 50 * SCALE);
     let q = s.router.quote_underlying_for_yt(&pool, &(50 * SCALE));
-    let (yt_out, underlying_change) =
-        s.router
-            .swap_underlying_for_yt(&user, &pool, &(50 * SCALE), &0, &i128::MAX, &u64::MAX);
+    let (yt_out, underlying_change) = s.router.swap_underlying_for_yt(
+        &user,
+        &pool,
+        &(50 * SCALE),
+        &sy_in_yt,
+        &0,
+        &i128::MAX,
+        &u64::MAX,
+    );
     assert_eq!(q.yt_out, yt_out, "quote_underlying_for_yt yt_out");
     assert_eq!(
         q.underlying_back, underlying_change,
@@ -755,16 +779,28 @@ fn router_quotes_for_underlying_denominated_flows_match_the_real_outcome_exactly
 
     let q = s.router.quote_add_liquidity_keep_yt(&pool, &(100 * SCALE));
     assert_eq!(
-        q.mint_amount + q.sy_remaining,
+        q.mint_amount + q.sy_desired,
         underlying_to_shares_for_test(&s, 100 * SCALE),
-        "mint_amount + sy_remaining must account for the full wrapped amount"
+        "mint_amount + sy_desired must account for the full wrapped amount"
     );
-    let result =
-        s.router
-            .add_liquidity_keep_yt(&user, &pool, &(100 * SCALE), &q.mint_amount, &0, &u64::MAX);
+    assert!(q.lp_estimate > 0, "lp_estimate {}", q.lp_estimate);
+    let result = s.router.add_liquidity_keep_yt(
+        &user,
+        &pool,
+        &(100 * SCALE),
+        &q.mint_amount,
+        &q.pt_desired,
+        &q.sy_desired,
+        &0,
+        &u64::MAX,
+    );
     assert_eq!(
         q.yt_out, result.yt_minted,
         "quote_add_liquidity_keep_yt yt_out"
+    );
+    assert_eq!(
+        q.lp_estimate, result.lp_minted,
+        "quote_add_liquidity_keep_yt lp_estimate"
     );
 }
 
@@ -810,8 +846,10 @@ fn router_flash_mint_yt_only_requires_the_net_cost() {
 }
 
 /// Same true flash-mint, for a caller who holds the underlying rather than SY: the Router wraps
-/// only `underlying_budget`, not the full notional, leaving any surplus between the budget and
-/// the real net cost in the caller's own SY balance.
+/// only `underlying_budget`, not the full notional, and unwraps any surplus between the budget
+/// and the real net cost straight back to underlying -- a later integration review found that
+/// leaving it as SY cost a caller an extra signature before any further same-transaction call
+/// using `withdraw_all` (see the function's own docs).
 #[test]
 fn router_flash_mint_yt_from_underlying_wraps_only_the_budget() {
     let (s, _, _) = seeded(UnderlyingKind::Sac);
@@ -825,26 +863,25 @@ fn router_flash_mint_yt_from_underlying_wraps_only_the_budget() {
     s.mint_underlying(&buyer, underlying_budget);
     let underlying_before = underlying_balance(&s, &buyer);
 
-    let (yt_out, charged) = s.router.flash_mint_yt_from_underlying(
+    let (yt_out, charged, underlying_back) = s.router.flash_mint_yt_from_underlying(
         &buyer,
         &pool,
         &sy_in,
         &0,
         &net_cost,
         &underlying_budget,
+        &0,
         &u64::MAX,
     );
 
     assert_eq!(yt_out, quote.yt_out);
     assert_eq!(charged, net_cost);
+    assert_eq!(underlying_back, underlying_budget - net_cost);
     assert_eq!(s.yt.balance(&buyer), yt_out);
-    // Only `underlying_budget` of underlying ever left the buyer's wallet (wrapped to SY); the
-    // margin above the real net cost sits in the buyer's own SY balance, not stranded or donated.
-    assert_eq!(
-        underlying_balance(&s, &buyer),
-        underlying_before - underlying_budget
-    );
-    assert_eq!(s.sy.balance_of(&buyer), underlying_budget - net_cost);
+    // The margin above the real net cost comes back as underlying, not stranded SY: net effect
+    // on the buyer's underlying balance is exactly `-net_cost`, and no SY is left behind.
+    assert_eq!(underlying_balance(&s, &buyer), underlying_before - net_cost);
+    assert_eq!(s.sy.balance_of(&buyer), 0);
 }
 
 /// `underlying_budget` is a separate, caller-chosen amount, not derived from `max_net_cost` --
@@ -872,6 +909,7 @@ fn router_flash_mint_yt_from_underlying_reverts_cleanly_when_the_budget_is_below
         &0,
         &net_cost,
         &underlying_budget,
+        &0,
         &u64::MAX,
     );
     assert!(r.is_err());
@@ -906,7 +944,16 @@ fn router_acts_as_the_user_so_a_deauthorized_user_gains_nothing_by_using_it() {
             .is_err());
         assert!(s
             .router
-            .try_flash_mint_yt_from_underlying(&user, &pool, &SCALE, &0, &SCALE, &SCALE, &u64::MAX)
+            .try_flash_mint_yt_from_underlying(
+                &user,
+                &pool,
+                &SCALE,
+                &0,
+                &SCALE,
+                &SCALE,
+                &0,
+                &u64::MAX
+            )
             .is_err());
         // The Router itself holds nothing and has no balance anywhere.
         assert_eq!(s.sy.balance_of(&s.router.address), 0);
