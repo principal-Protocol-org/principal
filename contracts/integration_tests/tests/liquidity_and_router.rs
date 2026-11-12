@@ -995,6 +995,37 @@ fn router_quotes_for_underlying_denominated_flows_match_the_real_outcome_exactly
         q.lp_estimate, result.lp_minted,
         "quote_add_liquidity_keep_yt lp_estimate"
     );
+
+    // quote_add_liquidity_underlying / quote_lp_to_underlying: the two quotes a dApp-integration
+    // review found missing for add_liquidity_single_underlying / remove_liquidity_to_underlying.
+    let q = s
+        .router
+        .quote_add_liquidity_underlying(&pool, &(60 * SCALE));
+    let sy_in_add = underlying_to_shares_for_test(&s, 60 * SCALE);
+    assert_eq!(q.sy_in, sy_in_add, "quote_add_liquidity_underlying sy_in");
+    let (pt_used, sy_used, lp_minted) = s.router.add_liquidity_single_underlying(
+        &user,
+        &pool,
+        &(60 * SCALE),
+        &q.sy_in,
+        &0,
+        &u64::MAX,
+    );
+    assert_eq!(q.pt_used, pt_used, "quote_add_liquidity_underlying pt_used");
+    assert_eq!(q.sy_used, sy_used, "quote_add_liquidity_underlying sy_used");
+    assert_eq!(
+        q.lp_minted, lp_minted,
+        "quote_add_liquidity_underlying lp_minted"
+    );
+
+    let q = s.router.quote_lp_to_underlying(&pool, &lp_minted);
+    let underlying_out =
+        s.router
+            .remove_liquidity_to_underlying(&user, &pool, &lp_minted, &0, &u64::MAX);
+    assert_eq!(
+        q.underlying_out, underlying_out,
+        "quote_lp_to_underlying underlying_out"
+    );
 }
 
 /// `underlying_amount * RATE_SCALE / exchange_rate()`, matching `SYWrapper`'s own

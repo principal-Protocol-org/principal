@@ -6,9 +6,12 @@ Closes the one remaining gap in the underlying-denominated trading work (§4.1 o
 `add_liquidity_keep_yt` meant calling `MarketPool`'s own SY-denominated quote and separately
 calling `SYWrapper.exchange_rate()` to convert by hand. Five new, read-only `Router` functions
 compose the two calls into one answer, each in the same units the real call's caller actually
-pays or receives.
+pays or receives. (Two more were added in a later round, for `add_liquidity_single_underlying`
+and `remove_liquidity_to_underlying` — see the "Update" below §1's table; this section's title
+and the "five" in the prose above are historical, describing the original scope of this doc, not
+the current total.)
 
-## 1. The five functions
+## 1. The five functions (plus two more, below)
 
 | Function | Mirrors | Returns |
 |---|---|---|
@@ -17,6 +20,10 @@ pays or receives.
 | `quote_underlying_for_yt(pool, underlying_amount)` | `swap_underlying_for_yt` | `UnderlyingFlashMintQuote{yt_out, underlying_back, mint_fee_underlying, swap_fee_underlying}` |
 | `quote_yt_for_underlying(pool, yt_in)` | `swap_yt_for_underlying` | `UnderlyingQuote{amount_out, amount_in, fee_underlying}` |
 | `quote_add_liquidity_keep_yt(pool, underlying_amount)` | `add_liquidity_keep_yt` | `KeepYtQuote{mint_amount, pt_desired, sy_desired, lp_estimate, yt_out, mint_fee_underlying}` |
+
+**Update, a later dApp-integration review: two more quotes, same pattern.** `add_liquidity_single_underlying` and `remove_liquidity_to_underlying` (added for single-sided liquidity to/from the underlying, see `docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md` §4.1) had no quotes at all — flagged as a minor gap in the same review that found the bugs in `docs/TESTNET_DEPLOYMENT_EVIDENCE_2026_11_05.md` §11. `quote_add_liquidity_underlying(pool, underlying_amount)` → `SingleSidedUnderlyingQuote{sy_in, pt_used, sy_used, lp_minted}` and `quote_lp_to_underlying(pool, lp_in)` → `RemoveLiquidityUnderlyingQuote{pt_out, sy_out, swap_fee_shares, underlying_out}` (both named without the full function name's "single"/"remove"/"to" — the full names with a `quote_` prefix exceed Soroban's 32-byte function-name limit).
+
+`quote_lp_to_underlying` needed a new `MarketPool.quote_lp_exit` rather than reusing the existing `quote_pt_for_sy`: a first version priced the removal's PT leg against the reserves *before* `remove_liquidity` ran, but the real sequence (`remove_liquidity` then `swap_gained_pt_for_sy`) necessarily sells that PT *after* the removal has already shrunk the reserves, so the pre-removal price overstated the real payout by exactly that removal's own price impact — caught by the same exact-equality regression test style used throughout this doc, not by inspection. `quote_lp_exit` fixes this by constructing the post-removal `PoolState` explicitly and pricing the sale against *that*.
 
 Each is pure composition: a `MarketPool` quote this protocol already shipped and verified
 (`quote_sy_for_pt`, `quote_pt_for_sy`, `quote_yt_for_sy`, `quote_sy_for_yt`) plus one
@@ -122,12 +129,16 @@ whatever the new mechanism does. Flagged here so it isn't rediscovered the hard 
 
 `contracts/integration_tests/tests/liquidity_and_router.rs`:
 `router_quotes_for_underlying_denominated_flows_match_the_real_outcome_exactly` quotes each of the
-five flows, then runs the real call, and asserts exact equality on every comparable field
-(`amount_out`, `yt_out`, `underlying_back`, and now `lp_estimate` against `lp_minted`) — not an
-approximate/tolerance check. A separate assertion confirms `quote_add_liquidity_keep_yt`'s
-`mint_amount + sy_desired` accounts for the full wrapped amount. `cargo fmt --all -- --check`,
-`cargo clippy --workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace` all
-pass clean.
+seven flows, then runs the real call, and asserts exact equality on every comparable field
+(`amount_out`, `yt_out`, `underlying_back`, `lp_estimate` against `lp_minted`, and now
+`quote_add_liquidity_underlying`'s `sy_in`/`pt_used`/`sy_used`/`lp_minted` and
+`quote_lp_to_underlying`'s `underlying_out`) — not an approximate/tolerance check. A separate
+assertion confirms `quote_add_liquidity_keep_yt`'s `mint_amount + sy_desired` accounts for the
+full wrapped amount. This same test is what caught `quote_lp_to_underlying`'s first-draft bug
+(pricing the removal's PT leg against the wrong reserves, see §1's "Update") — the exact-equality
+assertion failed by a few thousand raw units until `MarketPool.quote_lp_exit` was fixed to price
+against the post-removal state. `cargo fmt --all -- --check`, `cargo clippy --workspace
+--all-targets --locked -- -D warnings`, and `cargo test --workspace` all pass clean.
 
 ## 4. What this does not cover (by choice)
 

@@ -918,6 +918,64 @@ impl MarketPoolContract {
         Self::zap_split(&env, &st, sy_in)
     }
 
+    /// Preview `add_liquidity_single_sy`'s own `(pt_used, sy_used, lp)` exactly -- found missing
+    /// in a dApp-integration review ("no quote for the two new USDY LP functions"), since no
+    /// quote for this zap existed anywhere in this protocol, not even for the plain SY-denominated
+    /// call this previews, let alone `Router.add_liquidity_single_underlying`, which composes it.
+    /// Replicates the real call's math read-only (same `zap_split`/`calc_buy_pt` bisection, same
+    /// rounding) rather than calling it, so this stays a view. Like every quote in this protocol,
+    /// exact only if reserves/`total_lp` do not move between this read and the real call.
+    pub fn quote_add_liquidity_single_sy(env: Env, sy_in: i128) -> (i128, i128, i128) {
+        if sy_in <= 0 {
+            panic_with_error!(&env, Error::ZeroAmount);
+        }
+        let st = Self::state(&env);
+        if st.total_lp == 0 {
+            panic_with_error!(&env, Error::InsufficientLiquidity);
+        }
+        let split = Self::zap_split(&env, &st, sy_in);
+        let q = Self::calc_buy_pt(&env, &st, split);
+        let pt_bought = q.amount_out;
+        let pt1 = st.pt_reserve - pt_bought;
+        let sy1 = st.sy_reserve + (split - q.fee_shares);
+        let remaining = sy_in - split;
+        let lp = (pt_bought * st.total_lp / pt1).min(remaining * st.total_lp / sy1);
+        if lp <= 0 {
+            panic_with_error!(&env, Error::ZeroAmount);
+        }
+        let pt_used = Self::ceil_div(lp * pt1, st.total_lp).min(pt_bought);
+        let sy_used = Self::ceil_div(lp * sy1, st.total_lp).min(remaining);
+        (pt_used, split + sy_used, lp)
+    }
+
+    /// Preview the full `Router.remove_liquidity_to_underlying` round trip's SY-denominated
+    /// legs: `remove_liquidity`'s own proportional split for `lp_in`, then selling the PT leg
+    /// *against the reserves as they stand after that removal* -- not the reserves before it.
+    /// Found needed building the dApp-integration-requested quote for that function: a first
+    /// version priced the PT sale with the plain `quote_pt_for_sy` against the pre-removal
+    /// reserves, which overstates the real payout by exactly this removal's own price impact
+    /// (the real multi-call sequence necessarily sells the PT *after* `remove_liquidity` has
+    /// already shrunk the reserves). Returns `(pt_out, sy_out, pt_sold_for_sy, swap_fee_shares)`;
+    /// the last two are `0` if `pt_out` rounds to `0` (tiny `lp_in`), matching
+    /// `swap_gained_pt_for_sy`'s own zero-gain tolerance rather than reverting `ZeroAmount`.
+    pub fn quote_lp_exit(env: Env, lp_in: i128) -> (i128, i128, i128, i128) {
+        let st = Self::state(&env);
+        Self::assert_seeded(&env, &st);
+        if lp_in <= 0 {
+            panic_with_error!(&env, Error::ZeroAmount);
+        }
+        let pt_out = lp_in * st.pt_reserve / st.total_lp;
+        let sy_out = lp_in * st.sy_reserve / st.total_lp;
+        if pt_out <= 0 {
+            return (pt_out, sy_out, 0, 0);
+        }
+        let mut st_after = st.clone();
+        st_after.pt_reserve = st.pt_reserve - pt_out;
+        st_after.sy_reserve = st.sy_reserve - sy_out;
+        let (q, _gross) = Self::calc_sell_pt(&env, &st_after, pt_out);
+        (pt_out, sy_out, q.amount_out, q.fee_shares)
+    }
+
     /// How much of `sy_shares` `Router.add_liquidity_keep_yt` should mint (rather than swap) so
     /// that the minted PT and the remaining SY land in this pool's current raw reserve ratio --
     /// the exact ratio `add_liquidity`'s own proportional deposit targets.

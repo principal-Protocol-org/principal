@@ -513,6 +513,11 @@ actually experiences — `quote_add_liquidity_keep_yt` is exactly the `Q=$(...)`
 | `quote_underlying_for_yt(pool, underlying_amount)` | `swap_underlying_for_yt` | `UnderlyingFlashMintQuote{yt_out, underlying_back, mint_fee_underlying, swap_fee_underlying}` |
 | `quote_yt_for_underlying(pool, yt_in)` | `swap_yt_for_underlying` | `UnderlyingQuote{amount_out, amount_in, fee_underlying}` |
 | `quote_add_liquidity_keep_yt(pool, underlying_amount)` | `add_liquidity_keep_yt`, end to end | `KeepYtQuote{mint_amount, pt_desired, sy_desired, lp_estimate, yt_out, mint_fee_underlying}` — `mint_amount`/`pt_desired`/`sy_desired` are exactly the values to pass as the real call's own arguments of the same names; `lp_estimate` previews `lp_minted` |
+| `quote_add_liquidity_underlying(pool, underlying_amount)` *(new)* | `add_liquidity_single_underlying`, end to end | `SingleSidedUnderlyingQuote{sy_in, pt_used, sy_used, lp_minted}` — `sy_in` is exactly the value to pass as the real call's own `sy_in` argument. Named without "single" in it — the full name with the `quote_` prefix exceeds Soroban's 32-byte function-name limit. |
+| `quote_lp_to_underlying(pool, lp_in)` *(new)* | `remove_liquidity_to_underlying`, end to end | `RemoveLiquidityUnderlyingQuote{pt_out, sy_out, swap_fee_shares, underlying_out}` — backed by a new `MarketPool.quote_lp_exit`, which prices the removal's PT leg against the reserves *after* the removal, not before it (a first version got this backwards and was caught by the exact-equality regression test, not inspection). |
+
+Both found missing in a dApp-integration review ("no quote for the two new USDY LP functions") —
+full story: `docs/ROUTER_QUOTES.md`'s "Update."
 
 Full design, the exactness argument for why these need no "quote vs. live execution" drift caveat
 of their own (beyond the usual seconds-to-maturity one every `MarketPool` quote already carries),
@@ -586,6 +591,8 @@ protocol/creator fee claims, or pricing that `Router` doesn't expose.
 | `quote_sy_for_yt(sy_in)` *(new, §5.4)* | `FlashMintQuote { yt_out, sy_back, mint_fee_shares, swap_fee_shares }` — flash-mint preview: buying YT with `sy_in` SY |
 | `zap_swap_amount(sy_in)` | how much of a single-sided SY deposit converts to PT (for `add_liquidity_single_sy`'s zap) |
 | `keep_yt_split(sy_shares)` *(new)* | how much of `sy_shares` `Router.add_liquidity_keep_yt` should *mint* instead — a different ratio than `zap_swap_amount` above, since this leg mints PT at the oracle rate rather than buying it at the curve price |
+| `quote_add_liquidity_single_sy(sy_in)` *(new)* | previews `add_liquidity_single_sy`'s own `(pt_used, sy_used, lp)` exactly |
+| `quote_lp_exit(lp_in)` *(new)* | previews `remove_liquidity`'s split for `lp_in` plus selling the PT leg, correctly priced against the reserves *after* the removal |
 | `reserves()` | `(pt_reserve, sy_reserve)` |
 | `pool_state()`, `maturity()`, `is_paused()` | self-explanatory |
 
@@ -929,6 +936,19 @@ all three: `single_sided_deposit_succeeds_for_a_caller_with_no_pt_asset_grant`,
 `flash_mint_yt_from_underlying_tolerates_a_budget_with_no_surplus`,
 `gained_sweeps_still_enforce_slippage_on_a_zero_gain`
 (`contracts/integration_tests/tests/liquidity_and_router.rs`). Full test/clippy/fmt gate clean.
+
+**Addendum: closing out the dApp team's reports.** The one remaining item from their feedback --
+"no quote for the two new USDY LP functions," listed as minor -- is now closed too:
+`quote_add_liquidity_underlying` and `quote_lp_to_underlying` (§4.2), backed by two new
+`MarketPool` views, `quote_add_liquidity_single_sy` and `quote_lp_exit` (§5.1). Building
+`quote_lp_exit` surfaced a real bug in its own first draft, caught by this doc's own
+exact-equality testing discipline rather than by inspection: pricing the removal's PT leg against
+the reserves *before* `remove_liquidity` ran, when the real sequence necessarily sells that PT
+*after* the removal has already shrunk them. Fixed by having `quote_lp_exit` construct the
+post-removal `PoolState` explicitly. Everything the dApp team identified across all three review
+rounds is now either fixed, explicitly deferred by their own prioritization (post-trade price
+impact in quotes, the PT/LP-as-collateral oracle), or settled by their own recommendation (no
+contract-level issuer/admin separation for Tranche 2 testnet).
 
 ---
 

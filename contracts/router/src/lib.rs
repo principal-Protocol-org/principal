@@ -180,6 +180,36 @@ pub struct UnderlyingFlashMintQuote {
     pub swap_fee_underlying: i128,
 }
 
+/// Preview for `add_liquidity_single_underlying`. `sy_in` is exactly the value to pass as the
+/// real call's own `sy_in` argument (quoted via `SYWrapper.exchange_rate()`, the same conversion
+/// every other `_for_underlying`/`_single_underlying` quote in this Router uses); `pt_used`,
+/// `sy_used` and `lp_minted` preview `MarketPool.add_liquidity_single_sy`'s own return exactly
+/// (`MarketPool.quote_add_liquidity_single_sy`). Found missing in a dApp-integration review ("no
+/// quote for the two new USDY LP functions").
+#[contracttype]
+#[derive(Clone)]
+pub struct SingleSidedUnderlyingQuote {
+    pub sy_in: i128,
+    pub pt_used: i128,
+    pub sy_used: i128,
+    pub lp_minted: i128,
+}
+
+/// Preview for `remove_liquidity_to_underlying`. `pt_out`/`sy_out` are `remove_liquidity`'s own
+/// proportional split for `lp_in`; `underlying_out` previews the whole round trip (selling the
+/// PT leg via `MarketPool.quote_lp_exit`, which correctly prices that sale against the reserves
+/// *after* the removal, not before it, then unwrapping everything via
+/// `SYWrapper.exchange_rate()`) -- the value to compare `min_underlying_out` against. Found
+/// missing in the same dApp-integration review as `SingleSidedUnderlyingQuote` above.
+#[contracttype]
+#[derive(Clone)]
+pub struct RemoveLiquidityUnderlyingQuote {
+    pub pt_out: i128,
+    pub sy_out: i128,
+    pub swap_fee_shares: i128,
+    pub underlying_out: i128,
+}
+
 /// Preview for `add_liquidity_keep_yt`. `mint_amount`, `pt_desired` and `sy_desired` are exactly
 /// what the real call's own arguments of the same names expect -- all three are now solved via
 /// `MarketPool.keep_yt_split` against the pool's raw reserve ratio (the ratio `add_liquidity`'s
@@ -247,6 +277,8 @@ pub trait PoolInterface {
         min_sy_out: i128,
     ) -> i128;
     fn zap_swap_amount(env: Env, sy_in: i128) -> i128;
+    fn quote_add_liquidity_single_sy(env: Env, sy_in: i128) -> (i128, i128, i128);
+    fn quote_lp_exit(env: Env, lp_in: i128) -> (i128, i128, i128, i128);
     fn keep_yt_split(env: Env, sy_shares: i128) -> i128;
     fn quote_sy_for_pt(env: Env, sy_in: i128) -> Quote;
     fn quote_pt_for_sy(env: Env, pt_in: i128) -> Quote;
@@ -943,6 +975,53 @@ impl RouterContract {
             amount_out: q.amount_out * rate / RATE_SCALE,
             amount_in: 0,
             fee_underlying: q.fee_shares * rate / RATE_SCALE,
+        }
+    }
+
+    /// Preview `add_liquidity_single_underlying`. Named `quote_add_liquidity_underlying`, not
+    /// the full function name with "single" in it too -- Soroban caps exported function names
+    /// at 32 bytes, and `quote_add_liquidity_single_underlying` is 37. No ambiguity results:
+    /// `add_liquidity_keep_yt`'s own quote already has its own distinct name.
+    pub fn quote_add_liquidity_underlying(
+        env: Env,
+        pool: Address,
+        underlying_amount: i128,
+    ) -> SingleSidedUnderlyingQuote {
+        let info = Self::info(&env, &pool);
+        let rate = SYClient::new(&env, &info.sy).exchange_rate();
+        let sy_in = underlying_amount * RATE_SCALE / rate;
+        let (pt_used, sy_used, lp_minted) =
+            PoolClient::new(&env, &pool).quote_add_liquidity_single_sy(&sy_in);
+        SingleSidedUnderlyingQuote {
+            sy_in,
+            pt_used,
+            sy_used,
+            lp_minted,
+        }
+    }
+
+    /// Preview `remove_liquidity_to_underlying`. Named `quote_lp_to_underlying` -- the full
+    /// function name with a `quote_` prefix is 36 bytes, over Soroban's 32-byte export-name cap.
+    /// Entirely delegated to `MarketPool.quote_lp_exit` (the proportional split and the PT-sale
+    /// pricing both live there, since the sale must be priced against the reserves *after* the
+    /// split, not before it -- a first version of this quote got that wrong, pricing the sale
+    /// against pre-removal reserves and overstating the real payout); this function only adds
+    /// the underlying-unit conversion.
+    pub fn quote_lp_to_underlying(
+        env: Env,
+        pool: Address,
+        lp_in: i128,
+    ) -> RemoveLiquidityUnderlyingQuote {
+        let info = Self::info(&env, &pool);
+        let (pt_out, sy_out, pt_sold_for_sy, swap_fee_shares) =
+            PoolClient::new(&env, &pool).quote_lp_exit(&lp_in);
+        let total_sy = sy_out + pt_sold_for_sy;
+        let rate = SYClient::new(&env, &info.sy).exchange_rate();
+        RemoveLiquidityUnderlyingQuote {
+            pt_out,
+            sy_out,
+            swap_fee_shares,
+            underlying_out: total_sy * rate / RATE_SCALE,
         }
     }
 
