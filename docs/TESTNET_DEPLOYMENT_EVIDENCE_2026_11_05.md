@@ -605,6 +605,6 @@ registered on earlier, now-superseded `Router` instances (a new instance exists 
 `Router`'s own wasm changed, since Soroban code can't be upgraded in place), cannot be listed
 alongside Market 6 without failing validation outright. The manifest now lists only Market 6; the
 earlier markets remain documented in §9–§11's own tables instead of carried in this file.
-`sourceCommit` is this repo's `HEAD` at write time, predating the fixes in this same round (not
-yet committed) — flagged in `docs/DEPLOYMENT.md`'s "Testnet manifest" section, to be refreshed
-once they are.
+`sourceCommit` was refreshed to `9509529693f630cb269ea1992249123642774ca9` once this round's
+fixes actually landed in a commit — `testnet.json` itself was necessarily written just before
+that, against the working tree.

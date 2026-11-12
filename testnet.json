@@ -6,7 +6,7 @@
   "horizonUrl": "https://horizon-testnet.stellar.org",
   "friendbotUrl": "https://friendbot.stellar.org",
   "generatedAt": "2026-11-12T01:00:00Z",
-  "sourceCommit": "2740713d41ba827b16f3beed39356b0dd0ad6e5c",
+  "sourceCommit": "9509529693f630cb269ea1992249123642774ca9",
   "shared": {
     "router": "CDHEI4MYTVIQ3WSA7LBGVQYV2USKO7DFYRPOFSQVCMYJ4DOHOYB7HXX3",
     "oracle": "CBKB5RWLSA4PEZF4KBOIVQVUN2DZWQLGDN6ZS5YW6Z34SYX7HNN77JMY",

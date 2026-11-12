@@ -472,10 +472,10 @@ just eyeballed. Two consequences of that cross-field rule, worth noting:
   mismatched `contracts.router` would fail `validateManifest` outright, not just look stale. Prior
   rounds' now-matured markets (on their own, now-superseded Router instances) are documented in
   `docs/TESTNET_DEPLOYMENT_EVIDENCE_2026_11_05.md` §9–§11 instead of carried in this file.
-- `sourceCommit` is the repo's `HEAD` at the time this file was generated
-  (`2740713d41ba827b16f3beed39356b0dd0ad6e5c`) — the contracts actually deployed include fixes
-  made *after* that commit, not yet committed when this file was written. Regenerate this field
-  (and re-verify the rest) once those fixes are committed.
+- `sourceCommit` is now `9509529693f630cb269ea1992249123642774ca9`, the commit that actually
+  contains the fixes deployed in `docs/TESTNET_DEPLOYMENT_EVIDENCE_2026_11_05.md` §11 (updated
+  after that commit landed, since `testnet.json` was necessarily written against the working tree
+  just before it).
 
 Regenerate or hand-edit this file after any redeployment; nothing currently automates keeping it
 in sync.
