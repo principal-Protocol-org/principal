@@ -313,19 +313,19 @@ not new code.
 | `swap_sy_for_pt` | `Router.swap_sy_for_pt(from, pool, sy_in, min_pt_out, deadline)` | `MarketPool.swap_sy_for_pt` |
 | `swap_underlying_for_pt` *(new, §4.1)* | `Router.swap_underlying_for_pt(from, pool, underlying_amount, min_pt_out, deadline)` | `SYWrapper.deposit` → `MarketPool.swap_sy_for_pt` |
 | `swap_pt_for_sy` | `Router.swap_pt_for_sy(from, pool, pt_in, min_sy_out, deadline)` | `MarketPool.swap_pt_for_sy` |
-| `swap_pt_for_underlying` *(new, §4.1)* | `Router.swap_pt_for_underlying(from, pool, pt_in, min_underlying_out, deadline)` | `MarketPool.swap_pt_for_sy` → `SYWrapper.withdraw_all` |
+| `swap_pt_for_underlying` *(new, §4.1)* | `Router.swap_pt_for_underlying(from, pool, pt_in, min_underlying_out, deadline)` | `MarketPool.swap_pt_for_sy` → `SYWrapper.withdraw_gained` |
 | `swap_sy_for_yt` (flash-mint, capital up front) | `Router.swap_sy_for_yt(from, pool, sy_in, min_yt_out, max_net_cost, deadline)` | `PrincipalManager.mint` → `MarketPool.swap_pt_for_sy` |
-| `swap_underlying_for_yt` *(new, §4.1)* | `Router.swap_underlying_for_yt(from, pool, underlying_amount, sy_in, min_yt_out, max_net_cost, deadline)` | `SYWrapper.deposit` → `PrincipalManager.mint` → `MarketPool.swap_pt_for_sy` → `SYWrapper.withdraw_all` |
+| `swap_underlying_for_yt` *(new, §4.1)* | `Router.swap_underlying_for_yt(from, pool, underlying_amount, sy_in, min_yt_out, max_net_cost, deadline)` | `SYWrapper.deposit` → `PrincipalManager.mint` → `MarketPool.swap_pt_for_sy` → `SYWrapper.withdraw_gained` |
 | `flash_mint_yt` (**true flash-mint**) *(new, §4.3)* | `Router.flash_mint_yt(from, pool, sy_in, min_yt_out, max_net_cost, deadline)` | `MarketPool.flash_mint_yt` |
 | `flash_mint_yt_from_underlying` *(new, §4.3)* | `Router.flash_mint_yt_from_underlying(from, pool, sy_in, min_yt_out, max_net_cost, underlying_budget, min_underlying_back, deadline)` | `SYWrapper.deposit` → `MarketPool.flash_mint_yt` → `SYWrapper.withdraw_gained` |
 | `swap_yt_for_sy` (flash-redeem) | `Router.swap_yt_for_sy(from, pool, yt_in, min_sy_out, deadline)` | `MarketPool.swap_yt_for_sy` |
-| `swap_yt_for_underlying` *(new, §4.1)* | `Router.swap_yt_for_underlying(from, pool, yt_in, min_underlying_out, deadline)` | `MarketPool.swap_yt_for_sy` → `SYWrapper.withdraw_all` |
+| `swap_yt_for_underlying` *(new, §4.1)* | `Router.swap_yt_for_underlying(from, pool, yt_in, min_underlying_out, deadline)` | `MarketPool.swap_yt_for_sy` → `SYWrapper.withdraw_gained` |
 | `add_liquidity` | `Router.add_liquidity(from, pool, pt_in, sy_in, min_lp_out, deadline)` | `MarketPool.add_liquidity` |
 | `add_liquidity_single_sy` | `Router.add_liquidity_single_sy(from, pool, sy_in, min_lp_out, deadline)` | `MarketPool.add_liquidity_single_sy` |
 | `add_liquidity_single_underlying` *(new)* | `Router.add_liquidity_single_underlying(from, pool, underlying_amount, sy_in, min_lp_out, deadline)` | `SYWrapper.deposit` → `MarketPool.add_liquidity_single_sy` |
 | `add_liquidity_keep_yt` *(new, §4.1)* | `Router.add_liquidity_keep_yt(from, pool, underlying_amount, mint_amount, pt_desired, sy_desired, min_lp_out, deadline)` | `SYWrapper.deposit` → `PrincipalManager.mint` → `MarketPool.add_liquidity` |
 | `remove_liquidity` | `Router.remove_liquidity(from, pool, lp_in, min_pt_out, min_sy_out, deadline)` | `MarketPool.remove_liquidity` |
-| `remove_liquidity_to_underlying` *(new)* | `Router.remove_liquidity_to_underlying(from, pool, lp_in, min_underlying_out, deadline)` | `MarketPool.remove_liquidity` → `MarketPool.swap_all_pt_for_sy` → `SYWrapper.withdraw_all` |
+| `remove_liquidity_to_underlying` *(new)* | `Router.remove_liquidity_to_underlying(from, pool, lp_in, min_underlying_out, deadline)` | `MarketPool.remove_liquidity` → `MarketPool.swap_gained_pt_for_sy` → `SYWrapper.withdraw_gained` |
 | `recombine` | `Router.recombine(from, pool, amount, min_sy_out, deadline)` | `PrincipalManager.recombine` |
 | `claim_yield` | `Router.claim_yield(from, pool)` | `PrincipalManager.claim_yield` |
 | `redeem_at_maturity` | `Router.redeem_at_maturity(from, pool, pt_amount, yt_amount)` | `PrincipalManager.redeem` |
@@ -410,9 +410,55 @@ further issues, all fixed in the same pass:
 Two gaps also closed in the same pass, reported alongside the above:
 `add_liquidity_single_underlying` (wrap, then `add_liquidity_single_sy`, one signature — before
 this, single-sided LP from the underlying needed a separate `deposit` call first) and
-`remove_liquidity_to_underlying` (`remove_liquidity`, then sell the PT leg via a new
-`MarketPool.swap_all_pt_for_sy`, then `withdraw_all` — one signature in place of 2-3). See the
-updated function table and `docs/API_REFERENCE.md`'s Router section for both signatures.
+`remove_liquidity_to_underlying` (`remove_liquidity`, then sell the PT leg, then unwrap — one
+signature in place of 2-3; see the "Update" below for how the sell/unwrap legs actually work
+today). See the updated function table and `docs/API_REFERENCE.md`'s Router section for both
+signatures.
+
+**Update, a third dApp-integration review round, after the team studied this round's commits.**
+Two real bugs, both found by the dApp team reading the actual contract code rather than taking an
+earlier "can't reproduce" answer at face value, plus one real gap in `withdraw_gained`'s adoption:
+
+1. **`add_liquidity_single_sy`'s PT refund reverted `PermissionDenied` for any caller lacking
+   PTToken's per-asset grant** — the real cause behind the "1 in 12" failure report two rounds
+   back. The earlier "can't reproduce it, the refund looks unconditional" answer was simply wrong:
+   the refund *is* conditional (`if pt_refund > 0`), and `PTToken.transfer` checks the
+   *recipient's* per-asset grant even for a single raw unit — a caller using this "LP only" zap
+   specifically to avoid ever holding PT directly has no reason to have requested one. Fixed by
+   **not** transferring the PT dust at all: it is folded back into the pool's own reserve instead
+   (`pt1 + pt_used + pt_refund`, algebraically `pt_reserve - pt_used` — exactly as if only
+   `pt_used` of the "bought" PT ever left the reserve ledger). The SY refund is untouched by this
+   fix: SY carries no per-asset grant, only an account-level one, so it never had this risk. The
+   same fix automatically covers `add_liquidity_single_underlying`, which composes this function.
+2. **`withdraw_gained` existed but was only wired into one Router flow** (`flash_mint_yt_from_underlying`)
+   while `swap_pt_for_underlying`, `swap_yt_for_underlying`, `swap_underlying_for_yt` and
+   `remove_liquidity_to_underlying` still used the full-sweep primitives
+   (`withdraw_all`/`swap_all_pt_for_sy`) behind a zero-pre-existing-balance precondition. The dApp
+   team found this failed routinely in practice: the "LP only" zap and Keep YT deposits can
+   themselves leave small PT/SY remainders in a wallet, and simply having bought PT on some
+   earlier, unrelated trade is enough to be "holding PT" by definition — none of which has
+   anything to do with the balance a composed call like `swap_pt_for_underlying` actually needs to
+   unwrap. All four functions now read a `baseline` before their mutating step and sweep only the
+   gain on top of it (`withdraw_gained`, and a new PT equivalent, `MarketPool.swap_gained_pt_for_sy`),
+   so none of them need the zero-pre-existing-balance precondition anymore — Router errors 9/10
+   (`PreexistingSyBalance`/`PreexistingPtBalance`) are gone (never returned, removed from the enum,
+   left as a gap in the numbering).
+3. **New defect found in `withdraw_gained` itself while fixing the above**:
+   `flash_mint_yt_from_underlying` reverted `ZeroAmount` whenever the wrap produced no surplus over
+   the real net cost — including the common case of `underlying_budget = 0` (the whole cost
+   covered by SY the buyer already held) — forcing a caller to always over-budget by a margin as
+   a workaround. Fixed at the source: `withdraw_gained`/`swap_gained_pt_for_sy` now tolerate a
+   zero (or negative) gain gracefully, returning `0`, but still enforce a nonzero `min_*_out` as a
+   `SlippageExceeded` revert — a zero gain is only silently fine if the caller did not actually
+   require getting something back.
+
+Not actioned, by the reporter's own framing: no deeper contract-level separation between "can
+authorize trustlines" and "can create a market" (both gated on the real issuer by design) is
+planned for Tranche 2 testnet — scoping what the faucet's own code calls is enough for now, with
+the contract-level separation flagged as a mainnet consideration in `docs/DEPLOYMENT.md`'s "Key
+roles" section. The previous round's `testnet.json` was also reported unusable (wrong field names,
+missing wasm hashes, both markets already matured) — see `docs/DEPLOYMENT.md`'s "Testnet
+manifest" section for the current status.
 
 Live evidence for all five functions plus the `add_liquidity_single_sy` fix, each confirmed on a
 fresh Testnet market created purely to reproduce and then fix these exact failures (predates the
@@ -493,10 +539,12 @@ notional, since that would defeat the point — so `underlying_budget` only need
 every other `_for_underlying` caller already does. Any surplus is unwrapped back to underlying
 before the call returns (`SYWrapper.withdraw_gained`, guarded by `min_underlying_back`) — **not**
 left as SY. An earlier version left it as SY in the caller's own balance; a dApp-integration
-review found this cost an extra signature before any further same-transaction call using
-`withdraw_all` (every other `_for_underlying` flow reverts `PreexistingSyBalance` against exactly
-that leftover surplus). `withdraw_gained` has no zero-pre-existing-SY precondition either way — a
-caller who already holds unrelated SY does not need to clear it first.
+review found this cost an extra signature before any further same-transaction call that, at the
+time, still used the full-sweep `withdraw_all` (every other `_for_underlying` flow now also uses
+`withdraw_gained` instead — see §4.1's third "Update" — so this is no longer an issue regardless).
+`withdraw_gained` has no zero-pre-existing-SY precondition either way — a caller who already holds
+unrelated SY does not need to clear it first — and, as of the third dApp-integration review round,
+also tolerates a zero (or negative) gain gracefully rather than reverting `ZeroAmount`.
 
 **Two real bugs found live while building this, both in the capital-advance mechanism itself, not
 the curve:**
@@ -567,7 +615,8 @@ quote_pt_for_sy(20000000): {"amount_in":"0","amount_out":"19047442","fee_shares"
 | `swap_sy_for_pt` | `(from, to, sy_in, min_pt_out) -> i128` |
 | `swap_pt_for_sy` | `(from, to, pt_in, min_sy_out) -> i128` |
 | `swap_yt_for_sy` | `(from, to, yt_in, min_sy_out) -> i128` (flash-redeem: recombines with the pool's own PT) |
-| `swap_all_pt_for_sy` *(new)* | `(from, to, min_sy_out) -> i128` — like `swap_pt_for_sy`, but sells `from`'s **entire** PT balance, read at execution time instead of taken as an argument (used by `Router.remove_liquidity_to_underlying`) |
+| `swap_all_pt_for_sy` | `(from, to, min_sy_out) -> i128` — like `swap_pt_for_sy`, but sells `from`'s **entire** PT balance, read at execution time instead of taken as an argument. No longer used by any Router flow (see `swap_gained_pt_for_sy`), kept as a standalone primitive. |
+| `swap_gained_pt_for_sy` *(new)* | `(from, to, baseline, min_sy_out) -> i128` — like `swap_all_pt_for_sy`, but sells only the PT gained *since* `baseline`, so pre-existing, unrelated PT survives untouched. Used by `Router.remove_liquidity_to_underlying`. Tolerates a zero (or negative) gain, returning `0`, unless `min_sy_out > 0` (then `SlippageExceeded`). |
 | `add_liquidity` | `(from, pt_desired, sy_desired, min_lp_out) -> (pt_used, sy_used, lp_minted)` |
 | `add_liquidity_single_sy` | `(from, sy_in, min_lp_out) -> (pt_used, sy_used, lp_minted)` |
 | `remove_liquidity` | `(from, to, lp_in, min_pt_out, min_sy_out) -> (pt_out, sy_out)` |
@@ -744,7 +793,7 @@ Every contract's `#[contracterror]` enum, read from source. A dapp's error decod
 | MarketConfig | 1–7 | AlreadyInitialized, NotInitialized, Unauthorized, IssuerMismatch, FeeTooHigh, InvalidShare, NotApplicable |
 | PrincipalManager | 1–15 | AlreadyInitialized, Unauthorized, NotInitialized, ZeroAmount, NotMature, AlreadyMature, OracleStale, (8 unused), Paused, PermissionDenied, NotAuthorizedOnSac, IssuerMismatch, TopologyMismatch, NothingToClaim, ArithmeticOverflow |
 | MarketPool | 1–21 | AlreadyInitialized, NotInitialized, Unauthorized, IssuerMismatch, Paused, Expired, ZeroAmount, SlippageExceeded, InsufficientLiquidity, InsufficientLpBalance, PermissionDenied, NotAuthorizedOnSac, OracleStale, MaturityTooFar, InvalidInitialRatio, MathError, RecoveryEscrowAlreadySet, NotRecoveryEscrow, NothingToClaim, InvalidStretch, MinimumLiquidity |
-| Router | 1–10 | AlreadyInitialized, NotInitialized, Unauthorized, MarketNotRegistered, DeadlineExpired, SlippageExceeded, TopologyMismatch, AlreadyRegistered, PreexistingSyBalance (§4.1: `swap_pt_for_underlying`/`swap_yt_for_underlying`/`swap_underlying_for_yt`/`remove_liquidity_to_underlying` require a zero SY balance beforehand), PreexistingPtBalance (`remove_liquidity_to_underlying` also requires a zero PT balance beforehand) |
+| Router | 1–8 | AlreadyInitialized, NotInitialized, Unauthorized, MarketNotRegistered, DeadlineExpired, SlippageExceeded, TopologyMismatch, AlreadyRegistered. Codes 9/10 (`PreexistingSyBalance`/`PreexistingPtBalance`) existed briefly and are now unused/removed: a later dApp-integration review found the functions that returned them (`swap_pt_for_underlying`/`swap_yt_for_underlying`/`swap_underlying_for_yt`/`remove_liquidity_to_underlying`) failed routinely for any caller who simply already held PT or SY, and switched them to a baseline/gain-based sweep (`withdraw_gained`/`swap_gained_pt_for_sy`) that no longer needs a zero-pre-existing-balance precondition at all. |
 | RecoveryEscrow | 1–11 | AlreadyInitialized, NotInitialized, Unauthorized, TargetStillAuthorized, ZeroAmount, PositionUnderlyingMismatch, BatchTooLarge, RecordNotFound, AlreadyFinalized, NothingToSeize, NothingToFinalize |
 
 Two codes an integrator will hit often, confirmed live in this guide: `MarketPool` error 6
@@ -858,12 +907,28 @@ and §5.2 above: `add_liquidity_keep_yt`'s and `swap_underlying_for_yt`'s remain
 `flash_mint_yt_from_underlying` stranding its surplus as SY; and no single-signature path for
 single-sided-underlying liquidity add/remove. One claim (a refund-logic failure in
 `add_liquidity_single_sy`, "1 of 12" in their testing) could not be reproduced by reading the
-current code — its refund path looked correct and unconditional — so it was left as reported but
-unconfirmed rather than fixed on faith; a second report with the exact failing call and inputs
-would be needed to pin it down. `cargo fmt --all -- --check`, `cargo clippy --workspace
---all-targets --locked -- -D warnings`, and `cargo test --workspace` all pass clean, and the new
-drift fixes were verified live, not just via the Rust test suite — see
+current code at the time — **this turned out to be a mistake on this project's side, corrected by
+the dApp team in the next round below, not a dead end**: the refund genuinely is conditional, and
+that condition is exactly where the bug lives. `cargo fmt --all -- --check`, `cargo clippy
+--workspace --all-targets --locked -- -D warnings`, and `cargo test --workspace` all pass clean,
+and the new drift fixes were verified live, not just via the Rust test suite — see
 `docs/TESTNET_DEPLOYMENT_EVIDENCE_2026_11_05.md` §10.
+
+**Addendum: a third dApp-integration review round**, after the dApp team read the actual contract
+code (not just the test suite) and corrected this project's own prior analysis. Full narrative:
+§4.1's "Update, a third dApp-integration review round" above. In short: `add_liquidity_single_sy`'s
+PT refund reverted `PermissionDenied` for any caller lacking PTToken's per-asset grant (the real
+mechanism behind the "1 in 12" report), fixed by not transferring the dust at all;
+`withdraw_gained` existed but was wired into only one of five flows that needed it, so the other
+four still rejected any caller holding pre-existing PT/SY, fixed by applying it everywhere plus a
+new PT equivalent (`MarketPool.swap_gained_pt_for_sy`); and both gain-sweep primitives now
+tolerate a zero/negative gain gracefully instead of reverting `ZeroAmount`, closing a defect
+`flash_mint_yt_from_underlying` had whenever its budget left no surplus. New regression tests for
+all three: `single_sided_deposit_succeeds_for_a_caller_with_no_pt_asset_grant`,
+`underlying_denominated_router_flows_tolerate_pre_existing_pt_and_sy`,
+`flash_mint_yt_from_underlying_tolerates_a_budget_with_no_surplus`,
+`gained_sweeps_still_enforce_slippage_on_a_zero_gain`
+(`contracts/integration_tests/tests/liquidity_and_router.rs`). Full test/clippy/fmt gate clean.
 
 ---
 

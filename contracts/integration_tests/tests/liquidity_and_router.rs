@@ -9,6 +9,7 @@ use soroban_sdk::{
 use principal_integration_tests::stack::*;
 use principal_market_pool::{Error as PoolError, MarketPoolContract, MarketPoolContractClient};
 use principal_router::Error as RouterError;
+use principal_sy_wrapper::Error as SyError;
 
 fn seeded(kind: UnderlyingKind) -> (Stack<'static>, Address, i128) {
     let s = deploy_kind(Config::free(T0 + 180 * DAY), kind);
@@ -162,21 +163,25 @@ fn single_sided_deposit_swaps_just_enough_and_mints_lp_for_nearly_all_of_the_sy(
     assert!(split > 40 * SCALE && split < 55 * SCALE, "split {split}");
 
     let (pt_res0, sy_res0) = s.pool.reserves();
-    let (pt_used, sy_used, lp) = s.pool.add_liquidity_single_sy(&user, &(100 * SCALE), &0);
+    let (_pt_used, sy_used, lp) = s.pool.add_liquidity_single_sy(&user, &(100 * SCALE), &0);
     assert!(lp > 0);
     // Nearly all the SY was used; whatever is left is rounding-sized and was returned.
     let left = 100 * SCALE - sy_used;
     assert_eq!(s.sy.balance_of(&user), left);
     assert!(left < SCALE / 100, "leftover SY {left}");
-    // Any PT left over is rounding-sized and was refunded, not stranded in the pool.
-    assert!(
-        s.pt.balance(&user) < SCALE / 100,
-        "PT refund {}",
-        s.pt.balance(&user)
-    );
-    // The pool grew and the ratio stayed within a hair of the original.
+    // Unlike the SY side, any PT the zap "bought" beyond what `lp` needed is never transferred to
+    // the user at all -- see add_liquidity_single_sy's own doc comment: a dApp-integration review
+    // found the transfer reverted PermissionDenied for any caller lacking PTToken's per-asset
+    // grant, since a caller using this "LP only" zap has no reason to have requested one. It stays
+    // in the pool's own reserve instead, so the user's PT balance is exactly 0, not just small.
+    assert_eq!(s.pt.balance(&user), 0);
+    // The pool's PT reserve is unchanged -- the "bought" PT beyond `pt_used` never left the
+    // reserve ledger at all -- while the SY reserve grew by the deposit. The ratio moves by
+    // exactly the same amount either way: whether the leftover PT is given to the user or kept in
+    // the pool, it was never credited against this `lp` mint, so the ratio math is identical.
     let (pt_res1, sy_res1) = s.pool.reserves();
-    assert!(pt_res1 <= pt_res0 + pt_used && sy_res1 > sy_res0);
+    assert_eq!(pt_res1, pt_res0);
+    assert!(sy_res1 > sy_res0);
     let r0 = sy_res0 as f64 / pt_res0 as f64;
     let r1 = sy_res1 as f64 / pt_res1 as f64;
     // Net effect of a single-sided deposit: the pool gained ~100 SY and the PT it "bought" went
@@ -192,6 +197,28 @@ fn single_sided_deposit_swaps_just_enough_and_mints_lp_for_nearly_all_of_the_sy(
         s.pool.try_add_liquidity_single_sy(&user, &0, &0).err(),
         err_code(PoolError::ZeroAmount as u32)
     );
+}
+
+/// Regression for the real bug a dApp-integration review found underneath the "1 in 12" failure
+/// report: `add_liquidity_single_sy` used to transfer the zap's leftover PT dust to the caller,
+/// which reverts `PermissionDenied` for anyone lacking PTToken's per-asset grant -- exactly a
+/// caller using this "LP only" zap specifically to avoid ever holding PT directly. This user is
+/// deliberately granted account-level standing (needed to touch SY/LP at all) but **not**
+/// PTToken's per-asset grant, reproducing that exact gap. Before the fix this reverted; now it
+/// must succeed, with the dust absorbed into the pool's reserve rather than transferred.
+#[test]
+fn single_sided_deposit_succeeds_for_a_caller_with_no_pt_asset_grant() {
+    let (s, _, _) = seeded(UnderlyingKind::Sac);
+    let user = Address::generate(&s.env);
+    s.perm.grant_account(&s.admin, &user);
+    s.authorize(&user);
+    // Deliberately no `s.perm.grant_asset(&s.admin, &user, &s.pt.address)`.
+    s.mint_underlying(&user, 100 * SCALE);
+    let shares = s.sy.deposit(&user, &(100 * SCALE), &0);
+
+    let (_, _, lp) = s.pool.add_liquidity_single_sy(&user, &shares, &0);
+    assert!(lp > 0);
+    assert_eq!(s.pt.balance(&user), 0);
 }
 
 /// Regression for the fix that takes `sy_in` from the caller up front (a plain, time-independent
@@ -727,6 +754,172 @@ fn router_underlying_denominated_flows_and_keep_yt_work_end_to_end() {
             )
             .err(),
         err_code(PoolError::SlippageExceeded as u32)
+    );
+}
+
+/// Regression for a dApp-integration review's core finding: `swap_pt_for_underlying`,
+/// `swap_yt_for_underlying`, `swap_underlying_for_yt` and `remove_liquidity_to_underlying` all
+/// used to require `from` to hold **zero** pre-existing PT/SY (sweeping the *entire* balance via
+/// `withdraw_all`/`swap_all_pt_for_sy`), which failed routinely: the "LP only" zap and Keep YT
+/// deposits can themselves leave small PT/SY remainders, and simply having bought PT on some
+/// earlier, unrelated trade is enough to be "holding PT" by definition. All four now sweep only
+/// the gain *since a baseline* read at the start of each call (`withdraw_gained`/
+/// `swap_gained_pt_for_sy`), so pre-existing, unrelated PT/SY must survive every one of them
+/// untouched.
+#[test]
+fn underlying_denominated_router_flows_tolerate_pre_existing_pt_and_sy() {
+    let (s, _, _) = seeded(UnderlyingKind::Sac);
+    let pool = s.pool.address.clone();
+    let user = s.new_user();
+    s.mint_underlying(&user, 1_000 * SCALE);
+
+    // Unrelated pre-existing PT and SY, from trades that have nothing to do with what follows.
+    let stray_pt = s
+        .router
+        .swap_underlying_for_pt(&user, &pool, &(20 * SCALE), &0, &u64::MAX);
+    assert!(stray_pt > 0);
+    let stray_sy = deposit_sy(&s, &user, 15 * SCALE);
+    assert!(stray_sy > 0);
+    assert_eq!(s.pt.balance(&user), stray_pt);
+    assert_eq!(s.sy.balance_of(&user), stray_sy);
+
+    // swap_pt_for_underlying on a *second* batch of PT: the stray PT/SY above must survive.
+    let pt_out = s
+        .router
+        .swap_underlying_for_pt(&user, &pool, &(30 * SCALE), &0, &u64::MAX);
+    s.router
+        .swap_pt_for_underlying(&user, &pool, &pt_out, &0, &u64::MAX);
+    assert_eq!(s.pt.balance(&user), stray_pt, "stray PT survived the sell");
+    assert_eq!(
+        s.sy.balance_of(&user),
+        stray_sy,
+        "stray SY survived the sell"
+    );
+
+    // swap_underlying_for_yt then swap_yt_for_underlying: same check, on top of the same stray
+    // balances (not reset between steps).
+    let sy_in_yt = underlying_to_shares_for_test(&s, 25 * SCALE);
+    let (yt_out, _) = s.router.swap_underlying_for_yt(
+        &user,
+        &pool,
+        &(25 * SCALE),
+        &sy_in_yt,
+        &0,
+        &i128::MAX,
+        &u64::MAX,
+    );
+    assert!(yt_out > 0);
+    assert_eq!(s.pt.balance(&user), stray_pt);
+    assert_eq!(s.sy.balance_of(&user), stray_sy);
+    s.router
+        .swap_yt_for_underlying(&user, &pool, &yt_out, &0, &u64::MAX);
+    assert_eq!(s.pt.balance(&user), stray_pt);
+    assert_eq!(s.sy.balance_of(&user), stray_sy);
+
+    // remove_liquidity_to_underlying: the LP position is created fresh, then removed in full,
+    // with the stray PT and SY still sitting untouched in the user's wallet throughout.
+    // `add_liquidity_single_underlying`'s own zap can add a little more SY dust on top of
+    // `stray_sy` (the same small rounding refund `single_sided_deposit_...` above already
+    // documents) -- legitimate, not a regression -- so the PT check still pins down the exact
+    // original `stray_pt` (PT dust is never refunded at all anymore, see that fix above), while
+    // the SY baseline for the *next* assertion is whatever the balance legitimately is now.
+    let sy_in_add = underlying_to_shares_for_test(&s, 40 * SCALE);
+    let (_, _, lp) = s.router.add_liquidity_single_underlying(
+        &user,
+        &pool,
+        &(40 * SCALE),
+        &sy_in_add,
+        &0,
+        &u64::MAX,
+    );
+    assert!(lp > 0);
+    assert_eq!(s.pt.balance(&user), stray_pt);
+    let sy_before_remove = s.sy.balance_of(&user);
+    assert!(
+        sy_before_remove >= stray_sy,
+        "stray SY survived the zap: {sy_before_remove} vs {stray_sy}"
+    );
+
+    let underlying_out = s
+        .router
+        .remove_liquidity_to_underlying(&user, &pool, &lp, &0, &u64::MAX);
+    assert!(underlying_out > 0);
+    assert_eq!(s.pool.lp_balance(&user), 0);
+    assert_eq!(
+        s.pt.balance(&user),
+        stray_pt,
+        "stray PT survived remove_liquidity_to_underlying"
+    );
+    assert_eq!(
+        s.sy.balance_of(&user),
+        sy_before_remove,
+        "the SY balance held before remove_liquidity_to_underlying survived it untouched"
+    );
+}
+
+/// Regression for a dApp-reported defect: `flash_mint_yt_from_underlying` used to revert
+/// `ZeroAmount` whenever the wrap produced no surplus over the real net cost -- including
+/// `underlying_budget = 0` (the whole cost covered by SY the buyer already held), forcing a
+/// caller to always over-budget by a margin. `withdraw_gained` now tolerates a zero (or negative,
+/// meaning this call spent into the pre-existing balance rather than growing it) gain, returning
+/// `0` for `underlying_back` instead of reverting. `max_net_cost` is given a generous margin here
+/// deliberately -- it is a separate, real economic slippage guard a caller chooses, not part of
+/// what this fix changes; this test isolates the budget/surplus defect from that guard.
+#[test]
+fn flash_mint_yt_from_underlying_tolerates_a_budget_with_no_surplus() {
+    let (s, _, _) = seeded(UnderlyingKind::Sac);
+    let pool = s.pool.address.clone();
+    let sy_in = 100 * SCALE;
+
+    // Budget of 0: the whole net cost is covered by SY the buyer already held, generously padded
+    // so the exact cost (whatever it turns out to be) is irrecoverably negative against it --
+    // i.e. this call can only ever spend into the pre-existing balance, never grow it.
+    let buyer = s.new_user();
+    let padded = deposit_sy(&s, &buyer, 10 * sy_in);
+    let (yt_out, charged, underlying_back) = s.router.flash_mint_yt_from_underlying(
+        &buyer,
+        &pool,
+        &sy_in,
+        &0,
+        &sy_in,
+        &0,
+        &0,
+        &u64::MAX,
+    );
+    assert!(yt_out > 0);
+    assert!(charged > 0 && charged < sy_in);
+    assert_eq!(underlying_back, 0);
+    assert_eq!(s.sy.balance_of(&buyer), padded - charged);
+}
+
+/// A zero gain is only silently fine when the caller didn't actually require getting something
+/// back: `withdraw_gained`/`swap_gained_pt_for_sy` must still enforce a nonzero `min_*_out` as a
+/// `SlippageExceeded` revert rather than returning 0.
+#[test]
+fn gained_sweeps_still_enforce_slippage_on_a_zero_gain() {
+    let (s, _, _) = seeded(UnderlyingKind::Sac);
+    let user = s.new_user();
+    s.mint_underlying(&user, 10 * SCALE);
+    let shares = s.sy.deposit(&user, &(10 * SCALE), &0);
+    let baseline = shares; // nothing gained since this exact balance
+    assert_eq!(
+        s.sy.try_withdraw_gained(&user, &baseline, &user, &1).err(),
+        err_code(SyError::SlippageExceeded as u32)
+    );
+    // With no minimum required, the same zero-gain call is fine and returns 0.
+    assert_eq!(s.sy.withdraw_gained(&user, &baseline, &user, &0), 0);
+
+    let pt_out = s.pool.swap_sy_for_pt(&user, &user, &shares, &0);
+    let pt_baseline = pt_out; // nothing gained since this exact balance
+    assert_eq!(
+        s.pool
+            .try_swap_gained_pt_for_sy(&user, &user, &pt_baseline, &1)
+            .err(),
+        err_code(PoolError::SlippageExceeded as u32)
+    );
+    assert_eq!(
+        s.pool.swap_gained_pt_for_sy(&user, &user, &pt_baseline, &0),
+        0
     );
 }
 

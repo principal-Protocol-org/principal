@@ -453,12 +453,32 @@ stellar contract invoke --id risk_control \
 ## Testnet manifest for `principal-dApp`
 
 [`testnet.json`](../testnet.json) (repo root) collects the current Testnet addresses and wasm
-hashes a dApp integration needs: the shared infrastructure, the wasm hashes for whichever
-contracts most recently changed, and every live market's full address set. It is this session's
-best-effort inference of what `principal-dApp`'s `ContractMap`/`markets.ts` types expect (see
-`docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md` §3.5) — **not** a schema confirmed with the dApp
-team; the file's own `_note` fields flag exactly which parts are a guess. Regenerate or hand-edit
-it after any redeployment; nothing currently automates keeping it in sync.
+hashes a dApp integration needs: the shared infrastructure, all 12 contracts' wasm hashes, the
+Router's live function list, the test asset, and every current market's full address set.
+
+**Status as of 2026-11-12: schema confirmed, no longer a guess.** It now conforms to
+`principal-dApp`'s real `manifestSchema` (`schemaVersion: 2`), fetched directly from
+`principal-Protocol-org/dapp`'s `testnet` branch at `lib/protocol/manifest.ts` (that repo's own
+`config/manifests/testnet.json` was read too, as a shape reference). Checked against the schema's
+actual regexes and `validateManifest`'s cross-field rules (every market's `contracts.router`/
+`contracts.oracle` must equal `shared.router`/`shared.oracle`; no duplicate `marketId`; etc.), not
+just eyeballed. Two consequences of that cross-field rule, worth noting:
+
+- The file lists only the one market currently registered on the current shared `Router`
+  instance (`principal-testnet-2026-11-12-m6`, ~100 days to maturity — comfortably past the
+  dApp team's "3+ months" ask). The schema has no concept of a market belonging to a *different*,
+  now-superseded shared `Router` instance (a new `Router` instance is deployed every time its own
+  wasm changes, since Soroban code can't be upgraded in place) — including one here with a
+  mismatched `contracts.router` would fail `validateManifest` outright, not just look stale. Prior
+  rounds' now-matured markets (on their own, now-superseded Router instances) are documented in
+  `docs/TESTNET_DEPLOYMENT_EVIDENCE_2026_11_05.md` §9–§11 instead of carried in this file.
+- `sourceCommit` is the repo's `HEAD` at the time this file was generated
+  (`2740713d41ba827b16f3beed39356b0dd0ad6e5c`) — the contracts actually deployed include fixes
+  made *after* that commit, not yet committed when this file was written. Regenerate this field
+  (and re-verify the rest) once those fixes are committed.
+
+Regenerate or hand-edit this file after any redeployment; nothing currently automates keeping it
+in sync.
 
 ## Mainnet
 

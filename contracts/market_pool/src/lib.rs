@@ -710,22 +710,27 @@ impl MarketPoolContract {
         let pt_used = Self::ceil_div(lp * pt1, st.total_lp).min(pt_bought);
         let sy_used = Self::ceil_div(lp * sy1, st.total_lp).min(remaining);
 
-        Self::set_reserves(&env, pt1 + pt_used, sy1 + sy_used);
+        // The PT this zap "bought" beyond what `lp` needed is not refunded to `from` -- it is
+        // left in the pool's own reserve instead, as if that dust had simply never been bought.
+        // An earlier version transferred it to `from`, which reverted `PermissionDenied` for any
+        // caller lacking PTToken's per-asset grant (`assert_permitted` checks it even for a
+        // single raw unit, unlike SYWrapper's account-only check below) -- a real failure found
+        // live by the dApp team on roughly 1 in 12 calls in their testing, since a caller using
+        // this "LP only" zap specifically to avoid ever holding PT directly has no reason to have
+        // requested that grant. `pt1 + pt_used + pt_refund` is algebraically `pt_reserve -
+        // pt_used`: exactly as if only `pt_used` of the "bought" PT ever left the reserve ledger.
+        let pt_refund = pt_bought - pt_used;
+        Self::set_reserves(&env, pt1 + pt_used + pt_refund, sy1 + sy_used);
         Self::accrue_fee(&env, q.fee_shares);
         Self::credit_lp(&env, &from, lp);
         Self::set_total_lp(&env, st.total_lp + lp);
 
-        // Refund whatever of `sy_in` the pool didn't end up using, and whatever PT the "buy"
-        // produced beyond what this `lp` amount needed.
+        // Refund whatever of `sy_in` the pool didn't end up using. SY carries no per-asset grant
+        // (only PT/YT do), so this transfer has no equivalent compliance risk.
         let sy_total_used = split + sy_used;
         let sy_refund = sy_in - sy_total_used;
         if sy_refund > 0 {
             sy.transfer(&this, &from, &sy_refund);
-        }
-        let pt_refund = pt_bought - pt_used;
-        if pt_refund > 0 {
-            TokenClient::new(&env, &Self::addr(&env, &DataKey::PT))
-                .transfer(&this, &from, &pt_refund);
         }
         env.events().publish(
             (symbol_short!("zap_liq"),),
@@ -966,6 +971,45 @@ impl MarketPoolContract {
     /// Safe only when the caller is certain `from` holds no other PT it wants to keep separate.
     pub fn swap_all_pt_for_sy(env: Env, from: Address, to: Address, min_sy_out: i128) -> i128 {
         let pt_in = TokenClient::new(&env, &Self::addr(&env, &DataKey::PT)).balance(&from);
+        Self::swap_pt_for_sy(env, from, to, pt_in, min_sy_out)
+    }
+
+    /// Sell only the PT `from` gained *since* `baseline` -- the PT equivalent of
+    /// `SYWrapper.withdraw_gained`, for the same reason: a caller composing this after a call
+    /// whose PT payout is derived mid-transaction (e.g. `remove_liquidity`) can safely use this
+    /// without first clearing out PT it already held for an unrelated reason, unlike
+    /// `swap_all_pt_for_sy` which acts on the *entire* balance. Found worth building during a
+    /// later integration review: `withdraw_gained` existed but was only wired into one Router
+    /// flow, while others still used the zero-pre-existing-balance idiom and failed for any
+    /// caller who, for instance, simply already held PT from an earlier trade.
+    ///
+    /// Tolerates a zero gain gracefully (no PT bought, or none left after a prior leg) rather
+    /// than reverting `ZeroAmount` the way a direct `swap_pt_for_sy(0, ...)` would -- composed
+    /// callers cannot always guarantee a nonzero gain (e.g. `remove_liquidity` producing no PT
+    /// leg). Returns `0` in that case, but still enforces `min_sy_out`: a zero gain is only
+    /// silently fine if the caller did not actually require a nonzero `sy_out`.
+    pub fn swap_gained_pt_for_sy(
+        env: Env,
+        from: Address,
+        to: Address,
+        baseline: i128,
+        min_sy_out: i128,
+    ) -> i128 {
+        // No separate `from.require_auth()` here -- `swap_pt_for_sy` below already does it
+        // exactly once for this same invocation (not a cross-contract call, so a second,
+        // redundant check here would authorize the same address twice for one logical call,
+        // which the test environment's auth mock rejects outright as `Error(Auth,
+        // ExistingValue)`; real Soroban's own authorization model has no use for it either).
+        // The zero/negative-gain path below is a pure no-op or an outright panic, so it is
+        // harmless to leave unauthorized: nothing it does ever persists.
+        let pt_in =
+            TokenClient::new(&env, &Self::addr(&env, &DataKey::PT)).balance(&from) - baseline;
+        if pt_in <= 0 {
+            if min_sy_out > 0 {
+                panic_with_error!(&env, Error::SlippageExceeded);
+            }
+            return 0;
+        }
         Self::swap_pt_for_sy(env, from, to, pt_in, min_sy_out)
     }
 

@@ -92,12 +92,25 @@ can ever get `SYWrapper`'s ratio away from exactly 1.0 to begin with.)
 **Consequence**: `quote_underlying_for_pt` and `quote_add_liquidity_keep_yt` each only ever read
 `exchange_rate()` once and use it for a single conversion, so this question does not apply to them
 regardless. `quote_pt_for_underlying` and `quote_yt_for_underlying` each correspond to a real call
-with exactly one `SYWrapper` state mutation (one `withdraw_all`, nothing before it), so there is
+with exactly one `SYWrapper` state mutation (one `withdraw_gained` -- `withdraw_all` originally,
+switched for the unrelated reason in the "Update" below -- nothing before it), so there is
 only ever one rate to read, and the quote and the real call necessarily read the same stored
 integers. `quote_underlying_for_yt` is the only one of the five whose real call
 (`swap_underlying_for_yt`) has *two* separate `SYWrapper` reads straddling a mutation (`deposit`,
-then later `withdraw_all`) — and per the proof above, those two reads are provably identical under
-the current contract, so the quote (which reads the rate once and reuses it) still matches exactly.
+then later `withdraw_gained`) — and per the proof above, those two reads are provably identical
+under the current contract, so the quote (which reads the rate once and reuses it) still matches
+exactly. (The `withdraw_all` -> `withdraw_gained` switch changes nothing about this argument: both
+read the same `exchange_rate()`-derived formula, just starting from a different balance.)
+
+**Update, a later dApp-integration review**: `swap_pt_for_underlying`, `swap_yt_for_underlying` and
+`swap_underlying_for_yt` no longer use `withdraw_all` at all -- they read a `baseline` before the
+mutating step and use `SYWrapper.withdraw_gained` instead, so a caller who already holds unrelated
+SY is no longer rejected outright (the earlier `withdraw_all`-based versions required `from` to
+hold *zero* pre-existing SY, which failed routinely in practice). This has no effect on the
+exactness argument above or on `quote_pt_for_underlying`/`quote_yt_for_underlying`/
+`quote_underlying_for_yt`'s own correctness: `baseline` is read once per call, at a point before
+any `SYWrapper` mutation, and does not change how many times `exchange_rate()` itself is read or
+what it is read against.
 
 **This is a forward-looking note, not a live bug**: if `SYWrapper` is ever extended with a
 rebase/sync capability (to track a genuinely rebasing underlying's *live* balance rather than its

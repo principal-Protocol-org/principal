@@ -343,6 +343,18 @@ impl SYWrapperContract {
     ) -> i128 {
         from.require_auth();
         let shares = Self::get_balance(&env, &from) - baseline;
+        // Tolerate a zero gain (no surplus to unwrap -- e.g. a flash-mint whose budget was spent
+        // exactly, or zero) rather than reverting `ZeroAmount` the way `do_withdraw` would: found
+        // live by the dApp team as a real defect in `Router.flash_mint_yt_from_underlying`,
+        // which reverted outright whenever `underlying_budget` was 0 or exactly equal to the real
+        // net cost. Still enforces `min_underlying_out`: a zero gain is only silently fine if the
+        // caller did not actually require getting something back.
+        if shares <= 0 {
+            if min_underlying_out > 0 {
+                panic_with_error!(&env, Error::SlippageExceeded);
+            }
+            return 0;
+        }
         Self::do_withdraw(&env, &from, shares, &to, min_underlying_out)
     }
 

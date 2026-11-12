@@ -454,3 +454,157 @@ section (plus Market 4's, still live) in a shape this session inferred from
 `docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md`'s description of `principal-dApp`'s
 `ContractMap`/`markets.ts` types — **not** a schema confirmed with the dApp team; the file's own
 header says so and names the specific fields that are a guess.
+
+## 11. A third dApp-integration review round: two real bugs corrected by the dApp team's own code reading, redeployed and verified live
+
+The dApp team read the actual contract code (not just this project's own "can't reproduce" answer
+from §10) and found two real bugs plus one real gap in adoption of `withdraw_gained`. Full
+narrative: `docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md` §4.1's "Update, a third dApp-integration
+review round." Summary: `add_liquidity_single_sy`'s PT-dust refund reverted `PermissionDenied` for
+any caller lacking PTToken's per-asset grant — the actual mechanism behind the "1 in 12" report
+two rounds back, which this project had wrongly called unreproducible; `withdraw_gained` existed
+but was wired into only one of five flows that needed it; and both gain-sweep primitives reverted
+`ZeroAmount` outright on a zero/negative gain instead of tolerating it. This section redeploys the
+three further-changed contracts (`MarketPool`, `SYWrapper`, `Router` — `PrincipalManager` did not
+change again this round, confirmed by wasm hash) and proves each fix live, on a market built to
+the dApp team's own standing request: 90+ days to maturity, not a session-length window.
+
+### 11.1 What was redeployed
+
+| Contract | New wasm hash | Notes |
+|---|---|---|
+| MarketPool | `941043966784a76757700122cb288f87c27fe32836d6f3be675389e24d9f3be0` | |
+| SYWrapper | `394217638cd1b20b59dafb43bcd6fa76e3c9db860a89c54bc2cc9a9fc1c98e32` | |
+| Router | `9d6815494759aae34296f88b387b49930d3c1b09456cb5e042ef8b9118f9d88c` | fresh instance required (Soroban code cannot be upgraded in place) |
+
+`PrincipalManager`'s freshly-built wasm hashed to exactly `819ae7ba616bc078369fe2b6e9a984b9b788fbb43dc62501494241b5e1b6f584`,
+identical to §10.1's — confirmed unchanged by hash, not assumed. `OracleAdapter` (`ORACLE2_ID`),
+`MarketFactory` (`FACTORY2_ID`), `RiskControl`, `Permissioning`, and the `PTToken`/`YTToken`/
+`MarketConfig`/`RecoveryEscrow` wasm were all reused unchanged from §10, re-hashed directly from
+their live, deployed bytecode (`stellar contract fetch` + `sha256sum`) rather than trusted from
+old notes — see `testnet.json`'s `wasmHashes` for the complete current set of all twelve.
+
+New Router instance: `CDHEI4MYTVIQ3WSA7LBGVQYV2USKO7DFYRPOFSQVCMYJ4DOHOYB7HXX3`, deployed and
+initialized entirely with `ADMIN_KEY` (`v11-protocol-admin`) — tx
+[d00a4201…](https://stellar.expert/explorer/testnet/tx/d00a4201c91e8f38649f858069a5e7255ed82a638d96e50828d3a7b1f8004a49).
+
+Market 6 (`principal-testnet-2026-11-12-m6`, via the existing `FACTORY2_ID`, maturity
+`1803083163` — **~100 days out**, left live):
+
+| Contract | Address |
+|---|---|
+| SYWrapper | `CBBJFC6R2TC5D4G2QBLSDMTVZZJ6C6IAOBLBTCW3S43W4VK4S6DC3ZJ3` |
+| PTToken | `CAVMHJPJWVC2ANPFZYCU6IDM6X2RE5T7V3Z4Y7Y37QJ23STFQ3367WFU` |
+| YTToken | `CCZGNEJO6S3DHJE3SF7MLTOMC5WUDAHXVEZZ5GVDGYQZT7VGB46S4XVN` |
+| MarketConfig | `CCQCGD5AGQBEBWLOO7ATJY7UBUCCQGVLNRYKIVCQPAKEMBZ4IA3NC3IK` |
+| PrincipalManager | `CABPY6OV4FZEZK65NYTIV7GU5TEDVBHDHJ6GDKEZQLB6FTOU5VR7EEUM` |
+| MarketPool | `CDTCKERHI7U2LN7KCZALRHHZWIMNI2RFVCE3AENELGTDV7TVTIUUJK4Q` |
+| RecoveryEscrow | `CADLFJPYALZ3RUK5O5IHC634FXBDW573JSJGSOZZ65U3OM62IUBXS6QR` |
+
+Created via `scripts/create_market_via_factory.sh` with `SKIP_WIRING=1` (the existing
+`RiskControl`/the *old* Router instance are still `ISSUER_KEY`-admined, per §10.2's own finding;
+the *new* Router instance is `ADMIN_KEY`-admined — two different real admins, so the two wiring
+calls were run by hand with the key that actually matches each): `risk_control.add_consumer` ×2
+with `ISSUER_KEY` (txs
+[3281042a…](https://stellar.expert/explorer/testnet/tx/3281042a4a4ba85235ebedec404ba75829e404b895fda68cb38414ecf5192672),
+[28bcf66e…](https://stellar.expert/explorer/testnet/tx/28bcf66eb0ea9d16c78ac521c8be5fa9cefb01ba3d33378d453609e44aab8900)),
+`router.register_market` with `ADMIN_KEY` (tx
+[c2408516…](https://stellar.expert/explorer/testnet/tx/c2408516613deab9fc071587fd34ac42afa83ffa0a906d5562cf14fcaa9f07ca)).
+This is itself a live demonstration of `docs/DEPLOYMENT.md`'s "ADMIN_KEY must resolve to the
+address RISK_CONTROL_ID/ROUTER_ID were themselves initialized to" caveat, added to the script
+alongside this round's fixes.
+
+A pricing quirk, found live and worth recording plainly: the seed ratio chosen for this market
+(80,000,000,000 PT : 70,000,000,000 SY, comfortably inside `add_liquidity`'s first-deposit ratio
+guard) combined with this market's ~100-day maturity made `calc_sell_pt` price PT high enough
+that `MarketPool.flash_mint_yt`'s own `sy_back >= sy_in` safety guard (documented in its own doc
+comment: a deliberate "fail closed, not hand the buyer a free mint" check) tripped at every size
+tried, including after selling over 20,000,000,000 PT into the pool specifically to shift the
+curve. This is a property of this one market's specific seed ratio and time-to-maturity, not a
+regression — `quote_sy_for_yt` previews the exact same `sy_back`/`sy_in` relationship read-only,
+and the live numbers below confirm the two already-published test markets (§6, §10) priced
+differently. It did change which function the zero-gain-tolerance fix (§11.3 item 3) was proven
+through: `SYWrapper.withdraw_gained` directly, rather than the full `Router.flash_mint_yt_from_underlying`
+composition, since the flash-mint's own internal sell-leg is what's blocked on this specific
+market, for reasons unrelated to the fix being proven.
+
+### 11.2 Compliance
+
+Granted for the four new Market 6 contracts (account-level `set_authorized`/`grant_account`, plus
+`grant_asset` for PT **and** YT on the pool and escrow specifically, per §10.1's own finding) and
+for Dave, Alice and a newly-generated account, Eve (`v12-eve`,
+`GBBCYXVMKXPWV7ZITIQLXTLVUUV6ZXTCB5C3SJIDJQQHTVUHGM4V4WND`) — Eve deliberately **without**
+PTToken's per-asset grant, to reproduce the exact precondition §11.3 item 1 needs. Eve needed a
+trustline (`stellar tx new change-trust`) established before the underlying SAC's
+`set_authorized` would accept her at all — a real, if unsurprising, Stellar-level precondition,
+not a contract one.
+
+### 11.3 Live proof of each fix
+
+1. **`add_liquidity_single_sy`'s PT-dust-refund bug, fixed.** Eve — granted account-level standing
+   only, deliberately no PTToken per-asset grant — called
+   `Router.add_liquidity_single_underlying(underlying_amount=50,000,000,000, sy_in=50,000,000,000)`
+   after Dave had seeded the pool. **Succeeded**: `pt_used=19,961,706,376`,
+   `sy_used=49,999,506,430`, `lp=24,880,742,474`
+   ([61aad8f7…](https://stellar.expert/explorer/testnet/tx/61aad8f7e938f05485663203f854b1aacb3d1adc8471185dc708d186f92d02dd)).
+   Read back directly afterward: Eve's PT balance is exactly `0`
+   ([read, no hash] `balance(Eve) == "0"`) — not "small," exactly zero, confirming the dust was
+   folded into the pool's reserve and never attempted a transfer that would have reverted
+   `PermissionDenied` under the old code.
+2. **`withdraw_gained`/`swap_gained_pt_for_sy` applied to all four flows, pre-existing balances
+   survive.** Alice accumulated stray, unrelated PT (`4,867,153,821`, from an earlier
+   `swap_underlying_for_pt`) and stray SY (`3,000,000,000`, from a direct deposit), then:
+   - Bought a *second*, separate batch of PT (`1,937,161,139`) and sold it via
+     `Router.swap_pt_for_underlying`
+     ([4077cfa9…](https://stellar.expert/explorer/testnet/tx/4077cfa96a4165acaafb1f80907140b580f6c863937b297a90942740a9ae9ef5)).
+     The `withdraw` event shows exactly `1,998,903,881` moved — the real gain, not a penny of the
+     stray `3,000,000,000` — and a direct balance read afterward confirmed both stray amounts
+     exactly unchanged.
+   - Opened a fresh LP position (`add_liquidity_single_underlying`, `4,923,058,200` LP) and closed
+     it with `Router.remove_liquidity_to_underlying`
+     ([cfb63342…](https://stellar.expert/explorer/testnet/tx/cfb63342226053b1e2b5662649897f9e583955c9b2bdcc804fff200d75212439)),
+     landing `9,997,906,068` underlying. Stray PT read back at exactly `4,867,153,821` afterward
+     (unchanged); stray SY read back at `3,000,068,151` — `68,151` *above* the original
+     `3,000,000,000`, which is the SY-refund dust `add_liquidity_single_underlying` itself left
+     moments earlier (`9,999,931,849` of `10,000,000,000` used, per that call's own `zap_liq`
+     event) — correctly preserved by `remove_liquidity_to_underlying`'s baseline, not a
+     discrepancy.
+   - `swap_underlying_for_yt` was also exercised cleanly on top of the same stray balances
+     ([20906ce2…](https://stellar.expert/explorer/testnet/tx/20906ce26881b0184b0e9ddb57e2af02a71e9ff1c9032c0d591e83a54dd13d68),
+     `yt_out=1,004,497,500`); `swap_yt_for_underlying` on that same YT hit the pricing quirk from
+     §11.1 (a `swap_yt_for_sy`-side `InsufficientLiquidity`, the recombine-vs-curve-cost
+     relationship, not a balance-sweep issue) at every size tried and was not completed on this
+     market — the two flows above already give unambiguous proof of the actual fix (pre-existing
+     balance survives a gain-based sweep), so this was not pursued further by reseeding or
+     building a fourth market.
+3. **Zero/negative-gain tolerance.** Proven directly against `SYWrapper.withdraw_gained` rather
+   than through `Router.flash_mint_yt_from_underlying` end to end, for the reason in §11.1: with
+   `baseline` set to Dave's then-current SY balance (`20,736,581,640`, i.e. zero gain by
+   construction), `withdraw_gained(..., min_underlying_out=0)` **succeeded**, returning `0`
+   ([d393eef6…](https://stellar.expert/explorer/testnet/tx/d393eef63d774045cb2c996beeb9f441384117790860a0c7a19c9dca0185f2c6)) —
+   the exact call that reverted `ZeroAmount` under the old code. The same call with
+   `min_underlying_out=1` correctly reverted `SlippageExceeded` (Error 13) instead, at simulation,
+   proving the "only silently fine if the caller didn't require getting something back" guarantee
+   in the same live session.
+
+### 11.4 `testnet.json`, now schema-conformant
+
+The dApp team supplied their actual schema mid-round: `principal-Protocol-org/dapp`'s `testnet`
+branch, `lib/protocol/manifest.ts` (`manifestSchema`, `schemaVersion: 2`), plus their own current
+`config/manifests/testnet.json` as a shape reference. The manifest was rewritten to that schema
+exactly — field names (`sy`/`pt`/`yt`/`config`/`manager`/`pool`/`recoveryEscrow` for
+`wasmHashes`, not the earlier guessed names), all 12 wasm hashes, the Router's actual live
+function list (`routerFunctions`), a `testAsset` entry, and `generatedAt`/`sourceCommit` — and
+checked against the schema's own regexes and `validateManifest`'s cross-field rules in Python
+(contract-ID/account-ID/hash regex shapes; every market's `contracts.router`/`contracts.oracle`
+equal to `shared.router`/`shared.oracle`; no duplicate `marketId`), not just eyeballed.
+
+One real consequence of that cross-field rule: `validateManifest` requires every listed market's
+`router`/`oracle` to match the file's one `shared.router`/`shared.oracle` — so Markets 4 and 5,
+registered on earlier, now-superseded `Router` instances (a new instance exists each round
+`Router`'s own wasm changed, since Soroban code can't be upgraded in place), cannot be listed
+alongside Market 6 without failing validation outright. The manifest now lists only Market 6; the
+earlier markets remain documented in §9–§11's own tables instead of carried in this file.
+`sourceCommit` is this repo's `HEAD` at write time, predating the fixes in this same round (not
+yet committed) — flagged in `docs/DEPLOYMENT.md`'s "Testnet manifest" section, to be refreshed
+once they are.

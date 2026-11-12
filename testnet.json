@@ -1,45 +1,85 @@
 {
-  "_note": "Best-effort inference of principal-dApp's expected ContractMap/markets.ts shape, written by the smart-contracts repo during a dApp-integration review round -- NOT confirmed with the dApp team. Field names (camelCase contract roles, matching the `factory: string` example in docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md §3.5) are this session's best guess from that doc, not a verified contract. Treat every field name here as provisional until the dApp team confirms or corrects it.",
+  "schemaVersion": 2,
   "network": "testnet",
   "networkPassphrase": "Test SDF Network ; September 2015",
   "rpcUrl": "https://soroban-testnet.stellar.org",
-  "underlying": "CBAIZZ6SWVZYBL4EMYAHVASU3ABVCLQPGKRUGFKTXPXQUQULZMRELUW4",
+  "horizonUrl": "https://horizon-testnet.stellar.org",
+  "friendbotUrl": "https://friendbot.stellar.org",
+  "generatedAt": "2026-11-12T01:00:00Z",
+  "sourceCommit": "2740713d41ba827b16f3beed39356b0dd0ad6e5c",
   "shared": {
+    "router": "CDHEI4MYTVIQ3WSA7LBGVQYV2USKO7DFYRPOFSQVCMYJ4DOHOYB7HXX3",
     "oracle": "CBKB5RWLSA4PEZF4KBOIVQVUN2DZWQLGDN6ZS5YW6Z34SYX7HNN77JMY",
     "permissioning": "CBS7BTWJDQDOEHZY5IM3GMXI2MLPEJU5ROZJZC6AGJKEZU7GNHLCZZ76",
     "riskControl": "CD3X4F2ABAQMFAZ3B2Z6KADHEFNBMWXTVYFL5HORDY5ZOD3M3TQXTUKJ",
-    "factory": "CCSIN7W4YPCUR6LZWSVH4EYZ6L4FM5ORU3ATK2O634VCBVQ6KBFXJKFE",
-    "router": "CD6DLGULJWNU3AEGXT7UWUVNZGQ7DJXN57BW3OOYU5XUEOWYWAURRMVB"
+    "factory": "CCSIN7W4YPCUR6LZWSVH4EYZ6L4FM5ORU3ATK2O634VCBVQ6KBFXJKFE"
   },
   "wasmHashes": {
-    "_note": "Only the four contracts this round changed. OracleAdapter/MarketFactory/RiskControl/Permissioning/PTToken/YTToken/MarketConfig/RecoveryEscrow wasm is unchanged from the prior round documented in docs/TESTNET_DEPLOYMENT_EVIDENCE_2026_11_05.md §9/§1 -- not repeated here.",
-    "router": "d7cb3b06a5af8b43965edfd28d66d22e004798df4c298a7464abb845c9f3f0eb",
-    "marketPool": "f54168d927909d8cffcd91644ab7a830f9a6d1067123b8c47896d20925e43b48",
-    "syWrapper": "6c867d21fd0c18fe7dc00548f716d5310c4dec8be0a57e92f80a2ba1d1d077d4",
-    "principalManager": "819ae7ba616bc078369fe2b6e9a984b9b788fbb43dc62501494241b5e1b6f584"
+    "oracle": "2e94f192c8ee2e813b0d50c46875b17a1d9bce0fa23eb66f7097b5ac324e530d",
+    "permissioning": "3bc08a9e21f12da4a9727c4923d664953974d3700a2fe60f8662cddf0eb9356b",
+    "riskControl": "fcac847ea311297a27abed2629c24fe56b6963fb899e880557a6d01bfde7ada1",
+    "factory": "409228b6b6cb077eea65effa50840d9ded1547636998138e725404ede8818a5b",
+    "sy": "394217638cd1b20b59dafb43bcd6fa76e3c9db860a89c54bc2cc9a9fc1c98e32",
+    "pt": "44fd470c791b36c597d96ccebbaf3ed4c0bb216449f089f4ed3e0b0a981b168a",
+    "yt": "3fe7f27d38365ee8e933cd86dcd943a7330c2ba6a2c476717ac6b299fe283e89",
+    "config": "11b0cbdf10a8d204fcb568c54529801747feac05208c5bcbfaefd822ad0c79a8",
+    "manager": "819ae7ba616bc078369fe2b6e9a984b9b788fbb43dc62501494241b5e1b6f584",
+    "pool": "941043966784a76757700122cb288f87c27fe32836d6f3be675389e24d9f3be0",
+    "recoveryEscrow": "a4d46832ef28f9f4ee30ce64dd2115c2e2dbbfb86eb1f6ad985debedd9b33590",
+    "router": "9d6815494759aae34296f88b387b49930d3c1b09456cb5e042ef8b9118f9d88c"
+  },
+  "routerFunctions": [
+    "wrap_and_mint",
+    "unwrap",
+    "swap_sy_for_pt",
+    "swap_pt_for_sy",
+    "swap_underlying_for_pt",
+    "swap_pt_for_underlying",
+    "swap_sy_for_yt",
+    "swap_underlying_for_yt",
+    "flash_mint_yt",
+    "flash_mint_yt_from_underlying",
+    "swap_yt_for_sy",
+    "swap_yt_for_underlying",
+    "add_liquidity",
+    "add_liquidity_single_sy",
+    "add_liquidity_single_underlying",
+    "add_liquidity_keep_yt",
+    "remove_liquidity",
+    "remove_liquidity_to_underlying",
+    "recombine",
+    "redeem_at_maturity",
+    "claim_yield"
+  ],
+  "testAsset": {
+    "code": "AUD1104",
+    "issuer": "GBQEV2SNUQWAQSJVXSPEN47WPSRJOY7SLY26JL7Z4O4GF7WFFSN3HW3M",
+    "sac": "CBAIZZ6SWVZYBL4EMYAHVASU3ABVCLQPGKRUGFKTXPXQUQULZMRELUW4",
+    "decimals": 7,
+    "displayName": "AUD1104 (test)"
   },
   "markets": [
     {
-      "id": "principal-testnet-2026-11-11-m5",
-      "maturity": 1794420744,
-      "syWrapper": "CCPVLAIPZURBFV7N6EYDYOGK4AW5W3J6JY5PDKASXRWJYGLRHRJOL6HT",
-      "ptToken": "CDTSKAAGPLX6ABALWR7U7M53QO2FEKVRUQ4CC57C2JTSOQ6HXARXKTNG",
-      "ytToken": "CDGNKRD7P24DL66DAAASQHFVUOGSAGN5JN2GF3ZHF6277WIQKZ4RHTCU",
-      "marketConfig": "CAHYM2WVTCXX5MBUFK36MFQTY6J6LGYUDFYI3R2TSV2NDWS3DC4HU3JB",
-      "principalManager": "CBMWXDLENPF6UAFTZXM5MT7FYQHKB66IGOGCPCBN36RNKJSR7ZAKWUYE",
-      "marketPool": "CCID66COTQO3GNQNWSE22ZL2JUFIKW7LMWDTQNIUIZRQIP664OCT6HAU",
-      "recoveryEscrow": "CB7BNUF76LK2S3YOLYTLMMJHG56TO6MIW3MFGCV244AJAISJVUR475V2"
-    },
-    {
-      "id": "principal-testnet-2026-11-05-m4",
-      "maturity": 1793887016,
-      "syWrapper": "CA2CV5Y2ASZNOK26VBOCLWD5BLPJD3QILE44X46PXWHQG3QJ6CVQ6PYB",
-      "ptToken": "CDNDPSLRAHOHH3J3423S76YYDQJZ3OFSADOKWO25OJUZAT2QFK7J4CCJ",
-      "ytToken": "CA3N4IXXZUUITHHUNOTWRYWV6F4JYRAJSVXF7HXP4C6R75I3V2UWCVQN",
-      "marketConfig": "CAQOQQQKYUOZZFNN3W6XJQCKQNZS6SXKB33BJZOAWWWNQZXOFYGPBPAV",
-      "principalManager": "CBSJW5TN272USBU6UQYCX4SBMEKR5F2BVPS6VKYNXZHF3WFFK5MHD67X",
-      "marketPool": "CCQGGDE2Q634BRUDRCPVXBIZ6YJYSIDF7VKR35EQNFR3PYQ2VUFDHR3V",
-      "recoveryEscrow": "CDUQG265OYP63T3PBHSFGD3UR6NWSPKI26ZHX4UY66Y67XFJUEMR7UL3"
+      "marketId": "principal-testnet-2026-11-12-m6",
+      "displayName": "AUD1104 (test) -- 12 Nov 2026 market",
+      "underlying": {
+        "code": "AUD1104",
+        "issuer": "GBQEV2SNUQWAQSJVXSPEN47WPSRJOY7SLY26JL7Z4O4GF7WFFSN3HW3M",
+        "sac": "CBAIZZ6SWVZYBL4EMYAHVASU3ABVCLQPGKRUGFKTXPXQUQULZMRELUW4",
+        "decimals": 7
+      },
+      "maturity": 1803083163,
+      "contracts": {
+        "router": "CDHEI4MYTVIQ3WSA7LBGVQYV2USKO7DFYRPOFSQVCMYJ4DOHOYB7HXX3",
+        "oracle": "CBKB5RWLSA4PEZF4KBOIVQVUN2DZWQLGDN6ZS5YW6Z34SYX7HNN77JMY",
+        "sy": "CBBJFC6R2TC5D4G2QBLSDMTVZZJ6C6IAOBLBTCW3S43W4VK4S6DC3ZJ3",
+        "pt": "CAVMHJPJWVC2ANPFZYCU6IDM6X2RE5T7V3Z4Y7Y37QJ23STFQ3367WFU",
+        "yt": "CCZGNEJO6S3DHJE3SF7MLTOMC5WUDAHXVEZZ5GVDGYQZT7VGB46S4XVN",
+        "config": "CCQCGD5AGQBEBWLOO7ATJY7UBUCCQGVLNRYKIVCQPAKEMBZ4IA3NC3IK",
+        "manager": "CABPY6OV4FZEZK65NYTIV7GU5TEDVBHDHJ6GDKEZQLB6FTOU5VR7EEUM",
+        "pool": "CDTCKERHI7U2LN7KCZALRHHZWIMNI2RFVCE3AENELGTDV7TVTIUUJK4Q",
+        "recoveryEscrow": "CADLFJPYALZ3RUK5O5IHC634FXBDW573JSJGSOZZ65U3OM62IUBXS6QR"
+      }
     }
   ]
 }

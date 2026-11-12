@@ -63,21 +63,37 @@
 //!
 //! Two fixes are used throughout this contract, never a derived amount passed straight through:
 //! * **A caller-supplied literal, quoted off-chain before the call is built** -- `mint_amount`,
-//!   now also `pt_desired`/`sy_desired`, for `add_liquidity_keep_yt` (quoted via
-//!   `MarketPool.keep_yt_split` and `reserves()`/`lp_total_supply()`, the same way every other
-//!   min-out in this Router is quoted); `sy_in` for `swap_underlying_for_yt` (quoted via
-//!   `SYWrapper.exchange_rate()`); `sy_in` for `add_liquidity_single_underlying` (same).
-//! * **A sweep that reads the balance at execution time instead of taking it as an argument** --
-//!   `SYWrapper.withdraw_all` (used by `swap_pt_for_underlying`, `swap_yt_for_underlying`,
-//!   `swap_underlying_for_yt`) and `MarketPool.swap_all_pt_for_sy` (used by
-//!   `remove_liquidity_to_underlying`) have nothing curve- or rate-derived left to authorize --
-//!   but they act on *everything* `from` holds, hence the zero-pre-existing-balance precondition
-//!   (`PreexistingSyBalance`/`PreexistingPtBalance`) on every function that uses one.
-//!   `SYWrapper.withdraw_gained` (used by `flash_mint_yt_from_underlying`) relaxes that
-//!   precondition by taking a `baseline` -- the balance `from` held *before* the step that
-//!   produced the gain, read by this Router with a plain `balance_of` call -- and withdrawing
-//!   only the difference, so a caller who already holds unrelated SY does not need to clear it
-//!   first; see its own docs for the much smaller residual risk that `baseline` itself carries.
+//!   `pt_desired`/`sy_desired`, for `add_liquidity_keep_yt` (quoted via `MarketPool.keep_yt_split`
+//!   and `reserves()`/`lp_total_supply()`, the same way every other min-out in this Router is
+//!   quoted); `sy_in` for `swap_underlying_for_yt` (quoted via `SYWrapper.exchange_rate()`);
+//!   `sy_in` for `add_liquidity_single_underlying` (same).
+//! * **A sweep of only the gain since a `baseline`, read at execution time instead of taking the
+//!   gain as an argument** -- `SYWrapper.withdraw_gained` and `MarketPool.swap_gained_pt_for_sy`
+//!   have nothing curve- or rate-derived left to authorize, and -- unlike their full-sweep
+//!   siblings `withdraw_all`/`swap_all_pt_for_sy` -- act only on what the call itself produced on
+//!   top of `baseline`, which this Router reads with a plain `balance_of`/`balance` call
+//!   immediately before the step that produces the gain. Used by `swap_pt_for_underlying`,
+//!   `swap_yt_for_underlying`, `swap_underlying_for_yt`, `flash_mint_yt_from_underlying`, and
+//!   `remove_liquidity_to_underlying`.
+//!
+//!   An earlier version of the first three used `withdraw_all`/`swap_all_pt_for_sy` directly,
+//!   gated behind a zero-pre-existing-balance precondition (`PreexistingSyBalance`/
+//!   `PreexistingPtBalance`, Router errors 9/10 -- now unused and deliberately left as a gap in
+//!   the numbering). A dApp-integration review found this failed routinely: the "LP only" zap and
+//!   Keep YT deposits can themselves leave small PT/SY remainders in a caller's wallet, and
+//!   simply having bought PT on some earlier, unrelated trade is enough to be "holding PT" by
+//!   definition -- none of which has anything to do with the balance a *composed* call like
+//!   `swap_pt_for_underlying` actually needs to unwrap. Reading `baseline` fixes this without
+//!   reintroducing the original drift risk: `baseline` is itself a value read at the very start
+//!   of the same transaction, so it only differs from what a client simulated if some *other*
+//!   transaction changed `from`'s balance in the gap between simulation and submission -- a much
+//!   smaller, rarer risk than the guaranteed per-submission drift a continuously time- or
+//!   rate-dependent amount has, and the same category of risk `remove_liquidity`'s own
+//!   proportional payout already carries. `withdraw_gained`/`swap_gained_pt_for_sy` also tolerate
+//!   a zero gain gracefully (returning `0`, while still enforcing a nonzero `min_*_out` as a
+//!   `SlippageExceeded` revert) rather than reverting `ZeroAmount` outright -- found needed after
+//!   `flash_mint_yt_from_underlying` reverted whenever its `underlying_budget` was 0 or exactly
+//!   equal to the real net cost, a composed flow having no way to guarantee a nonzero surplus.
 
 #![no_std]
 #![allow(deprecated)]
@@ -223,6 +239,13 @@ pub trait PoolInterface {
         min_sy_out: i128,
     ) -> (i128, i128);
     fn swap_all_pt_for_sy(env: Env, from: Address, to: Address, min_sy_out: i128) -> i128;
+    fn swap_gained_pt_for_sy(
+        env: Env,
+        from: Address,
+        to: Address,
+        baseline: i128,
+        min_sy_out: i128,
+    ) -> i128;
     fn zap_swap_amount(env: Env, sy_in: i128) -> i128;
     fn keep_yt_split(env: Env, sy_shares: i128) -> i128;
     fn quote_sy_for_pt(env: Env, sy_in: i128) -> Quote;
@@ -296,14 +319,15 @@ pub enum Error {
     SlippageExceeded = 6,
     TopologyMismatch = 7,
     AlreadyRegistered = 8,
-    /// Returned by the `_for_underlying` functions when `from` already holds SY before the call:
-    /// they withdraw `from`'s *entire* SY balance at the end (see `SYWrapper.withdraw_all`'s
-    /// docs), which would sweep away SY the caller did not mean to touch.
-    PreexistingSyBalance = 9,
-    /// Returned by `remove_liquidity_to_underlying` when `from` already holds PT before the
-    /// call: it sells `from`'s *entire* PT balance at the end (see `MarketPool.swap_all_pt_for_sy`),
-    /// which would sweep away PT the caller did not mean to touch.
-    PreexistingPtBalance = 10,
+    // 9 and 10 were `PreexistingSyBalance`/`PreexistingPtBalance`, returned by the
+    // `_for_underlying` functions and `remove_liquidity_to_underlying` when `from` held any
+    // pre-existing SY/PT, since those functions used to sweep `from`'s *entire* balance
+    // (`withdraw_all`/`swap_all_pt_for_sy`). A dApp-integration review found this failed
+    // routinely -- simply holding PT from an unrelated earlier trade was enough to be rejected --
+    // so every such function now sweeps only what it itself produced
+    // (`withdraw_gained`/`swap_gained_pt_for_sy`), and neither error can be returned anymore.
+    // Left as a gap in the numbering rather than reused, so a cached old error code is never
+    // silently reinterpreted as something else.
 }
 
 /// Everything the Router needs to know about one market, resolved from its pool at registration.
@@ -507,20 +531,22 @@ impl RouterContract {
         PoolClient::new(&env, &pool).swap_sy_for_pt(&from, &from, &shares, &min_pt_out)
     }
 
-    /// PT -> SY (`MarketPool`) -> underlying (`SYWrapper.withdraw_all`), in one transaction. The
-    /// swap leg is unguarded; `min_underlying_out` protects the whole round trip at the final,
-    /// underlying-denominated output -- the same reasoning `swap_underlying_for_pt` uses in
-    /// reverse.
+    /// PT -> SY (`MarketPool`) -> underlying (`SYWrapper.withdraw_gained`), in one transaction.
+    /// The swap leg is unguarded; `min_underlying_out` protects the whole round trip at the
+    /// final, underlying-denominated output -- the same reasoning `swap_underlying_for_pt` uses
+    /// in reverse.
     ///
-    /// Uses `withdraw_all`, not `withdraw`, and so requires `from` to hold **no** SY before this
-    /// call (reverts `PreexistingSyBalance` otherwise): the swap's SY payout is a curve-derived
-    /// amount that can drift by a few raw units between simulation and real execution (see
-    /// `SYWrapper.withdraw_all`'s docs), so passing it as an explicit, pre-signed `shares`
-    /// argument to a plain `withdraw` reverted `Error(Auth, InvalidAction)` live on Testnet while
-    /// this function was first written -- confirmed in `docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md`.
-    /// `withdraw_all` reads the balance at execution time instead, so there is nothing
-    /// curve-derived left in the authorized invocation; the tradeoff is that it must be *all* of
-    /// `from`'s SY, which is why any pre-existing balance is rejected rather than swept along with it.
+    /// Reads `baseline = from`'s SY balance *before* the swap, then unwraps only what the swap
+    /// gained (`withdraw_gained`) rather than sweeping `from`'s entire SY balance
+    /// (`withdraw_all`) -- a caller who already held unrelated SY no longer needs to clear it
+    /// first. The swap's SY payout is a curve-derived amount that can drift by a few raw units
+    /// between simulation and real execution, so a plain `withdraw` reverted `Error(Auth,
+    /// InvalidAction)` live on Testnet while this function was first written -- confirmed in
+    /// `docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md`. `withdraw_gained` reads the balance at
+    /// execution time instead, so there is nothing curve-derived left in the authorized
+    /// invocation. An earlier version used `withdraw_all` and a zero-pre-existing-SY-balance
+    /// precondition instead -- found live by the dApp team to fail routinely, since any caller
+    /// who simply already held SY (or PT, from some unrelated trade) could never use it.
     pub fn swap_pt_for_underlying(
         env: Env,
         from: Address,
@@ -533,11 +559,9 @@ impl RouterContract {
         Self::assert_deadline(&env, deadline);
         let info = Self::info(&env, &pool);
         let sy = SYClient::new(&env, &info.sy);
-        if sy.balance_of(&from) != 0 {
-            panic_with_error!(&env, Error::PreexistingSyBalance);
-        }
+        let baseline = sy.balance_of(&from);
         PoolClient::new(&env, &pool).swap_pt_for_sy(&from, &from, &pt_in, &0);
-        sy.withdraw_all(&from, &from, &min_underlying_out)
+        sy.withdraw_gained(&from, &baseline, &from, &min_underlying_out)
     }
 
     /// **Flash-mint** buy of YT. Tokenizes `sy_in` SY into PT + YT, sells all of the PT back into
@@ -597,11 +621,13 @@ impl RouterContract {
     /// module docs describe, just not yet fixed here. If `sy_in` is larger than what `deposit`
     /// actually credited, `mint`'s own transfer simply fails on insufficient balance (an ordinary
     /// revert, not an auth error); if smaller, the shortfall is still recovered by the final
-    /// `withdraw_all` sweep below, same as a generous `mint_amount` leaves a recoverable surplus
-    /// with `add_liquidity_keep_yt`.
+    /// `withdraw_gained` sweep below, same as a generous `mint_amount` leaves a recoverable
+    /// surplus with `add_liquidity_keep_yt`.
     ///
-    /// The final unwrap uses `withdraw_all` and so requires `from` to hold no SY before this call
-    /// (reverts `PreexistingSyBalance` otherwise) -- see `swap_pt_for_underlying`'s docs for why.
+    /// Reads `baseline = from`'s SY balance *before* the wrap, then unwraps only what this call
+    /// gained (`withdraw_gained`) -- see `swap_pt_for_underlying`'s docs for why this replaced an
+    /// earlier `withdraw_all` + zero-pre-existing-SY-balance precondition that the dApp team
+    /// found failed routinely for any caller who already held SY.
     #[allow(clippy::too_many_arguments)] // one entrypoint composing a wrap, mint and sell, by design.
     pub fn swap_underlying_for_yt(
         env: Env,
@@ -617,9 +643,7 @@ impl RouterContract {
         Self::assert_deadline(&env, deadline);
         let info = Self::info(&env, &pool);
         let sy = SYClient::new(&env, &info.sy);
-        if sy.balance_of(&from) != 0 {
-            panic_with_error!(&env, Error::PreexistingSyBalance);
-        }
+        let baseline = sy.balance_of(&from);
         sy.deposit(&from, &underlying_amount, &0);
         let minted = ManagerClient::new(&env, &info.manager).mint(&from, &sy_in);
         if minted.yt_minted < min_yt_out {
@@ -631,7 +655,7 @@ impl RouterContract {
             sy_in - max_net_cost
         };
         PoolClient::new(&env, &pool).swap_pt_for_sy(&from, &from, &minted.pt_minted, &min_sy_back);
-        let underlying_back = sy.withdraw_all(&from, &from, &0);
+        let underlying_back = sy.withdraw_gained(&from, &baseline, &from, &0);
         (minted.yt_minted, underlying_back)
     }
 
@@ -722,9 +746,9 @@ impl RouterContract {
     }
 
     /// Same flash-redeem as `swap_yt_for_sy`, but unwraps the SY proceeds into underlying in the
-    /// same transaction, for a caller who wants to receive the underlying directly. Uses
-    /// `withdraw_all` and so requires `from` to hold no SY before the call -- see
-    /// `swap_pt_for_underlying`'s docs for why.
+    /// same transaction, for a caller who wants to receive the underlying directly. Reads
+    /// `baseline = from`'s SY balance before the swap, then unwraps only the gain
+    /// (`withdraw_gained`) -- see `swap_pt_for_underlying`'s docs for why.
     pub fn swap_yt_for_underlying(
         env: Env,
         from: Address,
@@ -737,11 +761,9 @@ impl RouterContract {
         Self::assert_deadline(&env, deadline);
         let info = Self::info(&env, &pool);
         let sy = SYClient::new(&env, &info.sy);
-        if sy.balance_of(&from) != 0 {
-            panic_with_error!(&env, Error::PreexistingSyBalance);
-        }
+        let baseline = sy.balance_of(&from);
         PoolClient::new(&env, &pool).swap_yt_for_sy(&from, &from, &yt_in, &0);
-        sy.withdraw_all(&from, &from, &min_underlying_out)
+        sy.withdraw_gained(&from, &baseline, &from, &min_underlying_out)
     }
 
     // --------------------------------------------------------------- liquidity
@@ -981,19 +1003,21 @@ impl RouterContract {
     }
 
     /// LP -> PT + SY (`MarketPool.remove_liquidity`) -> sell the PT leg for SY
-    /// (`MarketPool.swap_all_pt_for_sy`) -> unwrap everything to underlying
-    /// (`SYWrapper.withdraw_all`), in one transaction and one signature -- found missing in an
-    /// integration review (landing in underlying previously needed 2-3 separate calls: remove,
-    /// sell the PT, unwrap).
+    /// (`MarketPool.swap_gained_pt_for_sy`) -> unwrap to underlying (`SYWrapper.withdraw_gained`),
+    /// in one transaction and one signature -- found missing in an integration review (landing in
+    /// underlying previously needed 2-3 separate calls: remove, sell the PT, unwrap).
     ///
-    /// Both intermediate legs are swept with the balance-reading, no-amount-argument primitives
-    /// (`swap_all_pt_for_sy`, `withdraw_all`) rather than chaining `remove_liquidity`'s PT/SY
+    /// Reads `baseline_pt`/`baseline_sy` -- `from`'s PT and SY balances *before* `remove_liquidity`
+    /// -- then sells and unwraps only what this call itself produced on top of those, via
+    /// `swap_gained_pt_for_sy`/`withdraw_gained`, rather than chaining `remove_liquidity`'s PT/SY
     /// payout straight into further authorized calls as explicit arguments -- see the module
-    /// docs. That means this call requires `from` to hold **no** PT and **no** SY beforehand
-    /// (reverts `PreexistingPtBalance`/`PreexistingSyBalance` otherwise): both sweeps act on
-    /// `from`'s entire balance of their respective token, not just what this call itself
-    /// produces. The `remove_liquidity`/swap legs are unguarded; `min_underlying_out` protects
-    /// the whole round trip at the final, underlying-denominated output.
+    /// docs. An earlier version used the full-sweep primitives (`swap_all_pt_for_sy`,
+    /// `withdraw_all`) with a zero-pre-existing-balance precondition instead; the dApp team found
+    /// this failed routinely, since both the "LP only" zap and Keep YT deposits can themselves
+    /// leave small PT/SY remainders in `from`'s wallet, and simply having bought PT on an
+    /// unrelated earlier trade is enough to be "holding PT" by definition. The
+    /// `remove_liquidity`/swap legs are unguarded; `min_underlying_out` protects the whole round
+    /// trip at the final, underlying-denominated output.
     pub fn remove_liquidity_to_underlying(
         env: Env,
         from: Address,
@@ -1007,18 +1031,12 @@ impl RouterContract {
         let info = Self::info(&env, &pool);
         let pt = PtClient::new(&env, &info.pt);
         let sy = SYClient::new(&env, &info.sy);
-        if pt.balance(&from) != 0 {
-            panic_with_error!(&env, Error::PreexistingPtBalance);
-        }
-        if sy.balance_of(&from) != 0 {
-            panic_with_error!(&env, Error::PreexistingSyBalance);
-        }
+        let baseline_pt = pt.balance(&from);
+        let baseline_sy = sy.balance_of(&from);
         let pool_client = PoolClient::new(&env, &pool);
         pool_client.remove_liquidity(&from, &from, &lp_in, &0, &0);
-        if pt.balance(&from) > 0 {
-            pool_client.swap_all_pt_for_sy(&from, &from, &0);
-        }
-        sy.withdraw_all(&from, &from, &min_underlying_out)
+        pool_client.swap_gained_pt_for_sy(&from, &from, &baseline_pt, &0);
+        sy.withdraw_gained(&from, &baseline_sy, &from, &min_underlying_out)
     }
 
     // -------------------------------------------------------------- redemption
