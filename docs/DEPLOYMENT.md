@@ -477,6 +477,22 @@ just eyeballed. Two consequences of that cross-field rule, worth noting:
   after that commit landed, since `testnet.json` was necessarily written against the working tree
   just before it).
 
+**Known to be stale as of commit `5a6727e` (not yet redeployed)**: that commit added four
+read-only quote functions (`MarketPool.quote_add_liquidity_single_sy`/`quote_lp_exit`,
+`Router.quote_add_liquidity_underlying`/`quote_lp_to_underlying`) closing the last open
+dApp-reported gap ("no quote for the two new USDY LP functions") — see
+`docs/DAPP_SMART_CONTRACT_INTEGRATION_GUIDE.md` §8's closing addendum. `MarketPool`'s and
+`Router`'s wasm both changed again, so `testnet.json`'s `wasmHashes.pool`/`wasmHashes.router`
+(and Market 6's own `pool`/`router` addresses, still on the pre-this-commit wasm) do not yet
+reflect it. Not redeployed in the same pass deliberately: both additions are pure, already
+exact-equality-tested read-only views with no auth-tree or cross-call complexity (unlike the
+auth-drift and compliance bugs earlier rounds needed live Testnet proof for specifically because
+a Rust test cannot reproduce Soroban's own two-phase simulate/sign/submit behavior) — a live
+redeploy would add infrastructure churn without adding assurance beyond what the exact-equality
+regression test (which did catch a real bug in `quote_lp_exit`'s first draft) already gives.
+Fold into the next redeployment that happens for another reason, rather than redeploying solely
+for this.
+
 Regenerate or hand-edit this file after any redeployment; nothing currently automates keeping it
 in sync.
 
