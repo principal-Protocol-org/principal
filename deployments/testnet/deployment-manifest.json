@@ -1,0 +1,250 @@
+{
+  "schema_version": "1.0",
+  "network": "testnet",
+  "network_passphrase": "Test SDF Network ; September 2015",
+  "rpc_url": "https://soroban-testnet.stellar.org",
+  "horizon_url": "https://horizon-testnet.stellar.org",
+  "source_commit": "665bb6760372d30307a1a035da24e51776f727e8",
+  "built_at": "2026-11-13T22:01:18Z",
+  "wasm_target": "wasm32v1-none",
+  "git_tree_dirty": true,
+  "oracle_abi_version": 2,
+  "rustc_version": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "stellar_cli_version": "stellar 26.0.0 (60f7458e7ecffddf2f2d91dc6d0d2db4fab03ecc)",
+  "soroban_sdk_version": "26.0.1",
+  "release_tag": "",
+  "underlying": {
+    "kind": "sac",
+    "sac": "CD2A2J7YWN4QME2KUHLFWNBWJUHGY7IP5RNYY47Y625XIL6OFHK25374",
+    "decimals": 7
+  },
+  "market": {
+    "market_id": "testnet-CD2A2J-89d-CDO7S4YP",
+    "maturity": 1802381857,
+    "tokenization_fee_bps": 5,
+    "yt_fee_bps": 1000,
+    "swap_fee_tier_bps": 10,
+    "protocol_share_bps": 2000,
+    "double_reported_wrap_and_mint_capacity": true
+  },
+  "contracts": {
+    "oracle_adapter": {
+      "id": "CCP6U5FLJW6ZUUFLJOQLQ2SYRVA2ENQVGZ5YMRRJTJIBMFOCOI7PJP6P",
+      "wasm_path": "target/wasm32v1-none/release/principal_oracle_adapter.wasm",
+      "wasm_sha256": "f5c8a129c5aad53aff733b325a9949926a4fd4abf185a4dd0aec53476bf45253",
+      "deploy_tx": "",
+      "init_tx": "1955050f4dc388219616bca2beefbd75fa1b0dc3f65b7c93e4f67223fc541b45",
+      "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF"
+    },
+    "permissioning": {
+      "id": "CD7PNCOQNXWCDMKB2SPWWH5M5V4CBWW5XTP6KCXSU4ZT2Q4HBVIAHMFQ",
+      "wasm_path": "target/wasm32v1-none/release/principal_permissioning.wasm",
+      "wasm_sha256": "3bc08a9e21f12da4a9727c4923d664953974d3700a2fe60f8662cddf0eb9356b",
+      "deploy_tx": "",
+      "init_tx": "e9ed37b9a1a348798da90fd2a54d71fe126275d786ee77c5a0f385327d37784d",
+      "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF"
+    },
+    "risk_control": {
+      "id": "CCQ4WK3JFD3I7TQ73JS5IYBSGGALVWEH2AVOKKK3OBGTVV6G6ZC4CF5I",
+      "wasm_path": "target/wasm32v1-none/release/principal_risk_control.wasm",
+      "wasm_sha256": "fcac847ea311297a27abed2629c24fe56b6963fb899e880557a6d01bfde7ada1",
+      "deploy_tx": "",
+      "init_tx": "f0ba774a87336c8bd5993ae3dc800e35c50161150dc908487ba32e3d3054e0e0",
+      "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF"
+    },
+    "router": {
+      "id": "CBYXKUV3DNIRC3DQ7LU257C373EBOLRFJCN3F65JP2LT35NJL47Y5DVZ",
+      "wasm_path": "target/wasm32v1-none/release/principal_router.wasm",
+      "wasm_sha256": "708c8a283c242b7b8071dd939aa6612aaa804a78e99d0378e27c26a56284132e",
+      "deploy_tx": "",
+      "init_tx": "c6d5b8691c9b5e7c3f08cd614cadf9776ca416f637c01d593a56ebc7468c5b1c",
+      "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF"
+    },
+    "market_factory": {
+      "id": "CACFLQZQBBNF37V6ELSKFMC77FGRGLW74UPIYKT7U5B4VBMPLJ6A2UQ6",
+      "wasm_path": "target/wasm32v1-none/release/principal_market_factory.wasm",
+      "wasm_sha256": "409228b6b6cb077eea65effa50840d9ded1547636998138e725404ede8818a5b",
+      "deploy_tx": "",
+      "init_tx": "",
+      "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF"
+    },
+    "sy_wrapper": {
+      "id": "CDO7S4YPV36NFC5CHMSBGUVRZSKHPHIX35RBL33R4RLALVUK4YQSG4S5",
+      "wasm_path": "target/wasm32v1-none/release/principal_sy_wrapper.wasm",
+      "wasm_sha256": "394217638cd1b20b59dafb43bcd6fa76e3c9db860a89c54bc2cc9a9fc1c98e32",
+      "deploy_tx": "",
+      "init_tx": "",
+      "admin_address": "GDJ6UBFYQLWPHHOCRSHPBPW74NL2Q5ZUWKSEIOVKSYSK2JRE4PPGLZWT"
+    },
+    "pt_token": {
+      "id": "CADCXJF7DTZ5T2W7QRIJWBI5Q5LVGRTHW33F2SRAGMQKO3MIRDQIJBWG",
+      "wasm_path": "target/wasm32v1-none/release/principal_pt_token.wasm",
+      "wasm_sha256": "44fd470c791b36c597d96ccebbaf3ed4c0bb216449f089f4ed3e0b0a981b168a",
+      "deploy_tx": "",
+      "init_tx": "",
+      "admin_address": "GDJ6UBFYQLWPHHOCRSHPBPW74NL2Q5ZUWKSEIOVKSYSK2JRE4PPGLZWT"
+    },
+    "yt_token": {
+      "id": "CBCLSNK5N4SDNLTE7KXV52T6AQLPANSGH2UHUZ4K2TBW7TMIUWMY3O6J",
+      "wasm_path": "target/wasm32v1-none/release/principal_yt_token.wasm",
+      "wasm_sha256": "3fe7f27d38365ee8e933cd86dcd943a7330c2ba6a2c476717ac6b299fe283e89",
+      "deploy_tx": "",
+      "init_tx": "",
+      "admin_address": "GDJ6UBFYQLWPHHOCRSHPBPW74NL2Q5ZUWKSEIOVKSYSK2JRE4PPGLZWT"
+    },
+    "market_config": {
+      "id": "CAY2UW3LM7KTHSUZJKCTVQPTWP74V3O64IMN5ZQWSTDBQUWAPDOJYCWN",
+      "wasm_path": "target/wasm32v1-none/release/principal_market_config.wasm",
+      "wasm_sha256": "11b0cbdf10a8d204fcb568c54529801747feac05208c5bcbfaefd822ad0c79a8",
+      "deploy_tx": "",
+      "init_tx": "",
+      "admin_address": "GDJ6UBFYQLWPHHOCRSHPBPW74NL2Q5ZUWKSEIOVKSYSK2JRE4PPGLZWT"
+    },
+    "principal_manager": {
+      "id": "CB6TD5FT3UP5OMWFIKVXO72O4IVXB72JAC3KQOBTBJ2FGGW7YWI4JI2K",
+      "wasm_path": "target/wasm32v1-none/release/principal_manager.wasm",
+      "wasm_sha256": "819ae7ba616bc078369fe2b6e9a984b9b788fbb43dc62501494241b5e1b6f584",
+      "deploy_tx": "",
+      "init_tx": "",
+      "admin_address": "GDJ6UBFYQLWPHHOCRSHPBPW74NL2Q5ZUWKSEIOVKSYSK2JRE4PPGLZWT"
+    },
+    "market_pool": {
+      "id": "CDFKUEQHX32XOHV6K2VHYUDEKZFHRCRSNVNH3KBYBBVEQM2KM2CFEGCY",
+      "wasm_path": "target/wasm32v1-none/release/principal_market_pool.wasm",
+      "wasm_sha256": "caafcbfbcbfff646303f7da75ba707a48add01e79620f11a80a21cecf7e2cb4e",
+      "deploy_tx": "",
+      "init_tx": "",
+      "admin_address": "GDJ6UBFYQLWPHHOCRSHPBPW74NL2Q5ZUWKSEIOVKSYSK2JRE4PPGLZWT"
+    },
+    "recovery_escrow": {
+      "id": "CDGBQF54N66HEZGEFW7ZIU57DEEHCAWGPDGU6SCYUSXV5TBSFDATZW3X",
+      "wasm_path": "target/wasm32v1-none/release/principal_recovery_escrow.wasm",
+      "wasm_sha256": "a4d46832ef28f9f4ee30ce64dd2115c2e2dbbfb86eb1f6ad985debedd9b33590",
+      "deploy_tx": "",
+      "init_tx": "",
+      "admin_address": "GDJ6UBFYQLWPHHOCRSHPBPW74NL2Q5ZUWKSEIOVKSYSK2JRE4PPGLZWT"
+    }
+  },
+  "wiring": {
+    "router_registered_pool": true,
+    "pt_minter": "CB6TD5FT3UP5OMWFIKVXO72O4IVXB72JAC3KQOBTBJ2FGGW7YWI4JI2K",
+    "yt_minter": "CB6TD5FT3UP5OMWFIKVXO72O4IVXB72JAC3KQOBTBJ2FGGW7YWI4JI2K",
+    "recovery_escrow": "CDGBQF54N66HEZGEFW7ZIU57DEEHCAWGPDGU6SCYUSXV5TBSFDATZW3X",
+    "risk_consumers": [
+      "CDO7S4YPV36NFC5CHMSBGUVRZSKHPHIX35RBL33R4RLALVUK4YQSG4S5",
+      "CB6TD5FT3UP5OMWFIKVXO72O4IVXB72JAC3KQOBTBJ2FGGW7YWI4JI2K"
+    ]
+  },
+  "transactions": [
+    {
+      "step": "init:oracle_adapter",
+      "tx": "1955050f4dc388219616bca2beefbd75fa1b0dc3f65b7c93e4f67223fc541b45",
+      "at": "2026-11-13T20:40:07Z"
+    },
+    {
+      "step": "init:permissioning",
+      "tx": "e9ed37b9a1a348798da90fd2a54d71fe126275d786ee77c5a0f385327d37784d",
+      "at": "2026-11-13T20:40:26Z"
+    },
+    {
+      "step": "init:risk_control",
+      "tx": "f0ba774a87336c8bd5993ae3dc800e35c50161150dc908487ba32e3d3054e0e0",
+      "at": "2026-11-13T20:40:48Z"
+    },
+    {
+      "step": "init:router",
+      "tx": "c6d5b8691c9b5e7c3f08cd614cadf9776ca416f637c01d593a56ebc7468c5b1c",
+      "at": "2026-11-13T20:41:07Z"
+    },
+    {
+      "step": "oracle_adapter:set_reference_value",
+      "tx": "74b26c561190309c3781d4447d4ebc0974dbda0fa8975d73d203ec443e3f5aed",
+      "at": "2026-11-13T20:44:11Z"
+    },
+    {
+      "step": "oracle_adapter:set_reference_value",
+      "tx": "229d90f420c94a3292e3afcd4307a17075ea233eaa2a79044126ea2b61e14013",
+      "at": "2026-11-13T21:45:55Z"
+    },
+    {
+      "step": "compliance:set_authorized:CDO7S4YPV36NFC5CHMSBGUVRZSKHPHIX35RBL33R4RLALVUK4YQSG4S5",
+      "tx": "e79f4f06653894713cdc02e504940d460cc5682bb6470b0c4b006c64975c5842",
+      "at": "2026-11-13T22:01:34Z"
+    },
+    {
+      "step": "compliance:grant_account:CDO7S4YPV36NFC5CHMSBGUVRZSKHPHIX35RBL33R4RLALVUK4YQSG4S5",
+      "tx": "356d292364e1a91fb6e5391d5fb1380668be7a01386cc333fb6b876712ba1929",
+      "at": "2026-11-13T22:01:41Z"
+    },
+    {
+      "step": "compliance:set_authorized:CB6TD5FT3UP5OMWFIKVXO72O4IVXB72JAC3KQOBTBJ2FGGW7YWI4JI2K",
+      "tx": "187a412771b8d0069da7712b66fdc23982c5981d06846b06e72664fc0b541418",
+      "at": "2026-11-13T22:01:46Z"
+    },
+    {
+      "step": "compliance:grant_account:CB6TD5FT3UP5OMWFIKVXO72O4IVXB72JAC3KQOBTBJ2FGGW7YWI4JI2K",
+      "tx": "c37adc868e87b771b6ccb8da04d6263af60bf13b593b955e8f17538c919bd35c",
+      "at": "2026-11-13T22:01:51Z"
+    },
+    {
+      "step": "compliance:set_authorized:CDFKUEQHX32XOHV6K2VHYUDEKZFHRCRSNVNH3KBYBBVEQM2KM2CFEGCY",
+      "tx": "0095bedecd0736f10ac808725073fda64fb59adff3144165f535b8d829706403",
+      "at": "2026-11-13T22:01:56Z"
+    },
+    {
+      "step": "compliance:grant_account:CDFKUEQHX32XOHV6K2VHYUDEKZFHRCRSNVNH3KBYBBVEQM2KM2CFEGCY",
+      "tx": "274cf936b48e7a02687297e798b21c57836c9faebc2584cedb7213c05fb46c8f",
+      "at": "2026-11-13T22:02:00Z"
+    },
+    {
+      "step": "compliance:set_authorized:CDGBQF54N66HEZGEFW7ZIU57DEEHCAWGPDGU6SCYUSXV5TBSFDATZW3X",
+      "tx": "0b97c7da20cec7ce466696c86b4e1c961de8575b819a299cae44eac649d3cda6",
+      "at": "2026-11-13T22:02:05Z"
+    },
+    {
+      "step": "compliance:grant_account:CDGBQF54N66HEZGEFW7ZIU57DEEHCAWGPDGU6SCYUSXV5TBSFDATZW3X",
+      "tx": "ff680653bcf279880f5a120d692a4797a103b419c9f7235129e305088019f576",
+      "at": "2026-11-13T22:02:10Z"
+    },
+    {
+      "step": "compliance:set_authorized:GBPDLO73W2BQJ3F755ZZZKVFKP2FPVEIFW5THYANGDWEYJ5QQYDCMGET",
+      "tx": "41073ba7de41d98b1baf190234ce2c257b987e5ca58413df8184f6affca3bb3b",
+      "at": "2026-11-13T22:02:17Z"
+    },
+    {
+      "step": "compliance:grant_account:GBPDLO73W2BQJ3F755ZZZKVFKP2FPVEIFW5THYANGDWEYJ5QQYDCMGET",
+      "tx": "03159b8bfc593625ccbe4a3ada16317a91e3c4f80d61b9a8549fbaddc2374113",
+      "at": "2026-11-13T22:02:29Z"
+    },
+    {
+      "step": "compliance:grant_asset_pt:CDFKUEQHX32XOHV6K2VHYUDEKZFHRCRSNVNH3KBYBBVEQM2KM2CFEGCY",
+      "tx": "bbebaab9ae57c765d97f361541590d7cd40e4a0285e83d24095e76280aefdbce",
+      "at": "2026-11-13T22:02:36Z"
+    },
+    {
+      "step": "compliance:grant_asset_yt:CDFKUEQHX32XOHV6K2VHYUDEKZFHRCRSNVNH3KBYBBVEQM2KM2CFEGCY",
+      "tx": "e5621ccb001dfa508b8482077a60b61e041a9df789cedca7bfe0bedc73d6c273",
+      "at": "2026-11-13T22:02:41Z"
+    },
+    {
+      "step": "compliance:grant_asset_pt:CDGBQF54N66HEZGEFW7ZIU57DEEHCAWGPDGU6SCYUSXV5TBSFDATZW3X",
+      "tx": "51f5215660334fe9ea63d72a48ac8eacebfbc2a1e3d07dfae4b6444f3976488a",
+      "at": "2026-11-13T22:02:46Z"
+    },
+    {
+      "step": "compliance:grant_asset_yt:CDGBQF54N66HEZGEFW7ZIU57DEEHCAWGPDGU6SCYUSXV5TBSFDATZW3X",
+      "tx": "e589d914ad7cbf30c64d319f4d4059af538383442dde6d60ecabdc4f10928012",
+      "at": "2026-11-13T22:02:51Z"
+    },
+    {
+      "step": "compliance:grant_asset_pt:GBPDLO73W2BQJ3F755ZZZKVFKP2FPVEIFW5THYANGDWEYJ5QQYDCMGET",
+      "tx": "3efc18508bf3166566dbc816c6a12ef398f3dacc22b5d65cb129e97d0da57a7b",
+      "at": "2026-11-13T22:02:55Z"
+    },
+    {
+      "step": "compliance:grant_asset_yt:GBPDLO73W2BQJ3F755ZZZKVFKP2FPVEIFW5THYANGDWEYJ5QQYDCMGET",
+      "tx": "faf010fee9430e61d4ef8002e34ad31ad81dcc1d55d3a99ee9b3cbce1a6658af",
+      "at": "2026-11-13T22:03:00Z"
+    }
+  ]
+}

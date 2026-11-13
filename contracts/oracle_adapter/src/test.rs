@@ -1,9 +1,51 @@
 use soroban_sdk::{
+    contract, contractimpl,
     testutils::{Address as _, Ledger as _},
     Address, BytesN, Env, Symbol,
 };
 
-use super::{Error, OracleAdapterContract, OracleAdapterContractClient};
+use super::{
+    Error, OracleAdapterContract, OracleAdapterContractClient, Sep40Asset, Sep40PriceData,
+};
+
+/// Minimal SEP-40 feed, for `sync_from_feed` tests only: `set_price`/`clear_price` let a test
+/// drive exactly what `lastprice()` returns, including `None` (no data for that asset).
+#[contract]
+pub struct MockSep40Feed;
+
+#[soroban_sdk::contracttype]
+enum MockKey {
+    Decimals,
+    Price(Sep40Asset),
+}
+
+#[contractimpl]
+impl MockSep40Feed {
+    pub fn initialize(env: Env, decimals: u32) {
+        env.storage().instance().set(&MockKey::Decimals, &decimals);
+    }
+
+    pub fn set_price(env: Env, asset: Sep40Asset, price: i128, timestamp: u64) {
+        env.storage()
+            .instance()
+            .set(&MockKey::Price(asset), &(price, timestamp));
+    }
+
+    pub fn clear_price(env: Env, asset: Sep40Asset) {
+        env.storage().instance().remove(&MockKey::Price(asset));
+    }
+
+    pub fn decimals(env: Env) -> u32 {
+        env.storage().instance().get(&MockKey::Decimals).unwrap()
+    }
+
+    pub fn lastprice(env: Env, asset: Sep40Asset) -> Option<Sep40PriceData> {
+        env.storage()
+            .instance()
+            .get::<_, (i128, u64)>(&MockKey::Price(asset))
+            .map(|(price, timestamp)| Sep40PriceData { price, timestamp })
+    }
+}
 
 /// What a `try_*` call returns for the contract error `e`.
 fn err(e: Error) -> Option<Result<soroban_sdk::Error, soroban_sdk::InvokeError>> {
@@ -604,4 +646,234 @@ fn is_fresh_false_when_stored_timestamp_is_ahead_of_ledger_clock() {
     client.set_reference_value(&admin, &primary, &10_000_000_i128, &5_000_u64);
     env.ledger().with_mut(|li| li.timestamp = 1_000);
     assert!(!client.is_fresh(&3_600_u64));
+}
+
+// --------------------------------------------------------------- sync_from_feed (SEP-40 pull)
+
+fn feed_asset(env: &Env) -> Sep40Asset {
+    Sep40Asset::Stellar(Address::generate(env))
+}
+
+/// `setup()` plus a `MockSep40Feed` at `feed_decimals`, configured as this oracle's feed source
+/// for `asset`. The feed itself starts with no price set (`lastprice()` returns `None`) --
+/// individual tests call `feed.set_price(...)` as needed.
+fn setup_with_feed(
+    feed_decimals: u32,
+) -> (
+    Env,
+    OracleAdapterContractClient<'static>,
+    Address,
+    Sep40Asset,
+    soroban_sdk::Address,
+) {
+    let (env, client, admin, _primary) = setup();
+    let feed_id = env.register_contract(None, MockSep40Feed);
+    let feed = crate::test::MockSep40FeedClient::new(&env, &feed_id);
+    feed.initialize(&feed_decimals);
+    let asset = feed_asset(&env);
+    client.set_feed_source(&admin, &feed_id, &asset);
+    (env, client, admin, asset, feed_id)
+}
+
+#[test]
+fn sync_from_feed_accepts_a_price_already_at_protocol_scale() {
+    let (env, client, _admin, asset, feed_id) = setup_with_feed(7);
+    let feed = MockSep40FeedClient::new(&env, &feed_id);
+    feed.set_price(&asset, &10_500_000_i128, &100_u64);
+    env.ledger().with_mut(|li| li.timestamp = 200);
+
+    assert!(client.sync_from_feed());
+    assert_eq!(client.get_reference_value(), 10_500_000);
+    assert_eq!(client.get_reference_timestamp(), 100);
+    assert!(client.last_update_was_feed());
+}
+
+#[test]
+fn sync_from_feed_rescales_down_from_a_feed_with_more_decimals() {
+    // Feed at 8 decimals: 150_000_000 == 1.5. Protocol is 7 decimals: 1.5 == 15_000_000.
+    let (env, client, _admin, asset, feed_id) = setup_with_feed(8);
+    let feed = MockSep40FeedClient::new(&env, &feed_id);
+    feed.set_price(&asset, &150_000_000_i128, &100_u64);
+    env.ledger().with_mut(|li| li.timestamp = 200);
+
+    assert!(client.sync_from_feed());
+    assert_eq!(client.get_reference_value(), 15_000_000);
+}
+
+#[test]
+fn sync_from_feed_rescales_up_from_a_feed_with_fewer_decimals() {
+    // Feed at 5 decimals: 150_000 == 1.5. Protocol is 7 decimals: 1.5 == 15_000_000.
+    let (env, client, _admin, asset, feed_id) = setup_with_feed(5);
+    let feed = MockSep40FeedClient::new(&env, &feed_id);
+    feed.set_price(&asset, &150_000_i128, &100_u64);
+    env.ledger().with_mut(|li| li.timestamp = 200);
+
+    assert!(client.sync_from_feed());
+    assert_eq!(client.get_reference_value(), 15_000_000);
+}
+
+#[test]
+fn sync_from_feed_rejects_gracefully_when_the_feed_has_no_data() {
+    let (env, client, _admin, _asset, _feed_id) = setup_with_feed(7);
+    env.ledger().with_mut(|li| li.timestamp = 200);
+
+    assert!(!client.sync_from_feed());
+    assert_eq!(
+        client.last_rejection().unwrap().reason,
+        Symbol::new(&env, "no_data")
+    );
+}
+
+#[test]
+fn sync_from_feed_rejects_a_non_positive_price_gracefully() {
+    let (env, client, _admin, asset, feed_id) = setup_with_feed(7);
+    let feed = MockSep40FeedClient::new(&env, &feed_id);
+    feed.set_price(&asset, &0_i128, &100_u64);
+    env.ledger().with_mut(|li| li.timestamp = 200);
+
+    assert!(!client.sync_from_feed());
+    assert_eq!(
+        client.last_rejection().unwrap().reason,
+        Symbol::new(&env, "bad_price")
+    );
+}
+
+#[test]
+fn sync_from_feed_rejects_a_future_timestamp_gracefully_unlike_set_reference_value() {
+    // The push path panics TimestampInFuture for this -- sync_from_feed must not: the feed, not
+    // the caller, produced the bad data, and the caller here could be an unattended keeper.
+    let (env, client, _admin, asset, feed_id) = setup_with_feed(7);
+    let feed = MockSep40FeedClient::new(&env, &feed_id);
+    env.ledger().with_mut(|li| li.timestamp = 100);
+    feed.set_price(&asset, &10_000_000_i128, &500_u64); // ahead of the ledger clock
+
+    assert!(!client.sync_from_feed());
+    assert_eq!(
+        client.last_rejection().unwrap().reason,
+        Symbol::new(&env, "future_ts")
+    );
+}
+
+#[test]
+fn sync_from_feed_rejects_a_stale_or_repeated_timestamp() {
+    let (env, client, admin, asset, feed_id) = setup_with_feed(7);
+    let feed = MockSep40FeedClient::new(&env, &feed_id);
+    env.ledger().with_mut(|li| li.timestamp = 1_000);
+    client.set_reference_value(
+        &admin,
+        &BytesN::from_array(&env, &{
+            let mut b = [0u8; 32];
+            b[0] = 1;
+            b
+        }),
+        &10_000_000_i128,
+        &100_u64,
+    );
+    feed.set_price(&asset, &10_500_000_i128, &100_u64); // same timestamp as what's stored
+
+    assert!(!client.sync_from_feed());
+    assert_eq!(
+        client.last_rejection().unwrap().reason,
+        Symbol::new(&env, "stale_ts")
+    );
+}
+
+#[test]
+fn sync_from_feed_rejects_a_decrease() {
+    let (env, client, admin, asset, feed_id) = setup_with_feed(7);
+    let feed = MockSep40FeedClient::new(&env, &feed_id);
+    let primary = BytesN::from_array(&env, &{
+        let mut b = [0u8; 32];
+        b[0] = 1;
+        b
+    });
+    client.set_reference_value(&admin, &primary, &10_000_000_i128, &100_u64);
+    feed.set_price(&asset, &9_000_000_i128, &200_u64);
+    env.ledger().with_mut(|li| li.timestamp = 300);
+
+    assert!(!client.sync_from_feed());
+    assert_eq!(
+        client.last_rejection().unwrap().reason,
+        Symbol::new(&env, "decrease")
+    );
+    // Rejection must not disturb the value a push submission already established.
+    assert_eq!(client.get_reference_value(), 10_000_000);
+    assert!(!client.last_update_was_feed());
+}
+
+#[test]
+fn sync_from_feed_rejects_excess_deviation() {
+    let (env, client, admin, asset, feed_id) = setup_with_feed(7);
+    let feed = MockSep40FeedClient::new(&env, &feed_id);
+    let primary = BytesN::from_array(&env, &{
+        let mut b = [0u8; 32];
+        b[0] = 1;
+        b
+    });
+    client.set_reference_value(&admin, &primary, &10_000_000_i128, &100_u64);
+    // MAX_DEVIATION_BPS is 1_000 (10%); +50% is well over it.
+    feed.set_price(&asset, &15_000_000_i128, &200_u64);
+    env.ledger().with_mut(|li| li.timestamp = 300);
+
+    assert!(!client.sync_from_feed());
+    assert_eq!(
+        client.last_rejection().unwrap().reason,
+        Symbol::new(&env, "deviate")
+    );
+}
+
+#[test]
+fn sync_from_feed_respects_value_bounds() {
+    let (env, client, admin, asset, feed_id) = setup_with_feed(7);
+    let feed = MockSep40FeedClient::new(&env, &feed_id);
+    client.set_value_bounds(&admin, &1_i128, &12_000_000_i128);
+    feed.set_price(&asset, &13_000_000_i128, &100_u64);
+    env.ledger().with_mut(|li| li.timestamp = 200);
+
+    assert!(!client.sync_from_feed());
+    assert_eq!(
+        client.last_rejection().unwrap().reason,
+        Symbol::new(&env, "oob")
+    );
+}
+
+#[test]
+fn sync_from_feed_panics_when_no_feed_is_configured() {
+    let (_env, client, _admin, _primary) = setup();
+    let r = client.try_sync_from_feed();
+    assert_eq!(r.err(), err(Error::FeedNotConfigured));
+}
+
+#[test]
+fn set_feed_source_requires_admin() {
+    let (env, client, _admin, _primary) = setup();
+    let not_admin = Address::generate(&env);
+    let feed_id = env.register_contract(None, MockSep40Feed);
+    let asset = feed_asset(&env);
+    let r = client.try_set_feed_source(&not_admin, &feed_id, &asset);
+    assert_eq!(r.err(), err(Error::Unauthorized));
+}
+
+#[test]
+fn last_update_was_feed_toggles_correctly_between_push_and_pull() {
+    let (env, client, admin, asset, feed_id) = setup_with_feed(7);
+    let feed = MockSep40FeedClient::new(&env, &feed_id);
+    let primary = BytesN::from_array(&env, &{
+        let mut b = [0u8; 32];
+        b[0] = 1;
+        b
+    });
+    assert!(!client.last_update_was_feed()); // nothing accepted yet
+
+    client.set_reference_value(&admin, &primary, &10_000_000_i128, &100_u64);
+    assert!(!client.last_update_was_feed());
+
+    feed.set_price(&asset, &10_200_000_i128, &200_u64);
+    env.ledger().with_mut(|li| li.timestamp = 300);
+    assert!(client.sync_from_feed());
+    assert!(client.last_update_was_feed());
+
+    env.ledger().with_mut(|li| li.timestamp = 500);
+    client.set_reference_value(&admin, &primary, &10_300_000_i128, &400_u64);
+    assert!(!client.last_update_was_feed());
 }

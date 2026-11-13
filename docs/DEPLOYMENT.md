@@ -100,6 +100,31 @@ Artifacts:
 `wasm32-unknown-unknown` no longer builds with Soroban SDK 26 on current Rust; use `wasm32v1-none`
 (`rustup target add wasm32v1-none`). Every artifact is under the 128 KiB limit.
 
+## Scripted deployment pipeline (recommended)
+
+The manual, step-by-step procedure below predates `scripts/deploy/deploy.sh` and remains the
+reference for exactly what each step does and why — read it once. For an actual deployment,
+prefer the scripted pipeline, which implements
+`docs/TRANCHE_2_3_TECHNICAL_SPECIFICATION.md` §5.3–§5.6 end to end: a single `.env` file
+(`.env.example` at the repo root), idempotent re-deploy (proven live — see
+`docs/TRANCHE_2_TESTNET_ACCEPTANCE.md` §6 finding 4), a `deployment-manifest.json` recording
+every contract address, wasm hash, and (for shared infra deployed since that document's fixes,
+plus every compliance grant) transaction hash, and a read-only post-deploy verification script.
+Per-market-creation transaction hashes are not yet written into the manifest itself — see that
+document's §8 for the exact gap and current workaround.
+
+```bash
+cp .env.example .env   # fill in ISSUER_KEY, ADMIN_KEY, UNDERLYING_SAC, etc.
+cargo build --workspace --release --target wasm32v1-none
+./scripts/deploy/deploy.sh
+./scripts/deploy/verify-deployment.sh
+```
+
+This writes `deployments/<network>/deployment-manifest.json` — an internal ops/audit record,
+distinct from `testnet.json` at the repo root (which exists only to match `principal-dApp`'s own
+manifest schema; see its own section below). For the mainnet RedStone USDY/USD oracle
+integration, see `services/oracle-relay/README.md` and `OracleAdapter`'s own module doc.
+
 ## Testnet deployment
 
 Set your network and both identities once (see "Key roles" above — `admin` below is `ISSUER_KEY`;
@@ -172,7 +197,7 @@ stellar contract deploy \
 # cb_limit = 0 disables the circuit breaker; set to a non-zero value to enable
 stellar contract invoke --id risk_control \
   --source protocol_admin --network testnet \
-  -- initialize --admin $(stellar keys address protocol_admin) --cb-limit 0
+  -- initialize --admin $(stellar keys address protocol_admin) --cb_limit 0
 ```
 
 ### 4. SYWrapper
@@ -391,6 +416,13 @@ stellar contract invoke --id permissioning --source protocol_admin --network tes
   -- grant_asset --caller $(stellar keys address protocol_admin) --account <CONTRACT_ADDRESS> \
      --asset $(stellar contract id alias pt_token --network testnet)      # and again for yt_token
 ```
+
+**A G-account with no trustline yet** (typically the treasury or an `EXTRA_COMPLIANCE_ACCOUNTS`
+entry, never a protocol contract address, which the SAC always handles lazily) makes
+`set_authorized` revert the SAC's own `TrustlineMissingError` (error #13) — that account must run
+its own `stellar tx new change-trust --source <its key> --line <CODE>:<ISSUER_G_ADDR>` first; no
+other key can do this on its behalf. Found live running `scripts/deploy/deploy.sh` against a fresh
+`AUTH_REQUIRED` asset whose treasury account had never touched it before.
 
 **SEP-8 issuers:** the standing above must be *persistent*. The SEP-8 authorize→pay→deauthorize sandwich
 cannot wrap a single-operation Soroban call, so a holder (or protocol contract) that is authorized only inside

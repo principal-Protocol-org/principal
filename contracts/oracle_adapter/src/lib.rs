@@ -38,13 +38,47 @@
 //!   timestamp) should not look like a broken transaction in monitoring. A caller that wants a
 //!   crisp revert instead of a boolean can call `assert_available()` beforehand, or simulate the
 //!   call and inspect the return value before submitting.
+//!
+//! # Pulling from a SEP-40 feed, as an alternative primary source
+//!
+//! **Beyond the funded Tranche 2/3 spec** (`docs/TRANCHE_2_3_TECHNICAL_SPECIFICATION.md` §5.2,
+//! §10.2): the spec's own mainnet oracle design is an off-chain relay service
+//! (`services/oracle-relay`) that fetches, validates and converts a feed value off-chain, then
+//! pushes it through `set_reference_value` below -- the existing, already-specified ABI. This
+//! on-chain pull mechanism is an additional, explicitly optional capability layered on top, kept
+//! because it is already built and tested and because a trust-minimized on-chain read is a
+//! real improvement over trusting a relay's own say-so -- **not** a replacement for the
+//! off-chain relay, which remains the primary, spec-compliant integration path. Treat
+//! `set_feed_source`/`sync_from_feed` as needing their own explicit security review and sign-off
+//! before any mainnet asset relies on them, separately from whatever review covers the relay
+//! service itself: they are new attack surface the spec's own enumerated API/error lists
+//! (§5.2.2, §5.2.3) do not include.
+//!
+//! `set_reference_value` above is push-based: some off-chain relay decides when to submit and
+//! what. `sync_from_feed` is the pull-based alternative, for a mainnet asset with a real SEP-40
+//! price oracle already on Stellar (e.g. RedStone's USDY/USD feed) as its primary source of
+//! truth: anyone can call it (no admin, no `caller` argument at all) to read that feed's
+//! `lastprice()` live and run the result through this contract's *own* freshness/deviation/
+//! sane-bounds checks -- exactly the same checks `set_reference_value` enforces, so this
+//! contract remains the single place those policies live regardless of which mechanism feeds it.
+//! The two mechanisms coexist deliberately: `set_feed_source`/`sync_from_feed` for the primary,
+//! trust-minimized path once a real feed exists for an asset; the existing
+//! `set_sources`/`set_reference_value` push path stays fully functional as a manual fallback or
+//! for an asset with no SEP-40 feed at all -- nothing above this section changes.
+//!
+//! Graceful rejection applies much more broadly here than in `set_reference_value`: a `None`
+//! result, a non-positive price, or a future timestamp from the feed are *not* signs of a broken
+//! caller the way they are for a direct admin submission -- `sync_from_feed` is meant to be
+//! called by anyone, including an unattended keeper, so a feed having a bad tick must not revert
+//! the whole call. Only `FeedNotConfigured` panics, because that is a genuine setup mistake
+//! (nobody called `set_feed_source` yet), not routine feed noise.
 
 #![no_std]
 #![allow(deprecated)] // `env.events().publish` / `register_contract`: migration to `#[contractevent]` is tracked separately; event topics are kept stable for indexers.
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
-    BytesN, Env, Symbol,
+    contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error,
+    symbol_short, Address, BytesN, Env, Symbol,
 };
 
 #[contracterror]
@@ -82,6 +116,9 @@ pub enum Error {
     /// one has been set. Checked before the deviation guard and even for a value otherwise
     /// exempt from it (the first-ever submission) -- see `set_value_bounds`'s doc for why.
     ValueOutOfBounds = 14,
+    /// `sync_from_feed` called before any `set_feed_source` -- a setup mistake, not routine feed
+    /// noise, so (unlike everything that feed itself can return) this panics.
+    FeedNotConfigured = 15,
 }
 
 #[contracttype]
@@ -99,6 +136,35 @@ pub enum DataKey {
     LastRejectReason,
     MinSaneValue,
     MaxSaneValue,
+    FeedSource,
+    FeedAsset,
+    LastUpdateWasFeed,
+}
+
+/// SEP-40's own asset discriminant (ecosystem/sep-0040.md) -- a feed may quote several assets
+/// against one `base()`, so a pull must say which one.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub enum Sep40Asset {
+    Stellar(Address),
+    Other(Symbol),
+}
+
+/// SEP-40's own return shape, field-for-field: `price` scaled by the feed's own `decimals()`
+/// (not necessarily this contract's convention -- `sync_from_feed` rescales), `timestamp` in
+/// Unix seconds.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sep40PriceData {
+    pub price: i128,
+    pub timestamp: u64,
+}
+
+/// Minimal SEP-40 consumer interface -- only the two calls `sync_from_feed` actually needs.
+#[contractclient(name = "Sep40Client")]
+pub trait Sep40Interface {
+    fn decimals(env: Env) -> u32;
+    fn lastprice(env: Env, asset: Sep40Asset) -> Option<Sep40PriceData>;
 }
 
 /// The most recent `set_reference_value` call this contract refused, if any. `reason` is one of
@@ -166,6 +232,44 @@ impl OracleAdapterContract {
             (symbol_short!("src_set"),),
             (primary_source, fallback_source),
         );
+    }
+
+    /// Configure (or reconfigure) which SEP-40-compliant contract `sync_from_feed` pulls from,
+    /// and which `Sep40Asset` to ask it for (one feed contract can quote several assets). Fully
+    /// independent of `set_sources`/`set_reference_value` above -- both mechanisms can be
+    /// configured at once, and whichever last successfully updated `Price`/`Timestamp` wins,
+    /// same as primary vs. fallback already works for the push path.
+    pub fn set_feed_source(env: Env, caller: Address, feed: Address, asset: Sep40Asset) {
+        caller.require_auth();
+        let admin = Self::require_admin(&env);
+        if caller != admin {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+        env.storage().instance().set(&DataKey::FeedSource, &feed);
+        env.storage().instance().set(&DataKey::FeedAsset, &asset);
+        env.events()
+            .publish((symbol_short!("feed_set"),), (feed, asset));
+    }
+
+    /// The configured SEP-40 feed contract and asset, or `None` if `set_feed_source` has never
+    /// been called.
+    pub fn feed_source(env: Env) -> Option<(Address, Sep40Asset)> {
+        let feed: Option<Address> = env.storage().instance().get(&DataKey::FeedSource);
+        let asset: Option<Sep40Asset> = env.storage().instance().get(&DataKey::FeedAsset);
+        match (feed, asset) {
+            (Some(feed), Some(asset)) => Some((feed, asset)),
+            _ => None,
+        }
+    }
+
+    /// Whether the currently-stored `Price`/`Timestamp` came from the last successful
+    /// `sync_from_feed` (`true`) or the last successful `set_reference_value` (`false`).
+    /// `false` before either has ever succeeded.
+    pub fn last_update_was_feed(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::LastUpdateWasFeed)
+            .unwrap_or(false)
     }
 
     /// Update the feed's own safety thresholds without touching the configured sources.
@@ -336,9 +440,106 @@ impl OracleAdapterContract {
         env.storage()
             .instance()
             .set(&DataKey::ActiveSource, &source);
+        env.storage()
+            .instance()
+            .set(&DataKey::LastUpdateWasFeed, &false);
         env.events()
             .publish((symbol_short!("ref_set"),), (value, timestamp));
         true
+    }
+
+    /// Scale this feed's price to `PROTOCOL_DECIMALS`, then run it through this contract's own
+    /// freshness/monotonic-value/deviation/sane-bounds policy, exactly as a primary-source
+    /// `set_reference_value` submission would -- except every failure here is a graceful
+    /// rejection, never a panic (see the module doc for why `sync_from_feed` cannot treat a bad
+    /// feed tick the way a malformed admin call is treated). Callable by anyone; there is
+    /// nothing to authorize, since it only ever *reads* the configured feed.
+    ///
+    /// Returns `true` if accepted (`Price`/`Timestamp` updated, `last_update_was_feed() == true`
+    /// afterward), `false` otherwise -- `last_rejection()` explains why, same as the push path.
+    pub fn sync_from_feed(env: Env) -> bool {
+        let (feed, asset) = Self::feed_source(env.clone())
+            .unwrap_or_else(|| panic_with_error!(&env, Error::FeedNotConfigured));
+        let client = Sep40Client::new(&env, &feed);
+        let decimals = client.decimals();
+        let data = match client.lastprice(&asset) {
+            Some(data) => data,
+            None => return Self::reject(&env, 0, 0, symbol_short!("no_data")),
+        };
+        if data.price <= 0 {
+            return Self::reject(&env, data.price, data.timestamp, symbol_short!("bad_price"));
+        }
+        let value = match Self::rescale_to_protocol_decimals(data.price, decimals) {
+            Some(value) => value,
+            None => {
+                return Self::reject(&env, data.price, data.timestamp, symbol_short!("rescale"))
+            }
+        };
+        if value <= 0 {
+            return Self::reject(&env, value, data.timestamp, symbol_short!("bad_price"));
+        }
+        if let Some((min, max)) = Self::value_bounds(env.clone()) {
+            if value < min || value > max {
+                return Self::reject(&env, value, data.timestamp, symbol_short!("oob"));
+            }
+        }
+        if data.timestamp > env.ledger().timestamp() {
+            return Self::reject(&env, value, data.timestamp, symbol_short!("future_ts"));
+        }
+
+        let current_price: i128 = env.storage().instance().get(&DataKey::Price).unwrap_or(0);
+        let current_ts: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Timestamp)
+            .unwrap_or(0u64);
+        if data.timestamp <= current_ts {
+            return Self::reject(&env, value, data.timestamp, symbol_short!("stale_ts"));
+        }
+        if value < current_price {
+            return Self::reject(&env, value, data.timestamp, symbol_short!("decrease"));
+        } else if current_price > 0 {
+            let max_bps = Self::max_deviation_bps(env.clone()) as i128;
+            let within_bounds = (value - current_price)
+                .checked_mul(BPS_SCALE as i128)
+                .and_then(|scaled| scaled.checked_div(current_price))
+                .is_some_and(|deviation_bps| deviation_bps <= max_bps);
+            if !within_bounds {
+                return Self::reject(&env, value, data.timestamp, symbol_short!("deviate"));
+            }
+        }
+
+        env.storage().instance().set(&DataKey::Price, &value);
+        env.storage()
+            .instance()
+            .set(&DataKey::Timestamp, &data.timestamp);
+        env.storage()
+            .instance()
+            .set(&DataKey::LastUpdateWasFeed, &true);
+        env.events()
+            .publish((symbol_short!("ref_set"),), (value, data.timestamp));
+        true
+    }
+
+    /// `PROTOCOL_DECIMALS` is this codebase's own reference-value scale (`SCALE = 1e7` in
+    /// `MarketPool`/`PrincipalManager`/etc.) -- a SEP-40 feed's `decimals()` is its own,
+    /// independent convention and is not guaranteed to match. Rescales by a plain power of ten
+    /// in whichever direction is needed; a feed with *more* decimals than the protocol floors
+    /// (loses at most a few raw units of precision, negligible next to real price magnitudes,
+    /// consistent with floor-rounding used elsewhere in this codebase). `None` on overflow
+    /// (treated as a graceful rejection by every caller, not a panic).
+    fn rescale_to_protocol_decimals(value: i128, feed_decimals: u32) -> Option<i128> {
+        const PROTOCOL_DECIMALS: u32 = 7;
+        if feed_decimals == PROTOCOL_DECIMALS {
+            return Some(value);
+        }
+        if feed_decimals < PROTOCOL_DECIMALS {
+            let factor = 10i128.checked_pow(PROTOCOL_DECIMALS - feed_decimals)?;
+            value.checked_mul(factor)
+        } else {
+            let factor = 10i128.checked_pow(feed_decimals - PROTOCOL_DECIMALS)?;
+            Some(value / factor)
+        }
     }
 
     pub fn get_reference_value(env: Env) -> i128 {

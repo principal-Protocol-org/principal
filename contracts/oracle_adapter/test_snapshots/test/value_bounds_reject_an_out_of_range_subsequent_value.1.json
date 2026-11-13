@@ -202,6 +202,18 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "LastUpdateWasFeed"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "bool": false
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "MaxDeviationBps"
                           }
                         ]
