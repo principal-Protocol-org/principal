@@ -766,13 +766,14 @@ market: reusing the market already in the manifest (sy_wrapper=CAQL2NXBWO5BNQF2Z
 
 Zero new contracts, exactly as §9's idempotency proof showed on the original stack. One honest
 caveat found this round, not previously documented: the compliance-grants loop and
-`risk_control:set_asset_limit` are **not** gated on "already applied" the way the shared-infra and
+`risk_control:set_asset_limit` were **not** gated on "already applied" the way the shared-infra and
 per-market sections are — they unconditionally re-ran on this second invocation, producing 17 more
 real (harmless — re-authorizing an already-authorized account, re-granting an already-granted one,
 re-setting the same limit to the same value — but real) transactions logged in `transactions[]`.
-Idempotency as spec §5.4 actually requires it (no duplicate *infrastructure*) holds; "re-running
-this script produces zero new transactions of any kind" would not be an accurate claim, and isn't
-made here. Not fixed this round — out of scope for closing Gap A/Gap B, flagged for a future pass.
+Idempotency as spec §5.4 actually requires it (no duplicate *infrastructure*) held regardless; "re-
+running this script produces zero new transactions of any kind" would not have been an accurate
+claim at the time. Out of scope for closing Gap A/Gap B, so not fixed in the same pass — but fixed
+immediately after, live, in §11.7 below.
 
 ### 11.5 Live proof of §10's `last_rejection()` fix, on-chain, on this new instance
 
@@ -799,13 +800,28 @@ confirmation that was still outstanding. Run against the new OracleAdapter
 This is genuine on-chain proof of the exact masking scenario §10's fix was written to close,
 against real deployed bytecode, not a simulation or an in-process test.
 
-### 11.6 What this leaves open
+### 11.7 §11.4's idempotency gap, closed
+
+The compliance-grants loop and `risk_control:set_asset_limit` now check current on-chain standing
+first, same pattern `set_window_ledgers` already used: `RiskControl.get_asset_limit`,
+`Permissioning.is_allowed`/`is_allowed_for_asset`, and the SAC's own built-in `authorized(id)` read
+call — each confirmed live against the new stack before relying on them
+(`authorized`/`is_allowed`/`is_allowed_for_asset`/`get_asset_limit` each read back correctly
+against real deployed contracts). Only a call whose current state doesn't already match submits a
+transaction now.
+
+Proven live: `deployments/testnet/deployment-manifest.json` had exactly `98` entries in
+`transactions[]` immediately before this fix's first re-run and exactly `98` immediately after —
+zero new transactions, where the unfixed script would have added 17 more (confirmed by `git diff`
+on the backup manifest the script itself writes before every run,
+`deployment-manifest.json.20261114T151351Z.bak`). `verify-deployment.sh` still passes `78/79`
+(only the expected `git_tree_dirty`, since this fix is itself uncommitted while being proven).
+
+### 11.8 What this leaves open
 
 - **The original stack's contracts** (§2's addresses) remain live on Testnet — Soroban contracts
   cannot be un-deployed — but are no longer tracked by the manifest or cited as current anywhere
   in this document from §11 onward.
-- **§11.4's compliance/setter idempotency gap** (re-running produces harmless but real repeat
-  transactions) is a real, newly-found, not-yet-fixed item, not hidden above.
 - Everything §8 already listed as not verified live (the real RedStone feed, `relay.sh` against
   it, running the relay on an actual schedule) remains exactly as open as it was — nothing in this
   section touches that.
