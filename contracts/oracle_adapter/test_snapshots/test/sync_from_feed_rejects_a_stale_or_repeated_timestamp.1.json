@@ -180,42 +180,6 @@
                       "key": {
                         "vec": [
                           {
-                            "symbol": "LastRejectReason"
-                          }
-                        ]
-                      },
-                      "val": {
-                        "symbol": "stale_ts"
-                      }
-                    },
-                    {
-                      "key": {
-                        "vec": [
-                          {
-                            "symbol": "LastRejectedTimestamp"
-                          }
-                        ]
-                      },
-                      "val": {
-                        "u64": "100"
-                      }
-                    },
-                    {
-                      "key": {
-                        "vec": [
-                          {
-                            "symbol": "LastRejectedValue"
-                          }
-                        ]
-                      },
-                      "val": {
-                        "i128": "10500000"
-                      }
-                    },
-                    {
-                      "key": {
-                        "vec": [
-                          {
                             "symbol": "LastUpdateWasFeed"
                           }
                         ]

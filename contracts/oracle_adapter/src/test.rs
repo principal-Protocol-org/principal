@@ -259,13 +259,12 @@ fn unauthorized_price_update_panics() {
 fn stale_timestamp_is_rejected_gracefully() {
     let (_env, client, admin, primary) = setup();
     client.set_reference_value(&admin, &primary, &103_00000000_i128, &1_700_000_000_u64);
-    // Same timestamp again, and an older one: both rejected without panicking.
+    // Same timestamp again, and an older one: both rejected without panicking. `stale_ts` is a
+    // routine no-op, not a genuine policy violation, so it does not touch `last_rejection()`
+    // (see `reject`'s own doc: only a reason reflecting an actual disallowed value change does).
     let same = client.set_reference_value(&admin, &primary, &103_00000000_i128, &1_700_000_000_u64);
     assert!(!same);
-    assert_eq!(
-        client.last_rejection().unwrap().reason,
-        Symbol::new(&_env, "stale_ts")
-    );
+    assert!(client.last_rejection().is_none());
     let older =
         client.set_reference_value(&admin, &primary, &103_00000000_i128, &1_699_999_999_u64);
     assert!(!older);
@@ -718,10 +717,9 @@ fn sync_from_feed_rejects_gracefully_when_the_feed_has_no_data() {
     env.ledger().with_mut(|li| li.timestamp = 200);
 
     assert!(!client.sync_from_feed());
-    assert_eq!(
-        client.last_rejection().unwrap().reason,
-        Symbol::new(&env, "no_data")
-    );
+    // "no_data" is routine feed noise, not a policy violation -- it does not touch
+    // `last_rejection()` (see `reject`'s own doc).
+    assert!(client.last_rejection().is_none());
 }
 
 #[test]
@@ -732,10 +730,9 @@ fn sync_from_feed_rejects_a_non_positive_price_gracefully() {
     env.ledger().with_mut(|li| li.timestamp = 200);
 
     assert!(!client.sync_from_feed());
-    assert_eq!(
-        client.last_rejection().unwrap().reason,
-        Symbol::new(&env, "bad_price")
-    );
+    // A malformed tick from the feed, not an attempted policy-violating value -- routine, does
+    // not touch `last_rejection()`.
+    assert!(client.last_rejection().is_none());
 }
 
 #[test]
@@ -748,10 +745,9 @@ fn sync_from_feed_rejects_a_future_timestamp_gracefully_unlike_set_reference_val
     feed.set_price(&asset, &10_000_000_i128, &500_u64); // ahead of the ledger clock
 
     assert!(!client.sync_from_feed());
-    assert_eq!(
-        client.last_rejection().unwrap().reason,
-        Symbol::new(&env, "future_ts")
-    );
+    // The feed's fault, not an attempted policy-violating value -- routine, does not touch
+    // `last_rejection()`.
+    assert!(client.last_rejection().is_none());
 }
 
 #[test]
@@ -772,10 +768,11 @@ fn sync_from_feed_rejects_a_stale_or_repeated_timestamp() {
     feed.set_price(&asset, &10_500_000_i128, &100_u64); // same timestamp as what's stored
 
     assert!(!client.sync_from_feed());
-    assert_eq!(
-        client.last_rejection().unwrap().reason,
-        Symbol::new(&env, "stale_ts")
-    );
+    // No new data from the feed, not an attempted policy-violating value -- routine, does not
+    // touch `last_rejection()`. This is exactly the case the fix closes: before it, anyone could
+    // call `sync_from_feed` with stale data for free to mask a genuine prior `deviate`/`decrease`
+    // rejection from this view.
+    assert!(client.last_rejection().is_none());
 }
 
 #[test]
@@ -816,6 +813,42 @@ fn sync_from_feed_rejects_excess_deviation() {
     env.ledger().with_mut(|li| li.timestamp = 300);
 
     assert!(!client.sync_from_feed());
+    assert_eq!(
+        client.last_rejection().unwrap().reason,
+        Symbol::new(&env, "deviate")
+    );
+}
+
+#[test]
+fn a_routine_rejection_cannot_mask_a_prior_significant_one() {
+    // Regression for the review finding this fix closes: `sync_from_feed` is callable by
+    // anyone, for free, at any time -- before this fix, a call that found nothing wrong to
+    // report (e.g. "no new data yet") would overwrite the single `last_rejection()` slot a
+    // genuine policy violation had just written, letting anyone mask an active deviation
+    // attempt from a monitor that reads only that view.
+    let (env, client, admin, asset, feed_id) = setup_with_feed(7);
+    let feed = MockSep40FeedClient::new(&env, &feed_id);
+    let primary = BytesN::from_array(&env, &{
+        let mut b = [0u8; 32];
+        b[0] = 1;
+        b
+    });
+    client.set_reference_value(&admin, &primary, &10_000_000_i128, &100_u64);
+    // A genuine deviation attempt: +50%, well over the 10% bound.
+    feed.set_price(&asset, &15_000_000_i128, &200_u64);
+    env.ledger().with_mut(|li| li.timestamp = 300);
+    assert!(!client.sync_from_feed());
+    assert_eq!(
+        client.last_rejection().unwrap().reason,
+        Symbol::new(&env, "deviate")
+    );
+
+    // Anyone, with no privilege at all, immediately calls again with no new data (the feed's
+    // timestamp repeats the value still on record) -- a routine no-op rejection that must not be
+    // able to hide the `deviate` event above.
+    feed.set_price(&asset, &9_000_000_i128, &100_u64);
+    assert!(!client.sync_from_feed());
+    // Still "deviate", unchanged -- the routine rejection above did not touch the slot.
     assert_eq!(
         client.last_rejection().unwrap().reason,
         Symbol::new(&env, "deviate")

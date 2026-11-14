@@ -148,6 +148,21 @@ else
   MATURITY="$(jq -r '.market.maturity' "$MANIFEST")"
   echo "market_id=$MARKET_ID pool=$POOL maturity=$MATURITY"
 
+  echo
+  echo "-- Market contracts' wasm hashes --"
+  # The shared-infra loop above only covered 5 of the 12 deployed contracts; these are the other
+  # 7. Without this, the acceptance doc's "all twelve were confirmed by the verifier" claim was
+  # only true for 5 of them -- found live reviewing what this script actually checks.
+  for name in sy_wrapper pt_token yt_token market_config principal_manager market_pool recovery_escrow; do
+    ID="$(contract_id "$name")"
+    HASH="$(contract_hash "$name")"
+    [ -z "$ID" ] && continue
+    if [ -n "$HASH" ]; then
+      check "$name on-chain code hash matches manifest" wasm_hash_matches_chain "$ID" "$HASH"
+      check "$name manifest hash matches local build artifact" wasm_hash_matches_local_build "$name"
+    fi
+  done
+
   # Config and Escrow have no get_admin either (Config's admin-shaped calls are setters, not a
   # getter; Escrow deliberately has no admin of its own) -- probe each with a getter that
   # actually exists on it instead of the generic default.

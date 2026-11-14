@@ -1,0 +1,13 @@
+{
+  "at": "2026-11-13T23:49:50Z",
+  "source_preimage": "principal-oracle-source:testnet:USDY:TestMock:USDY/USD-mock",
+  "source_id": "d87e1c0947feb673caeb00042afde648b09c8b774699ceb3bd6ac32a36ef8908",
+  "decision": "skipped",
+  "reason": "policy_rejected",
+  "raw_source_value": "115000000",
+  "scaled_value": "11500000",
+  "source_timestamp": 1794613443,
+  "ledger_timestamp": 1794613776,
+  "previous_onchain_value": 11500000,
+  "tx": "59451eaf5e0749897185c241c5899020e9f07a55b61f2182efea7675b2119317"
+}

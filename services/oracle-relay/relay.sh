@@ -148,18 +148,35 @@ fi
 # -------------------------------------------------------------------- 5. submit, with retries
 echo "submitting: source=$SOURCE_VALUE (decimals=$FEED_DECIMALS) -> scaled=$SCALED_VALUE @ $SUBMIT_TS (current=$CURRENT_VALUE)"
 ERR_FILE="$(mktemp)"
+OUT_FILE="$(mktemp)"
 if ! retry "set_reference_value" bash -c \
   "stellar contract invoke --id '$ORACLE_ID' --source '$ORACLE_CALLER_KEY' --network '$NETWORK' \
     -- set_reference_value --caller '$CALLER_ADDR' --source '$SOURCE_ID' \
-       --value '$SCALED_VALUE' --timestamp '$SUBMIT_TS' 2>'$ERR_FILE'"
+       --value '$SCALED_VALUE' --timestamp '$SUBMIT_TS' >'$OUT_FILE' 2>'$ERR_FILE'"
 then
   log_attempt skipped submission_failed "$SOURCE_VALUE" "$SCALED_VALUE" "$SOURCE_TS" "$LEDGER_TS" "$CURRENT_VALUE" ""
   cat "$ERR_FILE" >&2
-  rm -f "$ERR_FILE"
+  rm -f "$ERR_FILE" "$OUT_FILE"
   exit 1
 fi
 TX_HASH="$(grep -oE 'Signing transaction: [0-9a-f]+' "$ERR_FILE" | awk '{print $3}' || true)"
 rm -f "$ERR_FILE"
+
+# A policy rejection (decrease/deviate/stale on-chain) is a *successful* transaction that returns
+# false, not a reverted call -- the retry above only sees the CLI's own exit code, which is 0
+# either way. Without decoding the actual return value, a rejection got logged as "submitted ok"
+# and, worse, replay-state still advanced to this source timestamp, so a later, corrected
+# resubmission of the exact same tick would be silently dropped as already-seen. Found live
+# reviewing this call site -- never reproduced against a real feed in this pass (see report).
+SET_RESULT="$(tr -d '"[:space:]' <"$OUT_FILE")"
+rm -f "$OUT_FILE"
+if [ "$SET_RESULT" != "true" ]; then
+  echo "oracle rejected this update on-chain (set_reference_value returned '$SET_RESULT', tx=$TX_HASH) -- not advancing replay state" >&2
+  log_attempt skipped policy_rejected "$SOURCE_VALUE" "$SCALED_VALUE" "$SOURCE_TS" "$LEDGER_TS" "$CURRENT_VALUE" "$TX_HASH"
+  jq -n --arg tx "$TX_HASH" --arg scaled "$SCALED_VALUE" --arg prev "$CURRENT_VALUE" \
+    '{submitted: false, tx: $tx, attempted_value: ($scaled | tonumber), previous_value: ($prev | tonumber)}'
+  exit 1
+fi
 
 jq -n --arg ts "$SOURCE_TS" '{last_source_timestamp: ($ts | tonumber)}' >"$RELAY_STATE_FILE"
 log_attempt submitted ok "$SOURCE_VALUE" "$SCALED_VALUE" "$SOURCE_TS" "$LEDGER_TS" "$CURRENT_VALUE" "$TX_HASH"

@@ -140,42 +140,6 @@
                       "key": {
                         "vec": [
                           {
-                            "symbol": "LastRejectReason"
-                          }
-                        ]
-                      },
-                      "val": {
-                        "symbol": "future_ts"
-                      }
-                    },
-                    {
-                      "key": {
-                        "vec": [
-                          {
-                            "symbol": "LastRejectedTimestamp"
-                          }
-                        ]
-                      },
-                      "val": {
-                        "u64": "500"
-                      }
-                    },
-                    {
-                      "key": {
-                        "vec": [
-                          {
-                            "symbol": "LastRejectedValue"
-                          }
-                        ]
-                      },
-                      "val": {
-                        "i128": "10000000"
-                      }
-                    },
-                    {
-                      "key": {
-                        "vec": [
-                          {
                             "symbol": "MaxDeviationBps"
                           }
                         ]

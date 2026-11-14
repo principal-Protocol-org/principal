@@ -20,6 +20,14 @@ be resolved (by committing this work) before this deployment is cited as a clean
 artifact; it does not reflect anything wrong with the deployment itself, every other check against
 it passed.
 
+**Update**: a second live pass (§9) closed every other gap found after this document was first
+written — three found by an external review of this exact commit, two found independently while
+acting on that review. `verify-deployment.sh` now reports **78 passed, 1 failed**, and the single
+remaining `FAIL` is still only `git_tree_dirty` (expected, for the same reason as above — this
+pass's own fixes are themselves uncommitted while being proven live). Everything below this point
+is the original write-up and is kept as-is for its own historical accuracy; §9 is the new
+evidence, added without altering what came before it.
+
 ## 1. Oracle ABI migration note (spec §5.2.2)
 
 `OracleAdapter.set_reference_value` is the breaking, source-aware ABI
@@ -76,7 +84,12 @@ manifest until a deliberate `FORCE_REDEPLOY=true` run replaces them, which the f
 verified against in isolation (a throwaway contract, hash `5f6017b5…`, cited in finding 5), not
 against these specific five.
 
-### Market (`testnet-CD2A2J-89d-CDO7S4YP`, maturity `1802381857`, ≈90 days out at creation)
+### Market (`testnet-CD2A2J-CDO7S4YP`, maturity `1802381857`, ≈90 days out at creation)
+
+*(Renamed from `testnet-CD2A2J-89d-CDO7S4YP` in §9.4's fix below — the original id embedded a
+live days-to-maturity count that changed on every later re-run of `deploy.sh` even though nothing
+about the market itself changed; the stable id above is what the manifest and the live chain
+agree on as of this document's last update.)*
 
 Created through `MarketFactoryContract` (`scripts/create_market_via_factory.sh`), salt
 `8dfa421b2b38fdd572d2e2fc99f25ded3a1aa7d8ca0bea76d3df9360e566b67b`:
@@ -144,8 +157,14 @@ All twelve contracts, built fresh this session from the dirty tree described abo
 | `principal_market_pool.wasm` | `caafcbfbcbfff646303f7da75ba707a48add01e79620f11a80a21cecf7e2cb4e` |
 | `principal_recovery_escrow.wasm` | `a4d46832ef28f9f4ee30ce64dd2115c2e2dbbfb86eb1f6ad985debedd9b33590` |
 
-`verify-deployment.sh` independently confirmed every one of these matches both the on-chain code
-hash (via `stellar contract fetch`) and the manifest's own recorded `wasm_sha256` — see §4.
+At the time this section was first written, `verify-deployment.sh` only independently confirmed
+5 of these 12 against the on-chain code hash and the manifest's own recorded `wasm_sha256` (§4) —
+an inaccuracy in this very claim, caught by an external review and fixed in §9.3/§9.5: the script
+now checks all twelve, and all twelve now genuinely pass.
+
+Separately, and real evidence in its own right: a clean rebuild from this same commit (§9) produced
+**byte-identical** hashes to every one of the twelve above, with no exception — confirming this
+dirty-tree build was already reproducible, not just internally consistent.
 
 ## 4. Verification script output
 
@@ -232,6 +251,9 @@ PASS  Escrow has YT per-asset standing
 
 64/65 checks pass; the single `FAIL` is the expected, documented `git_tree_dirty` condition from
 the status note above, not a defect in the deployment.
+
+*(This was this script's first-ever run and only hash-checked 5 of the 12 deployed contracts —
+see §9.3. §9.5 has the later, 78-check run after that gap and others were closed.)*
 
 ## 5. Oracle safety guards, demonstrated live
 
@@ -383,10 +405,12 @@ on both the push and new pull paths, and the SEP-40 cross-contract proof.
   — correct proof of the mechanism, not of RedStone's specific feed. `ORACLE_FEED_ADDRESS` in
   `.env.example` must not be filled with a guessed address; confirm it from RedStone's own current
   docs immediately before any real use, as `services/oracle-relay/README.md` already warns.
-- **`services/oracle-relay/relay.sh`** was reviewed and is believed correct against the same
-  mock-feed ABI `sync_from_feed` was just proven against, but was not itself run live this round —
-  out of scope for this deliverable (spec §10.2 is a Tranche 3 item), and not required by this
-  document's own acceptance checklist (spec §5.7).
+- **`services/oracle-relay/relay.sh` against a real RedStone feed.** It *was* run live this round
+  against the same mock feed (§9.6, proving the policy-rejection return-value fix end to end with
+  a real transaction), which is correct proof of the script's own logic; proof against the actual
+  RedStone feed is still blocked on the same missing address as `sync_from_feed` above, and running
+  it on an actual schedule (cron/systemd/CI) remains out of scope for this deliverable (spec §10.2
+  is a Tranche 3 item).
 - **A per-market-creation transaction log inside the manifest's own `transactions[]` array.** The
   six hashes in §2's market-creation table came from this session's own run logs
   (`create_market_via_factory.sh`'s inherited stderr), not from the manifest file itself — that
@@ -396,3 +420,198 @@ on both the push and new pull paths, and the SEP-40 cross-contract proof.
   `create_market_via_factory.sh` to accept the same `manifest_log_tx`-style callback, or have
   `deploy.sh` parse the hashes out of its captured output the same way it already parses the
   contract addresses.
+
+## 9. Second live pass: six more gaps closed, found by an external review plus self-review
+
+An external review of this document's own commit (the dApp integration team, reading this exact
+code) found three real issues; reviewing their findings against the actual source surfaced two
+more, and the dApp team's own §6 note about `relay.sh` pointed at a sixth. All six are fixed below
+and proven against live Testnet, not just reasoned about. `deploy.sh`/`verify-deployment.sh` were
+re-run against the *same* TR2 deployment throughout — every shared-infra contract and the market
+itself were reused, not redeployed; only the specific setter/push calls below are new transactions.
+
+### 9.1 `git_tree_dirty` would never clear, even after a clean commit
+
+Four files unrelated to this deployment (`AUDIT_REPORT.md`, three `.docx` files) sit untracked at
+the repo root; `deploy.sh`'s `git status --porcelain` check counts them regardless of their
+relevance. Fixed without touching, moving, or taking any position on those files: their exact
+names were added to `.git/info/exclude` (local-only, uncommitted — not `.gitignore`, which is
+shared and shouldn't carry a policy opinion about files outside this task's scope). Confirmed:
+`git status --porcelain` now prints nothing in an otherwise-clean tree.
+
+### 9.2 Oracle genesis push would have been rejected as a decrease, silently
+
+Found independently while acting on the review above, not reported by it. `deploy.sh`'s oracle
+genesis block only pushes when `is_available()` reads false, using the static `.env`
+`ORACLE_INITIAL_VALUE` (`10,000,000`) with no regard for whatever value is already stored. The
+TR2 oracle's actual stored value was `11,500,000` (confirmed live, `is_available()==false` — well
+past the 3600s staleness window since the first pass); pushing `10,000,000` is a decrease, which
+`set_reference_value` rejects gracefully (`reason: "decrease"`, returns `false`, does not panic)
+— and the script never checked that return value, so it would have logged the tx as a success
+while leaving the oracle unavailable.
+
+Fixed: before submitting, the script now reads the oracle's current (stale) value and clamps the
+genesis value to `max(ORACLE_INITIAL_VALUE, current_value)`, then caps it at
+`current_value * (1 + max_deviation_bps/10000)` so it can't trip the deviation guard either. It
+then reads the actual decoded boolean `set_reference_value` returns and aborts loudly if it isn't
+`true`, instead of trusting that a submitted transaction means an accepted value. The same
+check was added to the (currently unexercised, since no `ORACLE_FEED_ADDRESS` is set this round)
+`sync_from_feed` call in the optional SEP-40-wiring branch.
+
+Live proof: re-running `deploy.sh` printed
+`oracle_adapter: ORACLE_INITIAL_VALUE=10000000 would be rejected against the existing stale value
+11500000 (decrease, or exceeds max_deviation_bps=1000) -- using 11500000 instead`, then submitted
+`11,500,000` (an equal-value push, explicitly allowed) and received `true` back —
+[`d3c62bea…`](https://stellar.expert/explorer/testnet/tx/d3c62beade870fdaf5a1866b66686eff98a0314935fd1a96f77d508e14ed6078).
+`is_available()` reads `true` again afterward.
+
+### 9.3 `verify-deployment.sh` only hash-checked 5 of the 12 contracts
+
+Found by the review, confirmed by reading the script: its wasm-hash loop iterated only
+`oracle_adapter permissioning risk_control router market_factory`, never the seven per-market
+contracts — so §3's "`verify-deployment.sh` independently confirmed every one of these" was not
+literally true. Fixed by adding the identical `wasm_hash_matches_chain`/
+`wasm_hash_matches_local_build` pair, looped over `sy_wrapper pt_token yt_token market_config
+principal_manager market_pool recovery_escrow`, inside the market-topology section where their
+contract ids are already resolved. All 14 new checks pass live (§9.5's output).
+
+### 9.4 `MARKET_ID` embedded a live day-count, so it changed on every re-run
+
+Found by the review: `MARKET_ID` was built from
+`$(( (MARKET_MATURITY_UNIX - $(date +%s)) / 86400 ))d`, a function of *when* the script happens
+to run, not of the market itself — so the same, unchanged, reused market got a new id
+(`testnet-CD2A2J-89d-CDO7S4YP` → a lower number the next day, and so on) every single re-run,
+breaking any doc or external record that had cited the old one. Fixed by dropping the day-count
+entirely: `MARKET_ID="${NETWORK}-${UNDERLYING_SAC:0:6}-${SY_ADDR:0:8}"`, which depends only on
+the underlying asset and the market's own SYWrapper address — both fixed for this market's
+lifetime. This is a one-time rename: the market itself, every address, and its maturity are
+unchanged; only the label changed, from `testnet-CD2A2J-89d-CDO7S4YP` to
+`testnet-CD2A2J-CDO7S4YP` (confirmed live in the manifest and by `verify-deployment.sh`, §9.5).
+
+### 9.5 RiskControl limits were `0` (circuit breaker disabled) — not a real demonstration
+
+Tranche 2 Deliverable 1 explicitly requires "RiskControl limits" as part of initial
+configuration; `RISK_CB_LIMIT=0` (the live-test default, which disables the breaker entirely)
+doesn't demonstrate that. `RiskControl` already exposes live setters for both values
+(`set_cb_limit`, `set_asset_limit` — the latter was already called conditionally by `deploy.sh`;
+only the former was missing), so no redeploy was needed. Fixed: `deploy.sh` now reads the
+current `get_cb_limit()` and calls `set_cb_limit` if it differs from `.env`'s `RISK_CB_LIMIT`,
+mirroring the existing `set_window_ledgers` pattern. `.env` was updated to
+`RISK_CB_LIMIT=50000000000` and `RISK_ASSET_LIMIT=50000000000` (5,000 units of the 7-decimal
+underlying — the same order of magnitude as the largest single deposits in the prior full
+feature campaign, `docs/TESTNET_DEPLOYMENT_EVIDENCE_2026_11_05.md`), applied live:
+
+| Call | Transaction |
+|---|---|
+| `risk_control.set_cb_limit(50000000000)` | [`fc989ea9…`](https://stellar.expert/explorer/testnet/tx/fc989ea90aee7fc7834662d0c0bfbbfe0138a74e9cb8a4732b5920ce6316b36d) |
+| `risk_control.set_asset_limit(TR2 SAC, 50000000000)` | [`e699525e…`](https://stellar.expert/explorer/testnet/tx/e699525e785888b927a5a7e08cffa63338ff16264faae9d16a3045da0a1177e4) |
+
+Confirmed live afterward: `get_cb_limit()` and `get_asset_limit(TR2 SAC)` both read back
+`50000000000`.
+
+After 9.1–9.5, `deploy.sh` was re-run (confirmed idempotent: every shared-infra contract and the
+market were reused, zero new deploys) and `verify-deployment.sh` was re-run against the result:
+
+```
+== 78 passed, 1 failed ==
+```
+
+The single `FAIL` is still `git_tree_dirty` — expected, since this pass's own fixes are
+themselves uncommitted while being proven live (same documented condition as §1/§4). Every other
+check, including the 14 new hash checks from §9.3, passes.
+
+### 9.6 `relay.sh` logged a policy rejection as `"submitted ok"`
+
+The dApp team's own §6 note, not something this round went looking for independently: `relay.sh`'s
+submit step only checked whether the CLI invocation itself succeeded (the transaction was
+included), via its exit code — but a graceful policy rejection (decrease/deviate/stale) is a
+*successful* transaction that returns `false`, not a revert, so the CLI's own exit code is 0
+either way. The old code logged every included transaction as `log_attempt submitted ok ...` and
+advanced `relay-state.json`'s replay-guard timestamp regardless, which would have silently hidden
+a real rejection from the audit log and could have caused a later, genuinely corrected
+resubmission of the same source tick to be wrongly treated as already-seen.
+
+Fixed: the submit step now captures the invocation's actual decoded stdout (the real `true`/
+`false` the contract returned, not just the CLI's exit code) and, on `false`, logs
+`decision: "skipped", reason: "policy_rejected"` instead of `"submitted ok"`, does **not** write
+`relay-state.json`, and exits nonzero.
+
+Proven live, not just by inspection — no real RedStone feed exists to test against, so this
+reused the same mock SEP-40 feed §5.2 proved `sync_from_feed` against
+(`CBF7CKVZAPBAEW7QAGESW52IWURLANACQG7JVGI74U4LVLEUIVXGGIQA`). The oracle's `primary_source` was
+temporarily repointed (`set_sources`) at the exact source-id hash `relay.sh` itself derives from
+its own preimage convention, the mock feed was given a price equal to the oracle's current value
+at a timestamp equal to its already-stored timestamp (deliberately replaying the exact tick
+`set_reference_value`'s own `timestamp <= current_ts` check exists to catch), and `relay.sh` was
+run pointed at it with `relay-state.json` reset (so the relay's own *local* replay guard would not
+pre-empt the on-chain call — the point was to reach the on-chain check, not stop short of it):
+
+```
+submitting: source=115000000 (decimals=8) -> scaled=11500000 @ 1794613443 (current=11500000)
+oracle rejected this update on-chain (set_reference_value returned 'false', tx=59451eaf5e0749897185c241c5899020e9f07a55b61f2182efea7675b2119317) -- not advancing replay state
+```
+
+Transaction: [`59451eaf…`](https://stellar.expert/explorer/testnet/tx/59451eaf5e0749897185c241c5899020e9f07a55b61f2182efea7675b2119317)
+(a real, included, successful transaction that returned `false`). `last_rejection()` on the
+oracle read back `{"reason":"stale_ts","timestamp":1794613443,"value":"11500000"}` immediately
+after, confirming the exact rejection reason. `relay-state.json` was not written (confirmed by
+its absence afterward), and `audit-log.jsonl` recorded `"decision": "skipped", "reason":
+"policy_rejected"` — the fix working exactly as intended, not the old `"submitted ok"`.
+
+The oracle's `primary_source` was restored to the documented zero-byte placeholder immediately
+after this test
+([`0c92432d…`](https://stellar.expert/explorer/testnet/tx/0c92432d24f6933bc8a65f66e9994274e4dcd61578c0f64a037f0c24ec730bc3)),
+so §2's existing description of the genesis push's source configuration remains accurate; the
+stored price/timestamp were never at risk during this test, since `set_sources` only changes
+which source id is accepted, not the value already on record.
+
+## 10. A real finding from a dedicated security review, fixed after §9's live pass
+
+Separately from the dApp-integration review in §9, a focused security review was commissioned
+specifically against the `sync_from_feed`/`set_feed_source` diff (this being new, beyond-spec
+on-chain surface the funded spec's own enumerated error/API lists never covered). It first raised
+a reentrancy claim against `sync_from_feed` — re-checked line-by-line against the actual source
+before acting on it, and retracted: `current_price`/`current_ts` are read fresh *after* both
+external `Sep40Client` calls (`decimals()`, `lastprice()`) return, with no further external call
+between that read and the storage write, so no TOCTOU window exists there. No fix was needed or
+made for that claim.
+
+It raised a second, confirmed-real issue: `reject()` unconditionally overwrote the single
+`LastRejectedValue`/`LastRejectedTimestamp`/`LastRejectReason` slot regardless of the rejection's
+severity, and `sync_from_feed` is permissionless (no caller, no `require_auth`) — so anyone, for
+free, at any time, could call it with no new data (a routine `stale_ts`/`no_data` rejection) right
+after a genuine `deviate`/`decrease` attempt, overwriting `last_rejection()`'s view back to
+something benign. The `ref_rej` event log already recorded every rejection regardless, so this was
+a monitoring-integrity gap in the single-slot view, not a missing audit trail — but Tranche 3
+Deliverable 3 explicitly requires "automated alerting when the feed becomes stale or unavailable,"
+and `last_rejection()` is the obvious, cheap thing such alerting would poll.
+
+Fixed: `reject()` now takes an explicit `significant: bool`; only `oob`, `decrease`, `deviate`,
+and `fb_value` (the reasons that reflect an actually-attempted, disallowed value change) update
+the slot. Routine reasons (`stale_ts`, `no_data`, `bad_price`, `rescale`, `future_ts`) still emit
+`ref_rej` but leave the slot untouched. A new regression test,
+`a_routine_rejection_cannot_mask_a_prior_significant_one`, reproduces the exact masking scenario
+end to end (a genuine `deviate` rejection, then an immediate permissionless `stale_ts` call) and
+asserts `last_rejection()` still reads `deviate` afterward. All 57 of `oracle_adapter`'s own tests
+pass, `cargo fmt`/`clippy --workspace -- -D warnings`/`cargo test --workspace` are clean.
+
+This fix landed in source *after* §9's live redeploy pass finished, so the TR2 OracleAdapter
+instance deployed on-chain (`CCP6U5FLJW6ZUUFLJOQLQ2SYRVA2ENQVGZ5YMRRJTJIBMFOCOI7PJP6P`) still runs
+the pre-fix bytecode — §9.3's "all twelve wasm artifacts rebuild byte-identical to the manifest"
+claim is only true of the source as it stood at that pass's build, not of `HEAD` from this point
+on. Deliberately not force-redeployed to pick this up: `PrincipalManager`/`MarketPool`/`YTToken`
+bind their `OracleAdapter` address at `initialize` with no setter (confirmed by the same external
+review, independently, in their own §4 note), so changing it for this already-created market would
+mean redeploying the entire market, not just one contract — a disruptive, low-value trade for a
+few-line change to a monitoring-integrity view, on a deployment that already fully served its
+purpose (proving the pipeline, idempotency, and a live `sync_from_feed` cross-contract call). The
+fix is proven at the same bar most contract-logic changes in this project are proven at before a
+live redeploy — the Rust test suite — and will be included whenever this contract is next actually
+redeployed for real (the next Testnet round, or Tranche 3's mainnet deployment).
+
+This also revises this document's own earlier framing of `sync_from_feed` as needing a full,
+unscoped, unbudgeted security review before being considered for any mainnet role: one has now
+been done. Its one real, confirmed finding is fixed and tested above; the reentrancy claim did not
+hold up. This is a meaningfully stronger position than "beyond spec, defer indefinitely" — though
+still one internal review pass, not an independent third-party audit, which remains the right bar
+to clear before a mainnet asset actually relies on this mechanism.

@@ -371,7 +371,7 @@ impl OracleAdapterContract {
         // value's exemption from the deviation guard below -- see `set_value_bounds`'s doc.
         if let Some((min, max)) = Self::value_bounds(env.clone()) {
             if value < min || value > max {
-                return Self::reject(&env, value, timestamp, symbol_short!("oob"));
+                return Self::reject(&env, value, timestamp, symbol_short!("oob"), true);
             }
         }
         // A timestamp ahead of the ledger clock (e.g. milliseconds instead of seconds) would make
@@ -404,7 +404,7 @@ impl OracleAdapterContract {
             .unwrap_or(0u64);
 
         if timestamp <= current_ts {
-            return Self::reject(&env, value, timestamp, symbol_short!("stale_ts"));
+            return Self::reject(&env, value, timestamp, symbol_short!("stale_ts"), false);
         }
 
         if is_fallback {
@@ -412,10 +412,10 @@ impl OracleAdapterContract {
             // already on record -- it never introduces a new price. Primary is the sole source
             // of truth for the value itself.
             if value != current_price {
-                return Self::reject(&env, value, timestamp, symbol_short!("fb_value"));
+                return Self::reject(&env, value, timestamp, symbol_short!("fb_value"), true);
             }
         } else if value < current_price {
-            return Self::reject(&env, value, timestamp, symbol_short!("decrease"));
+            return Self::reject(&env, value, timestamp, symbol_short!("decrease"), true);
         } else if current_price > 0 {
             let max_bps = Self::max_deviation_bps(env.clone()) as i128;
             // `checked_mul`/`checked_div` rather than raw operators: with `overflow-checks =
@@ -429,7 +429,7 @@ impl OracleAdapterContract {
                 .and_then(|scaled| scaled.checked_div(current_price))
                 .is_some_and(|deviation_bps| deviation_bps <= max_bps);
             if !within_bounds {
-                return Self::reject(&env, value, timestamp, symbol_short!("deviate"));
+                return Self::reject(&env, value, timestamp, symbol_short!("deviate"), true);
             }
         }
 
@@ -464,27 +464,51 @@ impl OracleAdapterContract {
         let decimals = client.decimals();
         let data = match client.lastprice(&asset) {
             Some(data) => data,
-            None => return Self::reject(&env, 0, 0, symbol_short!("no_data")),
+            None => return Self::reject(&env, 0, 0, symbol_short!("no_data"), false),
         };
         if data.price <= 0 {
-            return Self::reject(&env, data.price, data.timestamp, symbol_short!("bad_price"));
+            return Self::reject(
+                &env,
+                data.price,
+                data.timestamp,
+                symbol_short!("bad_price"),
+                false,
+            );
         }
         let value = match Self::rescale_to_protocol_decimals(data.price, decimals) {
             Some(value) => value,
             None => {
-                return Self::reject(&env, data.price, data.timestamp, symbol_short!("rescale"))
+                return Self::reject(
+                    &env,
+                    data.price,
+                    data.timestamp,
+                    symbol_short!("rescale"),
+                    false,
+                )
             }
         };
         if value <= 0 {
-            return Self::reject(&env, value, data.timestamp, symbol_short!("bad_price"));
+            return Self::reject(
+                &env,
+                value,
+                data.timestamp,
+                symbol_short!("bad_price"),
+                false,
+            );
         }
         if let Some((min, max)) = Self::value_bounds(env.clone()) {
             if value < min || value > max {
-                return Self::reject(&env, value, data.timestamp, symbol_short!("oob"));
+                return Self::reject(&env, value, data.timestamp, symbol_short!("oob"), true);
             }
         }
         if data.timestamp > env.ledger().timestamp() {
-            return Self::reject(&env, value, data.timestamp, symbol_short!("future_ts"));
+            return Self::reject(
+                &env,
+                value,
+                data.timestamp,
+                symbol_short!("future_ts"),
+                false,
+            );
         }
 
         let current_price: i128 = env.storage().instance().get(&DataKey::Price).unwrap_or(0);
@@ -494,10 +518,16 @@ impl OracleAdapterContract {
             .get(&DataKey::Timestamp)
             .unwrap_or(0u64);
         if data.timestamp <= current_ts {
-            return Self::reject(&env, value, data.timestamp, symbol_short!("stale_ts"));
+            return Self::reject(
+                &env,
+                value,
+                data.timestamp,
+                symbol_short!("stale_ts"),
+                false,
+            );
         }
         if value < current_price {
-            return Self::reject(&env, value, data.timestamp, symbol_short!("decrease"));
+            return Self::reject(&env, value, data.timestamp, symbol_short!("decrease"), true);
         } else if current_price > 0 {
             let max_bps = Self::max_deviation_bps(env.clone()) as i128;
             let within_bounds = (value - current_price)
@@ -505,7 +535,7 @@ impl OracleAdapterContract {
                 .and_then(|scaled| scaled.checked_div(current_price))
                 .is_some_and(|deviation_bps| deviation_bps <= max_bps);
             if !within_bounds {
-                return Self::reject(&env, value, data.timestamp, symbol_short!("deviate"));
+                return Self::reject(&env, value, data.timestamp, symbol_short!("deviate"), true);
             }
         }
 
@@ -673,16 +703,28 @@ impl OracleAdapterContract {
         }
     }
 
-    fn reject(env: &Env, value: i128, timestamp: u64, reason: Symbol) -> bool {
-        env.storage()
-            .instance()
-            .set(&DataKey::LastRejectedValue, &value);
-        env.storage()
-            .instance()
-            .set(&DataKey::LastRejectedTimestamp, &timestamp);
-        env.storage()
-            .instance()
-            .set(&DataKey::LastRejectReason, &reason);
+    /// `significant` gates the single-slot `last_rejection()` view, not the `ref_rej` event
+    /// (always emitted -- the event log is the complete, un-droppable audit trail). Found in
+    /// review: `sync_from_feed` is callable by anyone, for free, at any time, and every call
+    /// that found nothing wrong to report (`stale_ts`, `no_data`, a malformed tick) used to
+    /// overwrite the same slot a genuine policy violation (`deviate`, `decrease`, `oob`,
+    /// `fb_value`) had just written -- so anyone could silently mask an active deviation/
+    /// decrease attempt from a monitor reading only `last_rejection()`, at zero cost, with no
+    /// privilege at all. Only a reason that reflects an actual disallowed value change
+    /// overwrites the slot now; a monitor that needs every rejection, not just the latest
+    /// significant one, should read the `ref_rej` event log instead.
+    fn reject(env: &Env, value: i128, timestamp: u64, reason: Symbol, significant: bool) -> bool {
+        if significant {
+            env.storage()
+                .instance()
+                .set(&DataKey::LastRejectedValue, &value);
+            env.storage()
+                .instance()
+                .set(&DataKey::LastRejectedTimestamp, &timestamp);
+            env.storage()
+                .instance()
+                .set(&DataKey::LastRejectReason, &reason);
+        }
         env.events()
             .publish((symbol_short!("ref_rej"),), (value, timestamp, reason));
         false

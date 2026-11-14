@@ -4,8 +4,8 @@
   "network_passphrase": "Test SDF Network ; September 2015",
   "rpc_url": "https://soroban-testnet.stellar.org",
   "horizon_url": "https://horizon-testnet.stellar.org",
-  "source_commit": "665bb6760372d30307a1a035da24e51776f727e8",
-  "built_at": "2026-11-13T22:01:18Z",
+  "source_commit": "aae6cf81346a51f600393e4267be45e65524ae4e",
+  "built_at": "2026-11-13T23:44:06Z",
   "wasm_target": "wasm32v1-none",
   "git_tree_dirty": true,
   "oracle_abi_version": 2,
@@ -19,7 +19,7 @@
     "decimals": 7
   },
   "market": {
-    "market_id": "testnet-CD2A2J-89d-CDO7S4YP",
+    "market_id": "testnet-CD2A2J-CDO7S4YP",
     "maturity": 1802381857,
     "tokenization_fee_bps": 5,
     "yt_fee_bps": 1000,
@@ -245,6 +245,101 @@
       "step": "compliance:grant_asset_yt:GBPDLO73W2BQJ3F755ZZZKVFKP2FPVEIFW5THYANGDWEYJ5QQYDCMGET",
       "tx": "faf010fee9430e61d4ef8002e34ad31ad81dcc1d55d3a99ee9b3cbce1a6658af",
       "at": "2026-11-13T22:03:00Z"
+    },
+    {
+      "step": "risk_control:set_cb_limit",
+      "tx": "fc989ea90aee7fc7834662d0c0bfbbfe0138a74e9cb8a4732b5920ce6316b36d",
+      "at": "2026-11-13T23:44:16Z"
+    },
+    {
+      "step": "risk_control:set_asset_limit",
+      "tx": "e699525e785888b927a5a7e08cffa63338ff16264faae9d16a3045da0a1177e4",
+      "at": "2026-11-13T23:44:20Z"
+    },
+    {
+      "step": "oracle_adapter:set_reference_value",
+      "tx": "d3c62beade870fdaf5a1866b66686eff98a0314935fd1a96f77d508e14ed6078",
+      "at": "2026-11-13T23:44:36Z"
+    },
+    {
+      "step": "compliance:set_authorized:CDO7S4YPV36NFC5CHMSBGUVRZSKHPHIX35RBL33R4RLALVUK4YQSG4S5",
+      "tx": "462db0ffe1de74f330057a5d9acf45a0c7015f249934bf7a27a87877cd3f17b6",
+      "at": "2026-11-13T23:44:40Z"
+    },
+    {
+      "step": "compliance:grant_account:CDO7S4YPV36NFC5CHMSBGUVRZSKHPHIX35RBL33R4RLALVUK4YQSG4S5",
+      "tx": "a9b723a58c9f847cea72c32f5ed260e02db7856ee104a1b7ce6ae99220d5e4c6",
+      "at": "2026-11-13T23:44:46Z"
+    },
+    {
+      "step": "compliance:set_authorized:CB6TD5FT3UP5OMWFIKVXO72O4IVXB72JAC3KQOBTBJ2FGGW7YWI4JI2K",
+      "tx": "4c18100b17228d220600d3b7f0cbdc8ac510c41568db54014ccd8ff9b2eab8bb",
+      "at": "2026-11-13T23:44:51Z"
+    },
+    {
+      "step": "compliance:grant_account:CB6TD5FT3UP5OMWFIKVXO72O4IVXB72JAC3KQOBTBJ2FGGW7YWI4JI2K",
+      "tx": "52ea22326ab822b87f92cc3d888e58d5ef8c37887928a3b7580bc676eab71e86",
+      "at": "2026-11-13T23:44:56Z"
+    },
+    {
+      "step": "compliance:set_authorized:CDFKUEQHX32XOHV6K2VHYUDEKZFHRCRSNVNH3KBYBBVEQM2KM2CFEGCY",
+      "tx": "1069c868568c9f29067834fd7b9a84a9f214ab3075bfac37f0e7cec2f1993c58",
+      "at": "2026-11-13T23:45:01Z"
+    },
+    {
+      "step": "compliance:grant_account:CDFKUEQHX32XOHV6K2VHYUDEKZFHRCRSNVNH3KBYBBVEQM2KM2CFEGCY",
+      "tx": "b8595687211a36983d4accfbc6c221d68b0800e52b916edd40009763eb2584b5",
+      "at": "2026-11-13T23:45:06Z"
+    },
+    {
+      "step": "compliance:set_authorized:CDGBQF54N66HEZGEFW7ZIU57DEEHCAWGPDGU6SCYUSXV5TBSFDATZW3X",
+      "tx": "2b88efd373b7c12570d3cc04c5ae2cd06a646f5112f32be8be492f1e35664342",
+      "at": "2026-11-13T23:45:11Z"
+    },
+    {
+      "step": "compliance:grant_account:CDGBQF54N66HEZGEFW7ZIU57DEEHCAWGPDGU6SCYUSXV5TBSFDATZW3X",
+      "tx": "c6ddfab6729127690bf30ad08e8ca135d57071b852fb7651ff824020619e3788",
+      "at": "2026-11-13T23:45:16Z"
+    },
+    {
+      "step": "compliance:set_authorized:GBPDLO73W2BQJ3F755ZZZKVFKP2FPVEIFW5THYANGDWEYJ5QQYDCMGET",
+      "tx": "732ae4371e479403c2ed9382365f8ff258366626d57ca79574273253bb6d5c9d",
+      "at": "2026-11-13T23:45:21Z"
+    },
+    {
+      "step": "compliance:grant_account:GBPDLO73W2BQJ3F755ZZZKVFKP2FPVEIFW5THYANGDWEYJ5QQYDCMGET",
+      "tx": "2ae902149010a5c2a3b559f242fd0267a2ff914220c0f2f3f0efc6298864780c",
+      "at": "2026-11-13T23:45:26Z"
+    },
+    {
+      "step": "compliance:grant_asset_pt:CDFKUEQHX32XOHV6K2VHYUDEKZFHRCRSNVNH3KBYBBVEQM2KM2CFEGCY",
+      "tx": "fbc21465e6f5df169e257414f16b708fc8fc1e6a710c983eb101717f1ffc416f",
+      "at": "2026-11-13T23:45:33Z"
+    },
+    {
+      "step": "compliance:grant_asset_yt:CDFKUEQHX32XOHV6K2VHYUDEKZFHRCRSNVNH3KBYBBVEQM2KM2CFEGCY",
+      "tx": "a3a17e1de09d7df12ed25c77dd4ee7d2bb39fb26641134e802e2066f1d6c2642",
+      "at": "2026-11-13T23:45:41Z"
+    },
+    {
+      "step": "compliance:grant_asset_pt:CDGBQF54N66HEZGEFW7ZIU57DEEHCAWGPDGU6SCYUSXV5TBSFDATZW3X",
+      "tx": "4029c651a98ed02ee6035cff9afce0737f4a9e2f715f681edd570198162fb458",
+      "at": "2026-11-13T23:45:48Z"
+    },
+    {
+      "step": "compliance:grant_asset_yt:CDGBQF54N66HEZGEFW7ZIU57DEEHCAWGPDGU6SCYUSXV5TBSFDATZW3X",
+      "tx": "2965c9971f4c198e824f27d82e935fb7310ebf058b6a26c00f638731c83c46cd",
+      "at": "2026-11-13T23:45:55Z"
+    },
+    {
+      "step": "compliance:grant_asset_pt:GBPDLO73W2BQJ3F755ZZZKVFKP2FPVEIFW5THYANGDWEYJ5QQYDCMGET",
+      "tx": "87d947fa32d57131fe964f1f1cb4b8dd1c5f6286d87fada0052fd1d6a3bf88fd",
+      "at": "2026-11-13T23:46:03Z"
+    },
+    {
+      "step": "compliance:grant_asset_yt:GBPDLO73W2BQJ3F755ZZZKVFKP2FPVEIFW5THYANGDWEYJ5QQYDCMGET",
+      "tx": "83b248bebebc3ae176a2aca7604edd113447aec915bdee7b074b01f374f196c1",
+      "at": "2026-11-13T23:46:10Z"
     }
   ]
 }

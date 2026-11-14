@@ -252,6 +252,15 @@ PERMISSIONING_ID="$(deploy_or_reuse permissioning permissioning "$ADMIN_KEY" ini
 
 RISK_CONTROL_ID="$(deploy_or_reuse risk_control risk_control "$ADMIN_KEY" initialize \
   --admin "$ADMIN_ADDR" --cb_limit "$RISK_CB_LIMIT")"
+# risk_control already has a live setter for this (set_cb_limit) -- a reused instance's limit is
+# changed through it, same pattern as set_window_ledgers below, rather than by forcing a whole
+# redeploy just to change one number.
+CURRENT_CB_LIMIT="$(raw "$(invoke "$RISK_CONTROL_ID" "$ADMIN_KEY" --send=no -- get_cb_limit)")"
+if [ "$CURRENT_CB_LIMIT" != "$RISK_CB_LIMIT" ]; then
+  invoke "$RISK_CONTROL_ID" "$ADMIN_KEY" -- set_cb_limit \
+    --caller "$ADMIN_ADDR" --new_limit "$RISK_CB_LIMIT" >/dev/null
+  manifest_log_tx "risk_control:set_cb_limit" "$LAST_TX"
+fi
 if [ "$RISK_WINDOW_LEDGERS" != "17280" ]; then
   CURRENT_WINDOW="$(raw "$(invoke "$RISK_CONTROL_ID" "$ADMIN_KEY" --send=no -- get_window_ledgers)")"
   if [ "$CURRENT_WINDOW" != "$RISK_WINDOW_LEDGERS" ]; then
@@ -286,14 +295,38 @@ fi
 # regardless of whether a SEP-40 feed is also configured) plus, optionally, the beyond-spec
 # SEP-40 feed wiring described in OracleAdapter's own module doc.
 if [ "$(raw "$(invoke "$ORACLE_ID" "$ADMIN_KEY" --send=no -- is_available)")" != "true" ]; then
-  echo "oracle_adapter: submitting the manual genesis value ($ORACLE_INITIAL_VALUE @ $ORACLE_INITIAL_TIMESTAMP)"
+  # A stale oracle still holds its last accepted value, and set_reference_value rejects (does
+  # not panic -- returns false) both a decrease and a jump past max_deviation_bps from it. Using
+  # the static ORACLE_INITIAL_VALUE default blindly, on a re-run against an oracle that already
+  # has a higher stored value from an earlier run, pushes a guaranteed rejection: the script
+  # didn't check the return value, so it recorded the tx as if it had succeeded while the oracle
+  # stayed stuck unavailable -- found live. Clamp to a value this specific oracle will actually
+  # accept: never below its current (stale) value, never above current * (1 + max_deviation_bps).
+  CURRENT_ORACLE_VALUE="$(raw "$(invoke "$ORACLE_ID" "$ADMIN_KEY" --send=no -- get_reference_value)")"
+  [ -z "$CURRENT_ORACLE_VALUE" ] && CURRENT_ORACLE_VALUE=0
+  GENESIS_VALUE="$ORACLE_INITIAL_VALUE"
+  if [ "$CURRENT_ORACLE_VALUE" -gt 0 ]; then
+    [ "$GENESIS_VALUE" -lt "$CURRENT_ORACLE_VALUE" ] && GENESIS_VALUE="$CURRENT_ORACLE_VALUE"
+    MAX_ALLOWED_GENESIS=$(( CURRENT_ORACLE_VALUE + CURRENT_ORACLE_VALUE * ORACLE_MAX_DEVIATION_BPS / 10000 ))
+    [ "$GENESIS_VALUE" -gt "$MAX_ALLOWED_GENESIS" ] && GENESIS_VALUE="$MAX_ALLOWED_GENESIS"
+    [ "$GENESIS_VALUE" != "$ORACLE_INITIAL_VALUE" ] && echo "oracle_adapter: ORACLE_INITIAL_VALUE=$ORACLE_INITIAL_VALUE would be rejected against the existing stale value $CURRENT_ORACLE_VALUE (decrease, or exceeds max_deviation_bps=$ORACLE_MAX_DEVIATION_BPS) -- using $GENESIS_VALUE instead" >&2
+  fi
+  echo "oracle_adapter: submitting the manual genesis value ($GENESIS_VALUE @ $ORACLE_INITIAL_TIMESTAMP)"
   ZERO_SOURCE="$(python3 -c "print('0'*64)")"
   invoke "$ORACLE_ID" "$ADMIN_KEY" -- set_sources --caller "$ADMIN_ADDR" \
     --primary_source "$ZERO_SOURCE" --fallback_source null >/dev/null 2>&1 || true
-  invoke "$ORACLE_ID" "$ADMIN_KEY" -- set_reference_value \
+  SET_RESULT="$(raw "$(invoke "$ORACLE_ID" "$ADMIN_KEY" -- set_reference_value \
     --caller "$ADMIN_ADDR" --source "$ZERO_SOURCE" \
-    --value "$ORACLE_INITIAL_VALUE" --timestamp "$ORACLE_INITIAL_TIMESTAMP" >/dev/null
+    --value "$GENESIS_VALUE" --timestamp "$ORACLE_INITIAL_TIMESTAMP")")"
   manifest_log_tx "oracle_adapter:set_reference_value" "$LAST_TX"
+  # set_reference_value gracefully rejects (returns false) rather than panicking on a policy
+  # violation -- a bare `invoke ... >/dev/null` can't tell a rejection from a genuine accept, so
+  # the tx got logged as a success either way. Check the real decoded return, not just that the
+  # transaction was included.
+  if [ "$SET_RESULT" != "true" ]; then
+    echo "ERROR: oracle_adapter.set_reference_value returned '$SET_RESULT', not true -- the genesis value was gracefully rejected, not accepted. Check last_rejection() on $ORACLE_ID for the reason." >&2
+    exit 1
+  fi
 else
   echo "oracle_adapter: already has a fresh value, leaving the manual push alone"
 fi
@@ -305,8 +338,9 @@ if [ -n "${ORACLE_FEED_ADDRESS:-}" ]; then
   invoke "$ORACLE_ID" "$ADMIN_KEY" -- set_feed_source \
     --caller "$ADMIN_ADDR" --feed "$ORACLE_FEED_ADDRESS" --asset "$ASSET_JSON" >/dev/null
   manifest_log_tx "oracle_adapter:set_feed_source" "$LAST_TX"
-  invoke "$ORACLE_ID" "$ADMIN_KEY" -- sync_from_feed >/dev/null
+  SYNC_RESULT="$(raw "$(invoke "$ORACLE_ID" "$ADMIN_KEY" -- sync_from_feed)")"
   manifest_log_tx "oracle_adapter:sync_from_feed" "$LAST_TX"
+  [ "$SYNC_RESULT" != "true" ] && echo "WARNING: oracle_adapter.sync_from_feed returned '$SYNC_RESULT', not true -- the feed's current value was gracefully rejected (check last_rejection()); the manual push above is still in effect." >&2
 fi
 
 echo
@@ -418,11 +452,13 @@ done
 manifest_set_path ".underlying.kind" "sac"
 manifest_set_path ".underlying.sac" "$UNDERLYING_SAC"
 manifest_set_path_num ".underlying.decimals" "$UNDERLYING_DECIMALS"
-# Derived from SY_ADDR, not a wall-clock timestamp, so a reused market (see the per-market
-# idempotency check above) keeps the same market_id on every re-run instead of a fresh one each
-# time -- found live: the first idempotency test run produced two different market_ids for what
-# was supposed to be the same, reused market.
-MARKET_ID="${NETWORK}-${UNDERLYING_SAC:0:6}-$(( (MARKET_MATURITY_UNIX - $(date +%s)) / 86400 ))d-${SY_ADDR:0:8}"
+# Derived only from SY_ADDR/UNDERLYING_SAC, never from wall-clock time, so a reused market (see
+# the per-market idempotency check above) keeps exactly the same market_id on every re-run. An
+# earlier version embedded "days left to maturity," which is itself a function of *when* the
+# script runs -- so the very same, unchanged market got a different id each day, silently
+# breaking any doc or manifest that had recorded the old one. Found live reviewing a second
+# day's re-run against this same market.
+MARKET_ID="${NETWORK}-${UNDERLYING_SAC:0:6}-${SY_ADDR:0:8}"
 manifest_set_path ".market.market_id" "$MARKET_ID"
 manifest_set_path_num ".market.maturity" "$MARKET_MATURITY_UNIX"
 manifest_set_path_num ".market.tokenization_fee_bps" "${TOKENIZATION_FEE_BPS:-5}"
