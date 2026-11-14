@@ -4,8 +4,8 @@
   "network_passphrase": "Test SDF Network ; September 2015",
   "rpc_url": "https://soroban-testnet.stellar.org",
   "horizon_url": "https://horizon-testnet.stellar.org",
-  "source_commit": "aae6cf81346a51f600393e4267be45e65524ae4e",
-  "built_at": "2026-11-13T23:44:06Z",
+  "source_commit": "24d980d6fbdffae9bd561a80cc7dcb9f1846fa11",
+  "built_at": "2026-11-14T14:54:44Z",
   "wasm_target": "wasm32v1-none",
   "git_tree_dirty": true,
   "oracle_abi_version": 2,
@@ -19,8 +19,8 @@
     "decimals": 7
   },
   "market": {
-    "market_id": "testnet-CD2A2J-CDO7S4YP",
-    "maturity": 1802381857,
+    "market_id": "testnet-CD2A2J-CAQL2NXB",
+    "maturity": 1802443614,
     "tokenization_fee_bps": 5,
     "yt_fee_bps": 1000,
     "swap_fee_tier_bps": 10,
@@ -29,47 +29,47 @@
   },
   "contracts": {
     "oracle_adapter": {
-      "id": "CCP6U5FLJW6ZUUFLJOQLQ2SYRVA2ENQVGZ5YMRRJTJIBMFOCOI7PJP6P",
+      "id": "CDE77DLHNF2WQMB2HCRK4LYMOMPLCP3PLAME543K4IF5K3C7G6UTGH5S",
       "wasm_path": "target/wasm32v1-none/release/principal_oracle_adapter.wasm",
-      "wasm_sha256": "f5c8a129c5aad53aff733b325a9949926a4fd4abf185a4dd0aec53476bf45253",
-      "deploy_tx": "",
-      "init_tx": "1955050f4dc388219616bca2beefbd75fa1b0dc3f65b7c93e4f67223fc541b45",
+      "wasm_sha256": "93eb1ae6d6affd455d0878d1ce66849788eb34924f0f084a28e79b7c4eafee88",
+      "deploy_tx": "bca9b516517eec78d87ae406b326c56bcad3532ad2ed8a9f5c784fca72a9cfe7",
+      "init_tx": "8354da147632e69780111f0e7bb72c2aec93334359283012cdb711084117b15c",
       "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF"
     },
     "permissioning": {
-      "id": "CD7PNCOQNXWCDMKB2SPWWH5M5V4CBWW5XTP6KCXSU4ZT2Q4HBVIAHMFQ",
+      "id": "CDP4TLBGVGLZCWFNY5KGZSEH7NPTQ2PZ7WSMUDSFVNAGESG3HTWRSNKL",
       "wasm_path": "target/wasm32v1-none/release/principal_permissioning.wasm",
       "wasm_sha256": "3bc08a9e21f12da4a9727c4923d664953974d3700a2fe60f8662cddf0eb9356b",
-      "deploy_tx": "",
-      "init_tx": "e9ed37b9a1a348798da90fd2a54d71fe126275d786ee77c5a0f385327d37784d",
+      "deploy_tx": "bab0bf2201bb8408a5aaaa5e4cd90424088d739ee98b378f6a1f827bc30cea48",
+      "init_tx": "c0d2d099824b6be08e5eca370105aad5b642d09401990eefca88fa0f3c98f147",
       "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF"
     },
     "risk_control": {
-      "id": "CCQ4WK3JFD3I7TQ73JS5IYBSGGALVWEH2AVOKKK3OBGTVV6G6ZC4CF5I",
+      "id": "CC5RWBAAJD3UYPEFTYYGGTE2B24LG2VRNWV2GSLJNDL3KHX3SZKZO2XQ",
       "wasm_path": "target/wasm32v1-none/release/principal_risk_control.wasm",
       "wasm_sha256": "fcac847ea311297a27abed2629c24fe56b6963fb899e880557a6d01bfde7ada1",
-      "deploy_tx": "",
-      "init_tx": "f0ba774a87336c8bd5993ae3dc800e35c50161150dc908487ba32e3d3054e0e0",
+      "deploy_tx": "fc366f78ac341bb5cc885b8993779d8572a94d86d5e3183099af1d780d6ea68e",
+      "init_tx": "795500bf46444733a0953b8f61ae161faabe3f3049b2f1a78796d05c1cb10a8c",
       "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF"
     },
     "router": {
-      "id": "CBYXKUV3DNIRC3DQ7LU257C373EBOLRFJCN3F65JP2LT35NJL47Y5DVZ",
+      "id": "CABB3FOGCNEOADJ6LJLLKXZKOS43GFFXIB4OERKQZZ6VVDIRV72JGWFI",
       "wasm_path": "target/wasm32v1-none/release/principal_router.wasm",
       "wasm_sha256": "708c8a283c242b7b8071dd939aa6612aaa804a78e99d0378e27c26a56284132e",
-      "deploy_tx": "",
-      "init_tx": "c6d5b8691c9b5e7c3f08cd614cadf9776ca416f637c01d593a56ebc7468c5b1c",
+      "deploy_tx": "d9b3241db71cd85455dff59fa310d7eabadbbdeb31b011d4bf87eca24b820d0f",
+      "init_tx": "fc48025941b5bb0cb87e9f39c230ad3af946c02f77cb964dd813f25a60f68edb",
       "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF"
     },
     "market_factory": {
-      "id": "CACFLQZQBBNF37V6ELSKFMC77FGRGLW74UPIYKT7U5B4VBMPLJ6A2UQ6",
+      "id": "CDYZ57MKJQE2EVFP6UVRKQQ4CHU4I37PI2K2DGF3SG5X7RSEZXBCVOQG",
       "wasm_path": "target/wasm32v1-none/release/principal_market_factory.wasm",
       "wasm_sha256": "409228b6b6cb077eea65effa50840d9ded1547636998138e725404ede8818a5b",
-      "deploy_tx": "",
+      "deploy_tx": "d414d6db14c1346a7d67b5c6f278285f48306bdfdbf3dab08c1d5a7d56107006",
       "init_tx": "",
       "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF"
     },
     "sy_wrapper": {
-      "id": "CDO7S4YPV36NFC5CHMSBGUVRZSKHPHIX35RBL33R4RLALVUK4YQSG4S5",
+      "id": "CAQL2NXBWO5BNQF2ZPJ6HH66RWIP2F5Y7TLHSVCDZMBPWEMIVPHHHX5E",
       "wasm_path": "target/wasm32v1-none/release/principal_sy_wrapper.wasm",
       "wasm_sha256": "394217638cd1b20b59dafb43bcd6fa76e3c9db860a89c54bc2cc9a9fc1c98e32",
       "deploy_tx": "",
@@ -77,7 +77,7 @@
       "admin_address": "GDJ6UBFYQLWPHHOCRSHPBPW74NL2Q5ZUWKSEIOVKSYSK2JRE4PPGLZWT"
     },
     "pt_token": {
-      "id": "CADCXJF7DTZ5T2W7QRIJWBI5Q5LVGRTHW33F2SRAGMQKO3MIRDQIJBWG",
+      "id": "CCNEHRGOBD5644UDLAEIM7GYEJJ65Z4YBE2DXU7EYEO7P22AJDBQW3WF",
       "wasm_path": "target/wasm32v1-none/release/principal_pt_token.wasm",
       "wasm_sha256": "44fd470c791b36c597d96ccebbaf3ed4c0bb216449f089f4ed3e0b0a981b168a",
       "deploy_tx": "",
@@ -85,7 +85,7 @@
       "admin_address": "GDJ6UBFYQLWPHHOCRSHPBPW74NL2Q5ZUWKSEIOVKSYSK2JRE4PPGLZWT"
     },
     "yt_token": {
-      "id": "CBCLSNK5N4SDNLTE7KXV52T6AQLPANSGH2UHUZ4K2TBW7TMIUWMY3O6J",
+      "id": "CC3DEUBELWI4GMKPGUSBM2XGMB4VBWTOPK3Q5KURUEPYHW3SD5RPWEMG",
       "wasm_path": "target/wasm32v1-none/release/principal_yt_token.wasm",
       "wasm_sha256": "3fe7f27d38365ee8e933cd86dcd943a7330c2ba6a2c476717ac6b299fe283e89",
       "deploy_tx": "",
@@ -93,7 +93,7 @@
       "admin_address": "GDJ6UBFYQLWPHHOCRSHPBPW74NL2Q5ZUWKSEIOVKSYSK2JRE4PPGLZWT"
     },
     "market_config": {
-      "id": "CAY2UW3LM7KTHSUZJKCTVQPTWP74V3O64IMN5ZQWSTDBQUWAPDOJYCWN",
+      "id": "CDPFIZJRJDIQ2MUPW7K5KEYQELBG4OFKMHAYOHHXXG3PI5YWAWOF4KXP",
       "wasm_path": "target/wasm32v1-none/release/principal_market_config.wasm",
       "wasm_sha256": "11b0cbdf10a8d204fcb568c54529801747feac05208c5bcbfaefd822ad0c79a8",
       "deploy_tx": "",
@@ -101,7 +101,7 @@
       "admin_address": "GDJ6UBFYQLWPHHOCRSHPBPW74NL2Q5ZUWKSEIOVKSYSK2JRE4PPGLZWT"
     },
     "principal_manager": {
-      "id": "CB6TD5FT3UP5OMWFIKVXO72O4IVXB72JAC3KQOBTBJ2FGGW7YWI4JI2K",
+      "id": "CAE3NHTFZ22L7M43ZD3RI6SO6J5VWGSB5LL6EP4DH2X3YNYMW62XMGF3",
       "wasm_path": "target/wasm32v1-none/release/principal_manager.wasm",
       "wasm_sha256": "819ae7ba616bc078369fe2b6e9a984b9b788fbb43dc62501494241b5e1b6f584",
       "deploy_tx": "",
@@ -109,7 +109,7 @@
       "admin_address": "GDJ6UBFYQLWPHHOCRSHPBPW74NL2Q5ZUWKSEIOVKSYSK2JRE4PPGLZWT"
     },
     "market_pool": {
-      "id": "CDFKUEQHX32XOHV6K2VHYUDEKZFHRCRSNVNH3KBYBBVEQM2KM2CFEGCY",
+      "id": "CDWC77L6LGND24IFBLTISMB62ON5B25W2S5543F744OK6IUGVJLJLBUC",
       "wasm_path": "target/wasm32v1-none/release/principal_market_pool.wasm",
       "wasm_sha256": "caafcbfbcbfff646303f7da75ba707a48add01e79620f11a80a21cecf7e2cb4e",
       "deploy_tx": "",
@@ -117,7 +117,7 @@
       "admin_address": "GDJ6UBFYQLWPHHOCRSHPBPW74NL2Q5ZUWKSEIOVKSYSK2JRE4PPGLZWT"
     },
     "recovery_escrow": {
-      "id": "CDGBQF54N66HEZGEFW7ZIU57DEEHCAWGPDGU6SCYUSXV5TBSFDATZW3X",
+      "id": "CAXQUQC5TKIYXOQ7YBPPU764WQGGZ3FPPSRLG3TONOJP3WWTKX5O55Z7",
       "wasm_path": "target/wasm32v1-none/release/principal_recovery_escrow.wasm",
       "wasm_sha256": "a4d46832ef28f9f4ee30ce64dd2115c2e2dbbfb86eb1f6ad985debedd9b33590",
       "deploy_tx": "",
@@ -127,12 +127,12 @@
   },
   "wiring": {
     "router_registered_pool": true,
-    "pt_minter": "CB6TD5FT3UP5OMWFIKVXO72O4IVXB72JAC3KQOBTBJ2FGGW7YWI4JI2K",
-    "yt_minter": "CB6TD5FT3UP5OMWFIKVXO72O4IVXB72JAC3KQOBTBJ2FGGW7YWI4JI2K",
-    "recovery_escrow": "CDGBQF54N66HEZGEFW7ZIU57DEEHCAWGPDGU6SCYUSXV5TBSFDATZW3X",
+    "pt_minter": "CAE3NHTFZ22L7M43ZD3RI6SO6J5VWGSB5LL6EP4DH2X3YNYMW62XMGF3",
+    "yt_minter": "CAE3NHTFZ22L7M43ZD3RI6SO6J5VWGSB5LL6EP4DH2X3YNYMW62XMGF3",
+    "recovery_escrow": "CAXQUQC5TKIYXOQ7YBPPU764WQGGZ3FPPSRLG3TONOJP3WWTKX5O55Z7",
     "risk_consumers": [
-      "CDO7S4YPV36NFC5CHMSBGUVRZSKHPHIX35RBL33R4RLALVUK4YQSG4S5",
-      "CB6TD5FT3UP5OMWFIKVXO72O4IVXB72JAC3KQOBTBJ2FGGW7YWI4JI2K"
+      "CAQL2NXBWO5BNQF2ZPJ6HH66RWIP2F5Y7TLHSVCDZMBPWEMIVPHHHX5E",
+      "CAE3NHTFZ22L7M43ZD3RI6SO6J5VWGSB5LL6EP4DH2X3YNYMW62XMGF3"
     ]
   },
   "transactions": [
@@ -340,6 +340,291 @@
       "step": "compliance:grant_asset_yt:GBPDLO73W2BQJ3F755ZZZKVFKP2FPVEIFW5THYANGDWEYJ5QQYDCMGET",
       "tx": "83b248bebebc3ae176a2aca7604edd113447aec915bdee7b074b01f374f196c1",
       "at": "2026-11-13T23:46:10Z"
+    },
+    {
+      "step": "deploy:oracle_adapter",
+      "tx": "afc728fbc3fbd5a757a962da4d06d56f963ed3a0d57125d13f32ae435ac30f95",
+      "at": "2026-11-14T13:17:21Z"
+    },
+    {
+      "step": "init:oracle_adapter",
+      "tx": "1cea58d26c00bee0f93328c8e22d8ed2895ee2618864340abc8e1c90fbac4666",
+      "at": "2026-11-14T13:17:26Z"
+    },
+    {
+      "step": "deploy:permissioning",
+      "tx": "8be2e55c11982150d4c5c2d07aab0466c0eed26f81c94f7f04def0734d3d1180",
+      "at": "2026-11-14T13:17:31Z"
+    },
+    {
+      "step": "init:permissioning",
+      "tx": "be8264f9f861f1d93aed1ff6d16705c8cd3075cf42ccba79705f83b1cbd54358",
+      "at": "2026-11-14T13:17:35Z"
+    },
+    {
+      "step": "deploy:risk_control",
+      "tx": "d5ed6b2e3cd8b76406a1e62eae611461a6e6d936eb2573305ad0e9bd497255cf",
+      "at": "2026-11-14T13:17:40Z"
+    },
+    {
+      "step": "init:risk_control",
+      "tx": "4b214a3f760afe2acc0512008d619eeaec808e06cee6c4335e95698768af7360",
+      "at": "2026-11-14T13:17:45Z"
+    },
+    {
+      "step": "risk_control:set_asset_limit",
+      "tx": "85fa39bb3cd5630fc5b05ea64ed632669281f5db1d0b3cb5ca1b2a99c3d83a5a",
+      "at": "2026-11-14T13:17:51Z"
+    },
+    {
+      "step": "deploy:oracle_adapter",
+      "tx": "bca9b516517eec78d87ae406b326c56bcad3532ad2ed8a9f5c784fca72a9cfe7",
+      "at": "2026-11-14T14:47:06Z"
+    },
+    {
+      "step": "init:oracle_adapter",
+      "tx": "8354da147632e69780111f0e7bb72c2aec93334359283012cdb711084117b15c",
+      "at": "2026-11-14T14:47:10Z"
+    },
+    {
+      "step": "deploy:permissioning",
+      "tx": "bab0bf2201bb8408a5aaaa5e4cd90424088d739ee98b378f6a1f827bc30cea48",
+      "at": "2026-11-14T14:47:15Z"
+    },
+    {
+      "step": "init:permissioning",
+      "tx": "c0d2d099824b6be08e5eca370105aad5b642d09401990eefca88fa0f3c98f147",
+      "at": "2026-11-14T14:47:28Z"
+    },
+    {
+      "step": "deploy:risk_control",
+      "tx": "fc366f78ac341bb5cc885b8993779d8572a94d86d5e3183099af1d780d6ea68e",
+      "at": "2026-11-14T14:47:36Z"
+    },
+    {
+      "step": "init:risk_control",
+      "tx": "795500bf46444733a0953b8f61ae161faabe3f3049b2f1a78796d05c1cb10a8c",
+      "at": "2026-11-14T14:47:45Z"
+    },
+    {
+      "step": "risk_control:set_asset_limit",
+      "tx": "369c409bb741a051173080accffa9629f37b72bf897909ca163c51475807be3c",
+      "at": "2026-11-14T14:47:55Z"
+    },
+    {
+      "step": "deploy:router",
+      "tx": "d9b3241db71cd85455dff59fa310d7eabadbbdeb31b011d4bf87eca24b820d0f",
+      "at": "2026-11-14T14:48:06Z"
+    },
+    {
+      "step": "init:router",
+      "tx": "fc48025941b5bb0cb87e9f39c230ad3af946c02f77cb964dd813f25a60f68edb",
+      "at": "2026-11-14T14:48:10Z"
+    },
+    {
+      "step": "deploy:market_factory",
+      "tx": "d414d6db14c1346a7d67b5c6f278285f48306bdfdbf3dab08c1d5a7d56107006",
+      "at": "2026-11-14T14:48:21Z"
+    },
+    {
+      "step": "oracle_adapter:set_reference_value",
+      "tx": "b3aa396cb14ba5357b3177142103c334d089c8329cc1f69acf997f1de6567863",
+      "at": "2026-11-14T14:48:45Z"
+    },
+    {
+      "step": "factory.create_tokens",
+      "tx": "8e6599860072c45c803414a090cf7acf10d0ac2fd1b88279fc33af2299fa04f9",
+      "at": "2026-11-14T14:49:50Z"
+    },
+    {
+      "step": "factory.create_engine",
+      "tx": "97d093277bc0960dadd74cf7e92cb4845a61ab252c82e197651e54d8c464ebe5",
+      "at": "2026-11-14T14:49:50Z"
+    },
+    {
+      "step": "factory.create_pool_and_escrow",
+      "tx": "ccf4d7f56e3605f94ed5c0fdb3b555fd7a61697c10f87336cbcf09dc463e1d52",
+      "at": "2026-11-14T14:49:50Z"
+    },
+    {
+      "step": "risk_control.add_consumer(SYWrapper)",
+      "tx": "ee8d8a57eb890ec007e44d2e48e214b8f8618ffa54884fa3a328e409cf869bea",
+      "at": "2026-11-14T14:49:50Z"
+    },
+    {
+      "step": "risk_control.add_consumer(PrincipalManager)",
+      "tx": "4ea7cf4d45da3b52c87729e1aa83618cf01ea732b7d893bb45af511162f179d8",
+      "at": "2026-11-14T14:49:50Z"
+    },
+    {
+      "step": "router.register_market",
+      "tx": "076902979e86026e8c1d6a731661912e59598570b9092aa44708625345499f57",
+      "at": "2026-11-14T14:49:50Z"
+    },
+    {
+      "step": "compliance:set_authorized:CAQL2NXBWO5BNQF2ZPJ6HH66RWIP2F5Y7TLHSVCDZMBPWEMIVPHHHX5E",
+      "tx": "41986d2422a10930886ac0d468d6d57837aceb8aff94f8b89422a22b194c1487",
+      "at": "2026-11-14T14:49:55Z"
+    },
+    {
+      "step": "compliance:grant_account:CAQL2NXBWO5BNQF2ZPJ6HH66RWIP2F5Y7TLHSVCDZMBPWEMIVPHHHX5E",
+      "tx": "e4bedc1e3df1006f81090657ec9ea24b381f5e4689cfd615b9874cb8b91d9a43",
+      "at": "2026-11-14T14:50:05Z"
+    },
+    {
+      "step": "compliance:set_authorized:CAE3NHTFZ22L7M43ZD3RI6SO6J5VWGSB5LL6EP4DH2X3YNYMW62XMGF3",
+      "tx": "dfe33b1cb4022cc149a0e936596d7ec35c4dd01cd7fa93efb01093efef5ee315",
+      "at": "2026-11-14T14:50:10Z"
+    },
+    {
+      "step": "compliance:grant_account:CAE3NHTFZ22L7M43ZD3RI6SO6J5VWGSB5LL6EP4DH2X3YNYMW62XMGF3",
+      "tx": "dd3cb2d6560cbb8101b33cc040f3f02a393ef0e1c7779b41f687cee7a51ac365",
+      "at": "2026-11-14T14:50:15Z"
+    },
+    {
+      "step": "compliance:set_authorized:CDWC77L6LGND24IFBLTISMB62ON5B25W2S5543F744OK6IUGVJLJLBUC",
+      "tx": "ba3eada4a97bad1a88e1afa9010af6bf7396174d605c07c82ef71ef6a07f6eeb",
+      "at": "2026-11-14T14:50:29Z"
+    },
+    {
+      "step": "compliance:grant_account:CDWC77L6LGND24IFBLTISMB62ON5B25W2S5543F744OK6IUGVJLJLBUC",
+      "tx": "3dc6fb58e7a0823301e5b5236471ecf68ee3c6f82b66117a7653a118e0acce77",
+      "at": "2026-11-14T14:50:36Z"
+    },
+    {
+      "step": "compliance:set_authorized:CAXQUQC5TKIYXOQ7YBPPU764WQGGZ3FPPSRLG3TONOJP3WWTKX5O55Z7",
+      "tx": "f0c10b1ef1da1e9dc81e12e42af9b3e49958926aaa7745450e929aaef192f16b",
+      "at": "2026-11-14T14:50:46Z"
+    },
+    {
+      "step": "compliance:grant_account:CAXQUQC5TKIYXOQ7YBPPU764WQGGZ3FPPSRLG3TONOJP3WWTKX5O55Z7",
+      "tx": "718363ca80266e8bb15a30b588edf86d03854735d07a529fad91a97bb21aed2f",
+      "at": "2026-11-14T14:50:55Z"
+    },
+    {
+      "step": "compliance:set_authorized:GBPDLO73W2BQJ3F755ZZZKVFKP2FPVEIFW5THYANGDWEYJ5QQYDCMGET",
+      "tx": "e9c80b2fe3cc854fdd3cfd08998577b8d0af1925f44c2d5ddbf27a32c4518118",
+      "at": "2026-11-14T14:51:07Z"
+    },
+    {
+      "step": "compliance:grant_account:GBPDLO73W2BQJ3F755ZZZKVFKP2FPVEIFW5THYANGDWEYJ5QQYDCMGET",
+      "tx": "36087a5ec1cedaba406dbd2f906a35b867276148d7aaa3707bd7aa9be53c0fee",
+      "at": "2026-11-14T14:51:15Z"
+    },
+    {
+      "step": "compliance:grant_asset_pt:CDWC77L6LGND24IFBLTISMB62ON5B25W2S5543F744OK6IUGVJLJLBUC",
+      "tx": "bd390b39296d82f954589409194e6bb66269fd0268094505165bb8882718a3f1",
+      "at": "2026-11-14T14:51:25Z"
+    },
+    {
+      "step": "compliance:grant_asset_yt:CDWC77L6LGND24IFBLTISMB62ON5B25W2S5543F744OK6IUGVJLJLBUC",
+      "tx": "63cc1705ec03b3b8b4d1877411f958b4e3ca2e4cef8f7679f2e0414cdbc5615a",
+      "at": "2026-11-14T14:51:35Z"
+    },
+    {
+      "step": "compliance:grant_asset_pt:CAXQUQC5TKIYXOQ7YBPPU764WQGGZ3FPPSRLG3TONOJP3WWTKX5O55Z7",
+      "tx": "815be19c6cd6167441c60c942581b256602b40c055330e33d929804d5ece7837",
+      "at": "2026-11-14T14:51:41Z"
+    },
+    {
+      "step": "compliance:grant_asset_yt:CAXQUQC5TKIYXOQ7YBPPU764WQGGZ3FPPSRLG3TONOJP3WWTKX5O55Z7",
+      "tx": "d8a2aef5729d7e55e3c346b192d4c337f50ea0e70a3fc65d0d474028f362fb1e",
+      "at": "2026-11-14T14:51:51Z"
+    },
+    {
+      "step": "compliance:grant_asset_pt:GBPDLO73W2BQJ3F755ZZZKVFKP2FPVEIFW5THYANGDWEYJ5QQYDCMGET",
+      "tx": "5b417e1cea0ec14539d74cc8348cf0e421d60caaa8bf904d5e16de12db29c19d",
+      "at": "2026-11-14T14:52:00Z"
+    },
+    {
+      "step": "compliance:grant_asset_yt:GBPDLO73W2BQJ3F755ZZZKVFKP2FPVEIFW5THYANGDWEYJ5QQYDCMGET",
+      "tx": "12aba732031c7c5fa06d1dac861c6ffffa095e6b60dbd5a39545d6802c21ae6d",
+      "at": "2026-11-14T14:52:10Z"
+    },
+    {
+      "step": "risk_control:set_asset_limit",
+      "tx": "507bb269df49235c2c57ba26bb0e3151643a2842a55571084a6e65615f91db90",
+      "at": "2026-11-14T14:54:56Z"
+    },
+    {
+      "step": "compliance:set_authorized:CAQL2NXBWO5BNQF2ZPJ6HH66RWIP2F5Y7TLHSVCDZMBPWEMIVPHHHX5E",
+      "tx": "5ba8a6b8a4c9e038018036e3eebe4d7bd6d63fc8c2fd1eb440e40aa7fc2a64d2",
+      "at": "2026-11-14T14:55:10Z"
+    },
+    {
+      "step": "compliance:grant_account:CAQL2NXBWO5BNQF2ZPJ6HH66RWIP2F5Y7TLHSVCDZMBPWEMIVPHHHX5E",
+      "tx": "388b974ff979df217150adcf8cc91601c96e2c9d4d719997e6eb26b86f037803",
+      "at": "2026-11-14T14:55:20Z"
+    },
+    {
+      "step": "compliance:set_authorized:CAE3NHTFZ22L7M43ZD3RI6SO6J5VWGSB5LL6EP4DH2X3YNYMW62XMGF3",
+      "tx": "ac4a8a444c521c187248f3a2d0196fe192c61d796c18cbb4caf55c6c4c9c5efe",
+      "at": "2026-11-14T14:55:25Z"
+    },
+    {
+      "step": "compliance:grant_account:CAE3NHTFZ22L7M43ZD3RI6SO6J5VWGSB5LL6EP4DH2X3YNYMW62XMGF3",
+      "tx": "7904f269a10a6dbae9f9cc95cd51645943d8125d1c418f8647b4e872a6fc1b2b",
+      "at": "2026-11-14T14:55:35Z"
+    },
+    {
+      "step": "compliance:set_authorized:CDWC77L6LGND24IFBLTISMB62ON5B25W2S5543F744OK6IUGVJLJLBUC",
+      "tx": "4f9e51617cf9d48329c1db252bb99256a9eb5316481bd080e7e8baf1ad028e98",
+      "at": "2026-11-14T14:55:49Z"
+    },
+    {
+      "step": "compliance:grant_account:CDWC77L6LGND24IFBLTISMB62ON5B25W2S5543F744OK6IUGVJLJLBUC",
+      "tx": "fc6c567719de8074b7f29b5f77d0654365b0ef7436e513b64cbad4c8469bb3f5",
+      "at": "2026-11-14T14:55:55Z"
+    },
+    {
+      "step": "compliance:set_authorized:CAXQUQC5TKIYXOQ7YBPPU764WQGGZ3FPPSRLG3TONOJP3WWTKX5O55Z7",
+      "tx": "227579b534f3856fec6522ce64b009da112f85c03c9b6048f4c18d0f539087b2",
+      "at": "2026-11-14T14:56:00Z"
+    },
+    {
+      "step": "compliance:grant_account:CAXQUQC5TKIYXOQ7YBPPU764WQGGZ3FPPSRLG3TONOJP3WWTKX5O55Z7",
+      "tx": "490d318b2e67c4b9a9a65ef69c05c379e3678de67f5aead1a96332255f8372a0",
+      "at": "2026-11-14T14:56:10Z"
+    },
+    {
+      "step": "compliance:set_authorized:GBPDLO73W2BQJ3F755ZZZKVFKP2FPVEIFW5THYANGDWEYJ5QQYDCMGET",
+      "tx": "ae88bde8987dd19850657aa95074b2c14f83e5d1a389e1bf793484a6c2d725e6",
+      "at": "2026-11-14T14:56:20Z"
+    },
+    {
+      "step": "compliance:grant_account:GBPDLO73W2BQJ3F755ZZZKVFKP2FPVEIFW5THYANGDWEYJ5QQYDCMGET",
+      "tx": "7c4e81e1217fcb16513109809bd77fe1bea7665d286ae6f513849ea0929f1c11",
+      "at": "2026-11-14T14:56:26Z"
+    },
+    {
+      "step": "compliance:grant_asset_pt:CDWC77L6LGND24IFBLTISMB62ON5B25W2S5543F744OK6IUGVJLJLBUC",
+      "tx": "dbd6da857488d697fadcaa973e8b54f25f23bd36c418c79c6ac7d4dbfbfc34e5",
+      "at": "2026-11-14T14:56:36Z"
+    },
+    {
+      "step": "compliance:grant_asset_yt:CDWC77L6LGND24IFBLTISMB62ON5B25W2S5543F744OK6IUGVJLJLBUC",
+      "tx": "c9091828a07cd36193493df662d247cd2875dd3a758533f67fdc94b4602dd25f",
+      "at": "2026-11-14T14:56:44Z"
+    },
+    {
+      "step": "compliance:grant_asset_pt:CAXQUQC5TKIYXOQ7YBPPU764WQGGZ3FPPSRLG3TONOJP3WWTKX5O55Z7",
+      "tx": "41917351f11e6bdbb0f8852d6cfa368093f061745112b3b15ea8cb66cb6d3556",
+      "at": "2026-11-14T14:56:50Z"
+    },
+    {
+      "step": "compliance:grant_asset_yt:CAXQUQC5TKIYXOQ7YBPPU764WQGGZ3FPPSRLG3TONOJP3WWTKX5O55Z7",
+      "tx": "54292b3e7274711dc16fcd66c4ca0d9e5f16d3bb3eb859db5aa33e0cd0f70186",
+      "at": "2026-11-14T14:57:00Z"
+    },
+    {
+      "step": "compliance:grant_asset_pt:GBPDLO73W2BQJ3F755ZZZKVFKP2FPVEIFW5THYANGDWEYJ5QQYDCMGET",
+      "tx": "d1f639d5bc1d4dcdeab10a9c32fca39383da16216558096cad6604e20c377c5d",
+      "at": "2026-11-14T14:57:11Z"
+    },
+    {
+      "step": "compliance:grant_asset_yt:GBPDLO73W2BQJ3F755ZZZKVFKP2FPVEIFW5THYANGDWEYJ5QQYDCMGET",
+      "tx": "16dbcbfc214885e685372b3f375642874733f11ced04a860533717378655be7e",
+      "at": "2026-11-14T14:57:21Z"
     }
   ]
 }

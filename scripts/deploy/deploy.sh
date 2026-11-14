@@ -405,6 +405,17 @@ else
   POOL_ADDR="$(echo "$MARKET_OUT" | grep -oE '^POOL_ADDR=.*' | cut -d= -f2)"
   ESCROW_ADDR="$(echo "$MARKET_OUT" | grep -oE '^ESCROW_ADDR=.*' | cut -d= -f2)"
 
+  # create_market_via_factory.sh now reports its own six transaction hashes the same way it
+  # already reports contract addresses -- logged into the manifest's own transactions[] here,
+  # closing a gap an external review flagged (previously these six existed only in session
+  # run-logs, never in the manifest itself).
+  manifest_log_tx "factory.create_tokens" "$(echo "$MARKET_OUT" | grep -oE '^TX_CREATE_TOKENS=.*' | cut -d= -f2)"
+  manifest_log_tx "factory.create_engine" "$(echo "$MARKET_OUT" | grep -oE '^TX_CREATE_ENGINE=.*' | cut -d= -f2)"
+  manifest_log_tx "factory.create_pool_and_escrow" "$(echo "$MARKET_OUT" | grep -oE '^TX_CREATE_POOL_AND_ESCROW=.*' | cut -d= -f2)"
+  manifest_log_tx "risk_control.add_consumer(SYWrapper)" "$(echo "$MARKET_OUT" | grep -oE '^TX_ADD_CONSUMER_SY=.*' | cut -d= -f2)"
+  manifest_log_tx "risk_control.add_consumer(PrincipalManager)" "$(echo "$MARKET_OUT" | grep -oE '^TX_ADD_CONSUMER_MANAGER=.*' | cut -d= -f2)"
+  manifest_log_tx "router.register_market" "$(echo "$MARKET_OUT" | grep -oE '^TX_REGISTER_MARKET=.*' | cut -d= -f2)"
+
   for name_addr in "sy_wrapper:$SY_ADDR" "pt_token:$PT_ADDR" "yt_token:$YT_ADDR" \
                    "market_config:$CONFIG_ADDR" "principal_manager:$MANAGER_ADDR" \
                    "market_pool:$POOL_ADDR" "recovery_escrow:$ESCROW_ADDR"; do
