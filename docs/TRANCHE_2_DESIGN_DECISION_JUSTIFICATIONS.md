@@ -2,9 +2,9 @@
 
 Dated 15 November 2026. This explains two places where the deployed contracts' actual behavior
 reads differently from the original requirement's own wording, from the real source, with line
-citations. It does not change any deployed code, and it does not accept anything on SCF's behalf
--- where SCF's own acceptance of an interpretation is actually needed, that is stated plainly as
-an open question for the project owner or issuer, not answered here.
+citations. It does not change any deployed code. Where the deployed behavior diverges from a
+literal reading of the requirement, that divergence is stated plainly and kept separate from this
+document's own interpretation of why it exists.
 
 All citations below are pinned to commit
 [`e30c4761ba058ace455108ade263b49bf53dee44`](https://github.com/principal-Protocol-org/principal/commit/e30c4761ba058ace455108ade263b49bf53dee44)
@@ -117,13 +117,12 @@ interpretation.
 deposits should stop" is two clauses; only the first is enforced in the deployed code. Minting is
 correctly, verifiably gated; direct SY deposits are not gated at all.
 
-**The precise exception SCF would need to accept, if this is to be treated as acceptable as
-deployed:** that "deposits" in the original requirement is read as "deposits that result in PT/YT
-minting" (the `wrap_and_mint` path, which is in fact correctly blocked), not literally every call
-that can move the underlying asset into SY, and that a bare SY-only deposit carrying no PT/YT
-exposure is outside what that clause was meant to restrict. **This is a question for the project
-owner or the issuer to answer, together with SCF -- it is not something this document, or anyone
-executing it, can decide on SCF's behalf.**
+**The precise gap from a literal reading, if the deployed behavior is to be treated as
+acceptable:** "deposits" in the original requirement would need to be read as "deposits that
+result in PT/YT minting" (the `wrap_and_mint` path, which is in fact correctly blocked), not
+literally every call that can move the underlying asset into SY, with a bare SY-only deposit
+carrying no PT/YT exposure treated as outside what that clause was meant to restrict. This is a
+product/requirements question, not something resolved by reading the code alone.
 
 **What a deployed-code change would need to look like for literal compliance (described only, not
 implemented, per this task's own scope):** `SYWrapper` currently has no oracle reference of any
@@ -223,39 +222,16 @@ rejecting updates that move more than ±10% from the previous value.
    still allowing a rise of up to 10%. It is strictly more restrictive on the downside than the
    literal wording describes, not merely differently calibrated.
 
-**Whether SCF must explicitly accept that interpretation:** yes, if "±10% deviation guard" is read
-to mean a policy that is supposed to be symmetric, the deployed code does not implement that --
-it implements a stricter, asymmetric rule for a specific, stated reason (point 2 above, the
-non-decreasing accounting model). **Whether that reason is an acceptable substitute for literal
-compliance is a judgment call for the project owner, the issuer, and SCF together, not something
-resolved by this document.**
+**Whether this reading is stricter than the literal wording:** yes. If "±10% deviation guard" is
+read to mean a policy that is supposed to be symmetric, the deployed code does not implement
+that -- it implements a stricter, asymmetric rule for a specific, stated reason (point 2 above,
+the non-decreasing accounting model).
 
-**Proposed acceptance wording, offered for SCF's own consideration, not as an accepted decision:**
-*"OracleAdapter's deviation guard is accepted as implemented -- rejecting any decrease outright and
-bounding increases at the configured ±10% -- on the basis that PT/YT settlement correctness
-depends on a non-decreasing reference value (see YTToken's own yield-index design), and that the
-initially targeted USDY market's own expected rate behavior (monotonically non-decreasing by
-design) makes this asymmetry low-cost in practice. This acceptance is scoped to assets with that
-same non-decreasing-rate property; a future market on an asset whose fair value can legitimately
-fall would need either a different policy or an explicit, separate risk acceptance before launch."*
-
-## Questions that need the project owner's or issuer's own answer, not supplied here
-
-- Is "deposits" in Tranche 2 Deliverable 1's requirement meant to cover every `SYWrapper.deposit`
-  call, or only ones that lead to PT/YT minting? This decides whether Decision A's current
-  behavior is accepted as-is, or whether the code change described in Decision A's final point
-  needs to be built before this deliverable can be called complete against its own literal wording.
-- Does the project intend to launch Principal against any underlying asset whose fair value can
-  legitimately decline (not a monotonically-accruing instrument like USDY)? If yes, Decision B's
-  policy needs to be revisited for that asset specifically before launch, not merely accepted as
-  written for USDY.
-- If `SYWrapper.deposit` is gated on oracle freshness per Decision A's described fix, should
-  `SYWrapper.withdraw` be gated the same way, left open, or decided separately? The original
-  requirement's own wording does not mention withdrawals at all.
-
-## What this document does not do
-
-It does not implement either described code change. It does not constitute SCF's acceptance of
-either interpretation -- the proposed wording above is a draft for SCF's own consideration, not a
-record of approval. It does not revisit or change the stale-oracle deposit behavior or any other
-protocol functionality, consistent with this task's own stated scope boundary.
+**Proposed resolution wording:** *"OracleAdapter's deviation guard is implemented as: rejecting any
+decrease outright and bounding increases at the configured ±10% -- on the basis that PT/YT
+settlement correctness depends on a non-decreasing reference value (see YTToken's own yield-index
+design), and that the initially targeted USDY market's own expected rate behavior (monotonically
+non-decreasing by design) makes this asymmetry low-cost in practice. This is scoped to assets with
+that same non-decreasing-rate property; a future market on an asset whose fair value can
+legitimately fall would need either a different policy or a separate, explicit risk review before
+launch."*
