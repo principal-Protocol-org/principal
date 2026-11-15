@@ -1,0 +1,163 @@
+{
+  "_evidence_notice": "Reconstructed supplemental evidence, not the original deployment record. The dApp repository's own deploy script (scripts/dev-stack/deploy.sh) did not capture or write deployment transaction hashes anywhere -- this file's transaction fields were recovered after the fact, from public Horizon/Soroban-RPC history, and independently verified against the deployer account's actual on-chain history. Nothing here was captured live by the original deployment run. See docs/TRANCHE_2_DEPLOYMENT_EVIDENCE_CLOSURE.md for the full method and for every verification command, reproducible read-only.",
+  "schema_version": "1.0-reconstructed",
+  "network": "testnet",
+  "network_passphrase": "Test SDF Network ; September 2015",
+  "source": {
+    "repository": "https://github.com/principal-Protocol-org/dapp",
+    "branch": "testnet",
+    "retrieved_at_commit": "0fa85478c2e7180cf0914fd1a7a8608e937cd5de",
+    "manifest_path": "config/manifests/testnet.json",
+    "retrieval_date": "2026-11-15",
+    "snapshot_file": "testnet.json.snapshot",
+    "snapshot_sha256": "482761d3f8ade26b4cf8879186ccda73175d59a302297bb92a5b718c65f1cf4f",
+    "note": "snapshot_file is a byte-for-byte copy of config/manifests/testnet.json as it read at the pinned commit above; identical to the file at the dApp repository's testnet HEAD as of the retrieval date."
+  },
+  "contracts_source_commit": "665bb6760372d30307a1a035da24e51776f727e8",
+  "market_id": "testnet-usdy-1802336344",
+  "maturity": 1802336344,
+  "deployer_account": "GBLPAJ2GVSFUWCUIFMEV4EOV2XIOEWMJRIQ3LOM2Z42TNIY3J6ACB7UA",
+  "deployment_method": "direct sequential deploy (scripts/dev-stack/deploy.sh, DEPLOYMENT.md steps 1-10 + 10b) -- NOT via MarketFactory. All twelve contracts were uploaded and deployed one at a time by the admin key; MarketFactory (step 10b) was itself deployed but never invoked to create this market's contracts.",
+  "contracts": {
+    "oracle": {
+      "id": "CDYGBFGO7KD446CDTGJ7M4OWUXC7UPBGPVM5CUWP2NSNX2CKK2TYYIPS",
+      "wasm_sha256": "adb87f76c1bafd93c67489645fe49df771ede639edc0d1919233563ffae86bce",
+      "upload_tx": "0abc598928c3e10f8f18684fc418459c925f792b20300aaab4b6a2935723a1b3",
+      "deploy_tx": "68be08adffa4c4c02d11c50a4719822d5843d7bc0641bb8ca5f9e8b174514f92",
+      "deploy_ledger": 5707342,
+      "deploy_at": "2026-11-13T08:59:14Z",
+      "init_tx": null,
+      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction)"
+    },
+    "permissioning": {
+      "id": "CAFQMOCW3673DBKJBJ7C555IYPOULPH2WFOEOX52JAUCZRGZF5FRVLBA",
+      "wasm_sha256": "bf902fe36e73da56ec9aa9ab72728d9e0a4ea923814925fa4259e025ff98eb9e",
+      "upload_tx": null,
+      "deploy_tx": "6c381be195fccd2e289eeb638736f47f0f49ee604e1049c0a782868daa425d0e",
+      "deploy_ledger": 5707348,
+      "deploy_at": "2026-11-13T08:59:44Z",
+      "init_tx": null,
+      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction)",
+      "note": "No UploadContractWasm operation by the deployer in this deployment's 08:58-09:09 UTC window; this wasm hash was already present on-chain (likely uploaded in an earlier, pre-13-November session by the same account -- see closure report). Upload transaction not recovered."
+    },
+    "riskControl": {
+      "id": "CCRZ55SG273OTUZSFME6A6XXXEZ3GM5IMVRLF4NEEWNC54NGCRHIMHJC",
+      "wasm_sha256": "0e55d8200021b680176eca83738a639de6bfc8ab7f70a5985d3ef2d4669fa7a0",
+      "upload_tx": null,
+      "deploy_tx": "652844b9e4262322872e8a449ae47ea8ff160f4426dab9da3c54354c1d346648",
+      "deploy_ledger": 5707350,
+      "deploy_at": "2026-11-13T08:59:54Z",
+      "init_tx": null,
+      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction)",
+      "note": "Upload transaction not recovered, same reason as permissioning above."
+    },
+    "sy": {
+      "id": "CA62ACRTFADKNOP37CS7DPQ5DNJML4TFHIX6LZG5IBEHJM3PED2V7F2I",
+      "wasm_sha256": "64a8f41122a1599f100c1fd288b1879c19e6b71aed1b6dc3bc22604f0d008bcb",
+      "upload_tx": "56a19ac07385e46ff27b13560b821602d968d32f78ae5935b9bfe371611040a4",
+      "deploy_tx": "85f8a91f2bdd2fe6adf2ef7f26cece352cf7940d563fb507964a34b4d2fb5183",
+      "deploy_ledger": 5707353,
+      "deploy_at": "2026-11-13T09:00:09Z",
+      "init_tx": null,
+      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction)"
+    },
+    "pt": {
+      "id": "CCQPYQNDIHVLZZPK6CCF3CNBUP25BHJHX36PQXV6MG3ELPM7JYWDSPA5",
+      "wasm_sha256": "6464745ba7eb96c77a59f724d29d8f7ed6f378a77e1d2bff4fc08663e315078b",
+      "upload_tx": null,
+      "deploy_tx": "2d5d4409b52f149e64b089deb2195420818a6b4b20fa8a6cf9a3d08b66156035",
+      "deploy_ledger": 5707408,
+      "deploy_at": "2026-11-13T09:04:44Z",
+      "init_tx": null,
+      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction)",
+      "note": "Upload transaction not recovered, same reason as permissioning above."
+    },
+    "yt": {
+      "id": "CAXVQIHH7US4DUK2E2GE2N6VNXDECC6D4DOGXUSEG6SPKS7USNMYXDCB",
+      "wasm_sha256": "f45e230ba03149ece9a3bbad0d8173ce6dfa456f066c139cf1fd8b2b4ac2fb47",
+      "upload_tx": "25a50ba0a75ee9e96b0ffe0bd05f6f190e11f8bab5bd26c4464104ab55db3bbb",
+      "deploy_tx": "bc087931cad49b0a83022bd7b45ae1de1db22587f3935df374a75b1366555f92",
+      "deploy_ledger": 5707411,
+      "deploy_at": "2026-11-13T09:04:59Z",
+      "init_tx": null,
+      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction)"
+    },
+    "config": {
+      "id": "CBJT4OZDU2LFYQU5D6EQAYTLCLFOUJ3JK55HUBZVUMZ5FQVHK37VHJJ4",
+      "wasm_sha256": "3ab03fa1ee0cd13b871174f9478def5e34df599932358ba457ece80b6e295000",
+      "upload_tx": null,
+      "deploy_tx": "ed48bb3765a2125f23b5c2aa87ffe026e9d924772d8a95d4181bd61ffed4df46",
+      "deploy_ledger": 5707413,
+      "deploy_at": "2026-11-13T09:05:09Z",
+      "init_tx": null,
+      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction)",
+      "note": "Upload transaction not recovered, same reason as permissioning above."
+    },
+    "manager": {
+      "id": "CDYL4ZOIZ3DKEDWIMBUXHYQUAT4BAZTYZ7ZRCVLAMFAXGTJZRTOLVG47",
+      "wasm_sha256": "adcc724a270398a5c48bb20f417f37ad8d2def6a7f6897aa371170e363875f48",
+      "upload_tx": "7177c99c6870ef0e368b1d31f662262055c689fdcaa656100f22f115b9caeb3e",
+      "deploy_tx": "4434237bb38591fb4f9e259fc857e6a622e203fffe0aeb1ee4f3e7d8504b2917",
+      "deploy_ledger": 5707416,
+      "deploy_at": "2026-11-13T09:05:24Z",
+      "init_tx": null,
+      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction)"
+    },
+    "pool": {
+      "id": "CB3JI6H2HZ3PMWKLEKDPQUURFSKJSFTLNFNBU4CFEHAZXMWL5SNNS6OJ",
+      "wasm_sha256": "ab240fd7f4da359cc562ebb9d21761b9f4513fb96d5b0c0e829dfd441596e3eb",
+      "upload_tx": "0b2a12f5170933ae695022024dafa5a892b4d62f47d05ce0048470ee4500072c",
+      "deploy_tx": "70ce1725e4074344df33c01123c3b4f28eb1753f2c21f103ea121bbc328a9bdf",
+      "deploy_ledger": 5707423,
+      "deploy_at": "2026-11-13T09:05:59Z",
+      "init_tx": null,
+      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction)"
+    },
+    "recoveryEscrow": {
+      "id": "CAMOWBMTMDLFJLFOSTULXQO7MUK2PT3XAQ62CA4L5DGPQKZFJWEKN24Q",
+      "wasm_sha256": "795f16109536cf8908796d6315d21e0e7bccf29d043ddd0f5763520fa9b88c74",
+      "upload_tx": null,
+      "deploy_tx": "0c67b1e6ebe942e6f8d485f28290a6bffd77327f5797911aa64160d88eab0c69",
+      "deploy_ledger": 5707425,
+      "deploy_at": "2026-11-13T09:06:09Z",
+      "init_tx": null,
+      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction)",
+      "note": "Upload transaction not recovered, same reason as permissioning above."
+    },
+    "router": {
+      "id": "CC4BQRFRQQZF5VQUHZV3PS4LSIPNNAGI3UOL3K24DZNTCHGZQ3JHQ3E2",
+      "wasm_sha256": "9cd0403a156b192e09c1c614743e99c0b167e9a3c65c7e5553596639e772fd39",
+      "upload_tx": "ce42beb665e3b6f7989ec76ee7ae37e1cc8846f228db73f6bd3e63aff858fc22",
+      "deploy_tx": "2ca519146eca2cb6d359017432cbe2de8fd40eae7f8e362d3d4c484bd43803dc",
+      "deploy_ledger": 5707432,
+      "deploy_at": "2026-11-13T09:06:44Z",
+      "init_tx": null,
+      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction); deploy time matches dApp evidence doc TRANCHE_2_EVIDENCE.md section 1.2's own independently stated time for the Router"
+    },
+    "factory": {
+      "id": "CCTRU7IYGPXPY57FAT2TOYRYU6FZY7EPXZBZWDHGQB42V5JXPLN6XTXK",
+      "wasm_sha256": "790244c989a4c1f59c52d19250c5d63763b359cfc0d77ffc3317a176abfdbab8",
+      "upload_tx": "3ef5ffc984339c62e65ac9a5a463014b01c812552381d4d6e2281824fe468fee",
+      "deploy_tx": "b5c15f22a374ec1865ca57bfd1caa30385d519e8ba5cc303a1a8221a8ef119bc",
+      "deploy_ledger": 5707436,
+      "deploy_at": "2026-11-13T09:07:04Z",
+      "init_tx": null,
+      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction). Deployed but never invoked to create this market -- see deployment_method above."
+    },
+    "usdy_sac": {
+      "id": "CB2YO6BCOTN336RQUAMHOBCNABJG74URBIMNUHXB27K2QOLJKDCDXODZ",
+      "wasm_sha256": "built-in (Stellar Asset Contract, not a Principal-source contract)",
+      "note": "Created via `stellar contract asset deploy`, not a deploy_contract() wasm upload/deploy pair; not included in the 12 CreateContract operations enumerated above."
+    }
+  },
+  "on_chain_wasm_hash_verification": {
+    "method": "stellar contract fetch --id <address> --network testnet | sha256sum, read-only, performed 2026-11-15",
+    "result": "12 of 12 match the manifest's wasmHashes exactly (oracle, permissioning, riskControl, sy, pt, yt, config, manager, pool, recoveryEscrow, router, factory) -- independently reproduces the dApp evidence doc's own 13 November 2026 finding of the same result."
+  },
+  "source_to_byte_reproducibility": {
+    "attempted": true,
+    "builder_machine": "this verification's own machine, rustc 1.94.1 (e408947bf 2026-03-25), same command as the dApp's own (cargo build --workspace --release --target wasm32v1-none) against an isolated `git archive` of commit 665bb6760372d30307a1a035da24e51776f727e8",
+    "result": "0 of 12 byte-identical to the deployed/manifest hashes",
+    "diagnosis": "Consistent with, not contradicting, the dApp evidence doc's own TRANCHE_2_EVIDENCE.md section 2.1 finding (their CI runner also got 0 of 12 against the same source) -- most of these wasm files embed the building machine's own absolute path (via the cargo registry path), and the dApp's own matching build used Rust 1.95.0, not this verification's 1.94.1. A controlled comparison supports the version difference as at least a contributing factor: an isolated rebuild of the SAME machine's toolchain (1.94.1) against the separate TR2 deployment's commit aae6cf8 (see ../deployment-manifest.json) DID reproduce 12 of 12 byte-identical, because that manifest's own build was also made with 1.94.1. On-chain code matching the manifest (above) is independently and separately confirmed; this reproducibility result does not change that."
+  }
+}

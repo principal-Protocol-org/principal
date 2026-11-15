@@ -28,6 +28,23 @@ pass's own fixes are themselves uncommitted while being proven live). Everything
 is the original write-up and is kept as-is for its own historical accuracy; §9 is the new
 evidence, added without altering what came before it.
 
+**Update, 15 November 2026**: the remaining deployment-evidence gaps this document left open —
+five missing shared-infrastructure `deploy_tx` values (§2) and the three MarketFactory
+transactions never consolidated into the manifest itself (§2/§8) — are now closed, for both this
+deployment and the separate official dApp deployment, in
+[`docs/TRANCHE_2_DEPLOYMENT_EVIDENCE_CLOSURE.md`](TRANCHE_2_DEPLOYMENT_EVIDENCE_CLOSURE.md),
+read-only, with no contract redeployed and no transaction submitted to produce it. That document
+also independently re-verifies this deployment's on-chain wasm hashes, attempts (and reports
+honestly on) source-to-byte reproducibility from an isolated build of this deployment's exact
+recorded commit, and reconciles the dApp team's own review of this pipeline (which correctly
+cites this document's `aae6cf8` state) against where contracts `main` and its still-unmerged
+gap-closure branch actually stand now. This update does not change anything recorded below —
+`deployments/testnet/deployment-manifest.json`'s own `built_at`/`source_commit` fields, describing
+the original 13 November 2026 run, are untouched; the five recovered transaction hashes are
+written into that file's `contracts.*.deploy_tx` fields with an explicit
+`deploy_tx_reconstructed: true` marker and a dedicated `evidence_reconciliation` block explaining
+how, not silently merged in as if the original run had captured them.
+
 ## 1. Oracle ABI migration note (spec §5.2.2)
 
 `OracleAdapter.set_reference_value` is the breaking, source-aware ABI

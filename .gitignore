@@ -41,3 +41,4 @@ contracts/market_factory/test_snapshots/
 # mdBook output
 /book/
 deployments/*/deployment-manifest.json.*.bak
+__pycache__/

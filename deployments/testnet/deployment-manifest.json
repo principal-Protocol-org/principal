@@ -32,41 +32,46 @@
       "id": "CCP6U5FLJW6ZUUFLJOQLQ2SYRVA2ENQVGZ5YMRRJTJIBMFOCOI7PJP6P",
       "wasm_path": "target/wasm32v1-none/release/principal_oracle_adapter.wasm",
       "wasm_sha256": "f5c8a129c5aad53aff733b325a9949926a4fd4abf185a4dd0aec53476bf45253",
-      "deploy_tx": "",
+      "deploy_tx": "6c0e4550494ac3c704ac271d1f78f694a889ca40fedc0f1b3ab505678b9a28d8",
       "init_tx": "1955050f4dc388219616bca2beefbd75fa1b0dc3f65b7c93e4f67223fc541b45",
-      "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF"
+      "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF",
+      "deploy_tx_reconstructed": true
     },
     "permissioning": {
       "id": "CD7PNCOQNXWCDMKB2SPWWH5M5V4CBWW5XTP6KCXSU4ZT2Q4HBVIAHMFQ",
       "wasm_path": "target/wasm32v1-none/release/principal_permissioning.wasm",
       "wasm_sha256": "3bc08a9e21f12da4a9727c4923d664953974d3700a2fe60f8662cddf0eb9356b",
-      "deploy_tx": "",
+      "deploy_tx": "e2b92a798ae4cc238c5ec360bc3d72d16c86f2b4f2ca02d4c6a5447bea29ec31",
       "init_tx": "e9ed37b9a1a348798da90fd2a54d71fe126275d786ee77c5a0f385327d37784d",
-      "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF"
+      "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF",
+      "deploy_tx_reconstructed": true
     },
     "risk_control": {
       "id": "CCQ4WK3JFD3I7TQ73JS5IYBSGGALVWEH2AVOKKK3OBGTVV6G6ZC4CF5I",
       "wasm_path": "target/wasm32v1-none/release/principal_risk_control.wasm",
       "wasm_sha256": "fcac847ea311297a27abed2629c24fe56b6963fb899e880557a6d01bfde7ada1",
-      "deploy_tx": "",
+      "deploy_tx": "e972e59be3e56c280ecf646e33f44aa81c8cfbdacdab7077a2cda6f0cd10e010",
       "init_tx": "f0ba774a87336c8bd5993ae3dc800e35c50161150dc908487ba32e3d3054e0e0",
-      "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF"
+      "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF",
+      "deploy_tx_reconstructed": true
     },
     "router": {
       "id": "CBYXKUV3DNIRC3DQ7LU257C373EBOLRFJCN3F65JP2LT35NJL47Y5DVZ",
       "wasm_path": "target/wasm32v1-none/release/principal_router.wasm",
       "wasm_sha256": "708c8a283c242b7b8071dd939aa6612aaa804a78e99d0378e27c26a56284132e",
-      "deploy_tx": "",
+      "deploy_tx": "d24617082427c08bbb11f96666fa98930ea2ed48ce2a7e0a1b40dc1d73075473",
       "init_tx": "c6d5b8691c9b5e7c3f08cd614cadf9776ca416f637c01d593a56ebc7468c5b1c",
-      "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF"
+      "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF",
+      "deploy_tx_reconstructed": true
     },
     "market_factory": {
       "id": "CACFLQZQBBNF37V6ELSKFMC77FGRGLW74UPIYKT7U5B4VBMPLJ6A2UQ6",
       "wasm_path": "target/wasm32v1-none/release/principal_market_factory.wasm",
       "wasm_sha256": "409228b6b6cb077eea65effa50840d9ded1547636998138e725404ede8818a5b",
-      "deploy_tx": "",
+      "deploy_tx": "6891882ffaafa0d569672b80d43ffa17ee20cf254f033f84d8922f678b030a97",
       "init_tx": "",
-      "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF"
+      "admin_address": "GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF",
+      "deploy_tx_reconstructed": true
     },
     "sy_wrapper": {
       "id": "CDO7S4YPV36NFC5CHMSBGUVRZSKHPHIX35RBL33R4RLALVUK4YQSG4S5",
@@ -341,5 +346,47 @@
       "tx": "83b248bebebc3ae176a2aca7604edd113447aec915bdee7b074b01f374f196c1",
       "at": "2026-11-13T23:46:10Z"
     }
-  ]
+  ],
+  "evidence_reconciliation": {
+    "performed_on": "2026-11-15",
+    "method": "Horizon operation history for the deployer account (GBTZNAOBEIRAZPN6BKD7SZO2L3DGAQQZ6ZDP2YVGGZPO3K2E7YBSDFFF), filtered to HostFunctionTypeHostFunctionTypeCreateContract operations, each resolved via Soroban RPC getTransaction -> resultMetaXdr -> soroban_meta.return_value.address, decoded with `stellar xdr decode --type TransactionMeta --output json`. Each recovered hash below is included only because its decoded return_value.address matched the exact contract id already on record in this manifest -- none were inferred from timing or proximity to the known init_tx.",
+    "deploy_tx_recovered_for": [
+      "oracle_adapter",
+      "permissioning",
+      "risk_control",
+      "router",
+      "market_factory"
+    ],
+    "note": "built_at/source_commit above describe the original deploy.sh run and are unchanged. These deploy_tx values were not captured by that run (see contracts/*/deploy_tx below, now filled in, and the historical note previously carried in docs/TRANCHE_2_TESTNET_ACCEPTANCE.md section 2) -- they were recovered after the fact, on the date above, by the method above. Do not read deploy_tx as evidence that the original run logged it.",
+    "market_creation_tx_verified": [
+      {
+        "step": "factory.create_tokens",
+        "tx": "5fa113887a4ca2f70e35f92c1fc32ba58833ee7418526df5fb64f3c0b7dc3094",
+        "creates": {
+          "pt_token": "CADCXJF7DTZ5T2W7QRIJWBI5Q5LVGRTHW33F2SRAGMQKO3MIRDQIJBWG",
+          "sy_wrapper": "CDO7S4YPV36NFC5CHMSBGUVRZSKHPHIX35RBL33R4RLALVUK4YQSG4S5",
+          "yt_token": "CBCLSNK5N4SDNLTE7KXV52T6AQLPANSGH2UHUZ4K2TBW7TMIUWMY3O6J"
+        },
+        "verification": "resultMetaXdr return_value is a named map {pt_token, sy_wrapper, yt_token} -> address; all three match this manifest's recorded ids"
+      },
+      {
+        "step": "factory.create_engine",
+        "tx": "27f3a2dc4db00216e802a46a8040a9c87819b6beab12cc60bca3c6f23590c9e2",
+        "creates": {
+          "market_config": "CAY2UW3LM7KTHSUZJKCTVQPTWP74V3O64IMN5ZQWSTDBQUWAPDOJYCWN",
+          "principal_manager": "CB6TD5FT3UP5OMWFIKVXO72O4IVXB72JAC3KQOBTBJ2FGGW7YWI4JI2K"
+        },
+        "verification": "resultMetaXdr return_value is a named map {market_config, principal_manager} -> address; both match this manifest's recorded ids"
+      },
+      {
+        "step": "factory.create_pool_and_escrow",
+        "tx": "6d84844d00b806f783f85696d4f9241b04f13d86e057b1b6cc46ed39fa7becb0",
+        "creates": {
+          "market_pool": "CDFKUEQHX32XOHV6K2VHYUDEKZFHRCRSNVNH3KBYBBVEQM2KM2CFEGCY",
+          "recovery_escrow": "CDGBQF54N66HEZGEFW7ZIU57DEEHCAWGPDGU6SCYUSXV5TBSFDATZW3X"
+        },
+        "verification": "resultMetaXdr return_value is a named map {market_pool, recovery_escrow} -> address; both match this manifest's recorded ids"
+      }
+    ]
+  }
 }
