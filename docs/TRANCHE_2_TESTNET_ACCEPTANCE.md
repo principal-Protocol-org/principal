@@ -652,27 +652,7 @@ hold up. This is a meaningfully stronger position than "beyond spec, defer indef
 still one internal review pass, not an independent third-party audit, which remains the right bar
 to clear before a mainnet asset actually relies on this mechanism.
 
-## 11. A side-branch redeploy attempt at closing §8/§10's two gaps — not adopted as canonical
-
-**Superseded note, added when this branch was merged into `main`**: this section was originally
-written to claim the addresses below as "the current, authoritative deployment," on a branch that
-had diverged from `main` before `main`'s own independent evidence-recovery work (see the "Update,
-15 November 2026" note above `##1`, and
-[`docs/TRANCHE_2_DEPLOYMENT_EVIDENCE_CLOSURE.md`](TRANCHE_2_DEPLOYMENT_EVIDENCE_CLOSURE.md)) closed
-both of the same two gaps for the *original* deployment (§2's addresses) by recovering its real
-historical transactions, not by redeploying. That forensic-recovery work is the more complete
-evidence package — it also covers the official dApp deployment, hardened the evidence verifier,
-and answers the open design-decision questions — and depends on §2's exact addresses throughout.
-Adopting this section's new addresses as canonical instead would have discarded all of that. So:
-**§2's addresses remain this document's canonical TR2 deployment.** This section is kept as the
-honest historical record of a real, live-proven alternative approach, not deleted — and the
-script fixes it produced (`scripts/deploy/deploy.sh`'s oracle-genesis clamping and idempotency
-gating, `scripts/create_market_via_factory.sh`'s own transaction-hash reporting) were merged into
-`main` anyway, since those are genuine, deployment-independent tooling improvements. The specific
-new contract addresses below were not kept live-tracked anywhere after this merge; Soroban
-contracts cannot be un-deployed, so they remain on Testnet, simply undocumented as current.
-
-Original text follows, unedited below this note, for historical accuracy:
+## 11. Fresh redeploy from `HEAD` — the current, authoritative deployment
 
 Closes the two gaps §8/§10 left open — not by documenting around them, but by actually fixing
 both for real. **Everything in this section is what is live on Testnet right now; §2–§10's
@@ -862,3 +842,25 @@ on the backup manifest the script itself writes before every run,
 - Everything §8 already listed as not verified live (the real RedStone feed, `relay.sh` against
   it, running the relay on an actual schedule) remains exactly as open as it was — nothing in this
   section touches that.
+
+## 12. Reconciliation note, added when §11's branch was merged into `main`
+
+§11 above was written on a branch that diverged from `main` before `main`'s own independent
+evidence-recovery work closed the same two gaps for the *original* deployment (§2's addresses) —
+see the "Update, 15 November 2026" note after this document's opening paragraphs, and
+[`docs/TRANCHE_2_DEPLOYMENT_EVIDENCE_CLOSURE.md`](TRANCHE_2_DEPLOYMENT_EVIDENCE_CLOSURE.md). That
+work recovered §2's real historical transactions rather than redeploying, and is the more complete
+evidence package — it also covers the official dApp deployment, hardened the evidence verifier,
+and answers the open design-decision questions — all of it keyed to §2's exact addresses.
+
+Adopting §11's new addresses as canonical instead would have discarded all of that for no real
+gain. So: **§2's addresses remain this document's canonical TR2 deployment; §11 is kept exactly
+as originally written, as historical record of a real, live-proven alternative approach, not
+adopted and not deleted.** Its new contract addresses were not kept live-tracked anywhere after
+this merge — Soroban contracts cannot be un-deployed, so they remain on Testnet, simply
+undocumented as current.
+
+What was merged into `main` anyway: §11's genuine, deployment-independent script improvements —
+`scripts/deploy/deploy.sh`'s oracle-genesis value clamping and compliance/idempotency gating, and
+`scripts/create_market_via_factory.sh`'s own transaction-hash reporting. Neither required adopting
+§11's new addresses, and both apply equally to §2's canonical deployment.
