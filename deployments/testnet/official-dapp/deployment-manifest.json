@@ -32,24 +32,30 @@
     "permissioning": {
       "id": "CAFQMOCW3673DBKJBJ7C555IYPOULPH2WFOEOX52JAUCZRGZF5FRVLBA",
       "wasm_sha256": "bf902fe36e73da56ec9aa9ab72728d9e0a4ea923814925fa4259e025ff98eb9e",
-      "upload_tx": null,
+      "upload_tx": "11f993d4dc2799f35f78e61fafc023e78405c7aac30d294bf10c5ba33b4963d3",
+      "upload_tx_reconstructed": true,
+      "upload_ledger": 5511288,
+      "upload_at": "2026-11-02T00:41:20Z",
       "deploy_tx": "6c381be195fccd2e289eeb638736f47f0f49ee604e1049c0a782868daa425d0e",
       "deploy_ledger": 5707348,
       "deploy_at": "2026-11-13T08:59:44Z",
       "init_tx": null,
-      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction)",
-      "note": "No UploadContractWasm operation by the deployer in this deployment's 08:58-09:09 UTC window; this wasm hash was already present on-chain (likely uploaded in an earlier, pre-13-November session by the same account -- see closure report). Upload transaction not recovered."
+      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction). upload_tx verified by sha256 of the actual uploaded wasm bytes (decoded locally from Horizon's envelope_xdr, since this transaction predates Soroban RPC's getTransaction retention window) == this wasm_sha256, exactly.",
+      "note": "No UploadContractWasm operation by the deployer in this deployment's own 08:58-09:09 UTC window on 13 November; recovered instead from an earlier practice/test session on the same deployer key, 11 days prior (2 November 2026) -- confirmed by byte-exact wasm hash match, not assumed from proximity. See docs/TRANCHE_2_DEPLOYMENT_EVIDENCE_CLOSURE.md's dated follow-up for the search method."
     },
     "riskControl": {
       "id": "CCRZ55SG273OTUZSFME6A6XXXEZ3GM5IMVRLF4NEEWNC54NGCRHIMHJC",
       "wasm_sha256": "0e55d8200021b680176eca83738a639de6bfc8ab7f70a5985d3ef2d4669fa7a0",
-      "upload_tx": null,
+      "upload_tx": "10fa2b36fae437104ade7ac2c3aaffbd31e1ffd65b267bac54fa53aa9080b17c",
+      "upload_tx_reconstructed": true,
+      "upload_ledger": 5511291,
+      "upload_at": "2026-11-02T00:41:35Z",
       "deploy_tx": "652844b9e4262322872e8a449ae47ea8ff160f4426dab9da3c54354c1d346648",
       "deploy_ledger": 5707350,
       "deploy_at": "2026-11-13T08:59:54Z",
       "init_tx": null,
-      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction)",
-      "note": "Upload transaction not recovered, same reason as permissioning above."
+      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction). upload_tx verified by sha256 of the actual uploaded wasm bytes == this wasm_sha256, exactly.",
+      "note": "Upload transaction recovered from the same 2 November 2026 practice session, same method as permissioning above."
     },
     "sy": {
       "id": "CA62ACRTFADKNOP37CS7DPQ5DNJML4TFHIX6LZG5IBEHJM3PED2V7F2I",
@@ -64,13 +70,16 @@
     "pt": {
       "id": "CCQPYQNDIHVLZZPK6CCF3CNBUP25BHJHX36PQXV6MG3ELPM7JYWDSPA5",
       "wasm_sha256": "6464745ba7eb96c77a59f724d29d8f7ed6f378a77e1d2bff4fc08663e315078b",
-      "upload_tx": null,
+      "upload_tx": "84bce95204d61fa6198098e9e3591ce5e2b5a69e5440a68b5d39fe82a8efdfdd",
+      "upload_tx_reconstructed": true,
+      "upload_ledger": 5511355,
+      "upload_at": "2026-11-02T00:46:55Z",
       "deploy_tx": "2d5d4409b52f149e64b089deb2195420818a6b4b20fa8a6cf9a3d08b66156035",
       "deploy_ledger": 5707408,
       "deploy_at": "2026-11-13T09:04:44Z",
       "init_tx": null,
-      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction)",
-      "note": "Upload transaction not recovered, same reason as permissioning above."
+      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction). upload_tx verified by sha256 of the actual uploaded wasm bytes == this wasm_sha256, exactly.",
+      "note": "Upload transaction recovered from the same 2 November 2026 practice session, same method as permissioning above."
     },
     "yt": {
       "id": "CAXVQIHH7US4DUK2E2GE2N6VNXDECC6D4DOGXUSEG6SPKS7USNMYXDCB",
@@ -85,13 +94,16 @@
     "config": {
       "id": "CBJT4OZDU2LFYQU5D6EQAYTLCLFOUJ3JK55HUBZVUMZ5FQVHK37VHJJ4",
       "wasm_sha256": "3ab03fa1ee0cd13b871174f9478def5e34df599932358ba457ece80b6e295000",
-      "upload_tx": null,
+      "upload_tx": "7a3331dd3ff3cd32958fdb12454e1c79ed3b251c5eb40a3baf4b1f1046350c82",
+      "upload_tx_reconstructed": true,
+      "upload_ledger": 5511361,
+      "upload_at": "2026-11-02T00:47:25Z",
       "deploy_tx": "ed48bb3765a2125f23b5c2aa87ffe026e9d924772d8a95d4181bd61ffed4df46",
       "deploy_ledger": 5707413,
       "deploy_at": "2026-11-13T09:05:09Z",
       "init_tx": null,
-      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction)",
-      "note": "Upload transaction not recovered, same reason as permissioning above."
+      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction). upload_tx verified by sha256 of the actual uploaded wasm bytes == this wasm_sha256, exactly.",
+      "note": "Upload transaction recovered from the same 2 November 2026 practice session, same method as permissioning above."
     },
     "manager": {
       "id": "CDYL4ZOIZ3DKEDWIMBUXHYQUAT4BAZTYZ7ZRCVLAMFAXGTJZRTOLVG47",
@@ -116,13 +128,16 @@
     "recoveryEscrow": {
       "id": "CAMOWBMTMDLFJLFOSTULXQO7MUK2PT3XAQ62CA4L5DGPQKZFJWEKN24Q",
       "wasm_sha256": "795f16109536cf8908796d6315d21e0e7bccf29d043ddd0f5763520fa9b88c74",
-      "upload_tx": null,
+      "upload_tx": "b14609b52f33c21436fd341f68c029176dc39513ca9e36a964e117ab1abaed6b",
+      "upload_tx_reconstructed": true,
+      "upload_ledger": 5511376,
+      "upload_at": "2026-11-02T00:48:40Z",
       "deploy_tx": "0c67b1e6ebe942e6f8d485f28290a6bffd77327f5797911aa64160d88eab0c69",
       "deploy_ledger": 5707425,
       "deploy_at": "2026-11-13T09:06:09Z",
       "init_tx": null,
-      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction)",
-      "note": "Upload transaction not recovered, same reason as permissioning above."
+      "verification": "resultMetaXdr return_value.address of deploy_tx == this id (confirmed via Soroban RPC getTransaction). upload_tx verified by sha256 of the actual uploaded wasm bytes == this wasm_sha256, exactly.",
+      "note": "Upload transaction recovered from the same 2 November 2026 practice session, same method as permissioning above."
     },
     "router": {
       "id": "CC4BQRFRQQZF5VQUHZV3PS4LSIPNNAGI3UOL3K24DZNTCHGZQ3JHQ3E2",
@@ -147,7 +162,14 @@
     "usdy_sac": {
       "id": "CB2YO6BCOTN336RQUAMHOBCNABJG74URBIMNUHXB27K2QOLJKDCDXODZ",
       "wasm_sha256": "built-in (Stellar Asset Contract, not a Principal-source contract)",
-      "note": "Created via `stellar contract asset deploy`, not a deploy_contract() wasm upload/deploy pair; not included in the 12 CreateContract operations enumerated above."
+      "asset_code": "USDY",
+      "asset_issuer": "GDUGKHAJJPEYRF4T5XG7HJSUY3AGMHKHCSTSLZSGOCK2673N5ZKDFIDT",
+      "deploy_tx": "a8805f2f7b20b300884f8934242ba924fd47ffeb3cac75dfb92d46c1a87a070e",
+      "deploy_tx_reconstructed": true,
+      "deploy_ledger": 5511279,
+      "deploy_at": "2026-11-02T00:40:35Z",
+      "verification": "Recovered from the asset issuer account's (not the deployer's) own Horizon operation history, same 2 November 2026 practice session as the five upload transactions above. This transaction predates Soroban RPC's getTransaction retention window (status NOT_FOUND there), so verified two ways instead of via resultMetaXdr: (1) its envelope_xdr (from Horizon, which keeps full history regardless of RPC's retention window), decoded locally, shows the real operation is invoke_host_function.host_function.create_contract with executable == \"stellar_asset\" (the built-in Stellar Asset Contract, explicitly distinct from a create_contract with a custom wasm hash) and contract_id_preimage.asset.credit_alphanum4 == {asset_code: USDY, issuer: GDUGKHAJJPEYRF4T5XG7HJSUY3AGMHKHCSTSLZSGOCK2673N5ZKDFIDT}, matching exactly; (2) the resulting SAC address for that exact asset was independently, deterministically recomputed offline (`stellar contract id asset --asset USDY:GDUGKHAJJPEYRF4T5XG7HJSUY3AGMHKHCSTSLZSGOCK2673N5ZKDFIDT --network testnet`, a pure local computation from the network passphrase and the asset -- no chain call, no return-value metadata needed, since a Stellar Asset Contract's address is a deterministic function of its asset, not of anything the creating transaction returns) and the result matches this id exactly: CB2YO6BCOTN336RQUAMHOBCNABJG74URBIMNUHXB27K2QOLJKDCDXODZ.",
+      "note": "Created via the built-in Stellar Asset Contract path (create_contract with executable=stellar_asset), not a deploy_contract() wasm upload/deploy pair -- correctly excluded from the 12 CreateContract-with-wasm operations enumerated above, and verified by a different, asset-specific method rather than left unresolved."
     }
   },
   "on_chain_wasm_hash_verification": {
@@ -159,5 +181,15 @@
     "builder_machine": "this verification's own machine, rustc 1.94.1 (e408947bf 2026-03-25), same command as the dApp's own (cargo build --workspace --release --target wasm32v1-none) against an isolated `git archive` of commit 665bb6760372d30307a1a035da24e51776f727e8",
     "result": "0 of 12 byte-identical to the deployed/manifest hashes",
     "diagnosis": "Consistent with, not contradicting, the dApp evidence doc's own TRANCHE_2_EVIDENCE.md section 2.1 finding (their CI runner also got 0 of 12 against the same source) -- most of these wasm files embed the building machine's own absolute path (via the cargo registry path), and the dApp's own matching build used Rust 1.95.0, not this verification's 1.94.1. A controlled comparison supports the version difference as at least a contributing factor: an isolated rebuild of the SAME machine's toolchain (1.94.1) against the separate TR2 deployment's commit aae6cf8 (see ../deployment-manifest.json) DID reproduce 12 of 12 byte-identical, because that manifest's own build was also made with 1.94.1. On-chain code matching the manifest (above) is independently and separately confirmed; this reproducibility result does not change that."
+  },
+  "source_to_byte_reproducibility_followup_2026_11_15": {
+    "attempted": true,
+    "purpose": "The attempt above narrowed, but did not settle, whether the Rust 1.94.1 vs 1.95.0 version difference was the (or a) remaining explanation for 0/12, on top of the already-documented absolute-path embedding. This follow-up installs 1.95.0 explicitly -- the version the dApp's own evidence doc says its matching build used -- and tests that one variable in isolation, exactly as the original attempt said it had not yet done.",
+    "builder_machine": "rustc 1.95.0 (59807616e 2026-04-14), installed via `rustup toolchain install 1.95.0 --target wasm32v1-none` without changing this machine's default toolchain (confirmed unchanged: `rustup show active-toolchain` still reports stable-x86_64-unknown-linux-gnu as default after this work)",
+    "build_command": "cargo +1.95.0 build --workspace --release --target wasm32v1-none --locked, against the same isolated `git archive` of commit 665bb6760372d30307a1a035da24e51776f727e8 the original attempt used (committed Cargo.lock honored via --locked, not regenerated)",
+    "result": "0 of 12 byte-identical to the deployed/manifest hashes -- the exact same result as with 1.94.1, so the Rust version alone is not the explanation",
+    "diagnosis": "TESTED, not hypothesized: `strings` on this 1.95.0 build's own principal_oracle_adapter.wasm shows the embedded cargo-registry source path `/home/mohamed/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/soroban-sdk-26.0.1/src/ledger.rs` (this machine's own home directory); `strings` on the actual deployed wasm (freshly re-fetched from Testnet via `stellar contract fetch`, read-only) shows `/Users/cedric/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/soroban-sdk-26.0.1/src/ledger.rs` instead -- a macOS path under a different builder's home directory entirely, with a different absolute length and a different OS path style, baked directly into the wasm's own debug/panic-message strings regardless of which Rust version produced it. This is a demonstrated, directly observed cause, not an inference from elsewhere: two builds differing only in their filesystem location will not produce byte-identical wasm no matter which Rust version either used, because the absolute source path is part of the compiled output itself. The Rust-version hypothesis from the original attempt is accordingly superseded by this more direct, confirmed explanation -- it is not ruled out as also contributing (a true controlled single-variable test of version alone would require building on the identical machine/path with both 1.94.1 and 1.95.0, which this follow-up did not do, since the path difference already fully explains the mismatch on its own), but the path embedding alone is sufficient to explain 0/12 with no need to invoke the version difference at all.",
+    "what_was_not_done": "No attempt was made to force a match by passing a path-remapping build flag (e.g. --remap-path-prefix) not used in either the dApp's or TR2's own original build process -- this task's own instructions say not to modify source, dependencies, or build settings merely to obtain matching bytes, and reproducing the ORIGINAL, as-built process (not a modified one that happens to match) is what this attestation is about. No recorded deployed hash, source_commit, or built_at field was changed as a result of this finding.",
+    "on_chain_wasm_hash_verification_unaffected": "The separate, independent claim in on_chain_wasm_hash_verification above (deployed bytecode matches this manifest's own recorded wasmHashes, 12 of 12) is not affected by this result in either direction -- that is a claim about the manifest and the chain agreeing with each other, not about either of them matching a fresh local build from source."
   }
 }

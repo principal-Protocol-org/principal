@@ -267,3 +267,146 @@ the official deployment's enriched manifest, with its recovered transactions —
 repository instead, at `deployments/testnet/official-dapp/`, clearly marked throughout as
 reconstructed rather than original, and the dApp repository's own files are exactly as they were
 before this work started.
+
+## Dated follow-up, 15 November 2026 (second pass): the remaining open items closed, one not
+
+Continuing directly from the "what this does not close" section above. As before: no contract was
+deployed, upgraded, or initialized; no blockchain transaction was submitted; the dApp repository
+was not touched. Every chain interaction below is a public read or a pure, offline local
+computation. A separate document,
+[`docs/TRANCHE_2_DESIGN_DECISION_JUSTIFICATIONS.md`](TRANCHE_2_DESIGN_DECISION_JUSTIFICATIONS.md),
+answers two design-decision questions this pass was also asked to cover — cited here, not
+repeated.
+
+### The five upload transactions: all five recovered
+
+The hypothesis above (already-uploaded wasm reused from an earlier session) is now a demonstrated
+fact, not a plausible guess: widening the search to both the deployer's and the asset issuer's
+full account history (not just the 13 November deployment window) found all five in a single
+11-day-earlier practice session, 2 November 2026 00:41:20–00:48:40 UTC, on the same deployer key.
+Each is confirmed by sha256 of the actual uploaded wasm bytes (decoded from Horizon's
+`envelope_xdr`'s `upload_contract_wasm` field — these transactions predate Soroban RPC's
+`getTransaction` retention window, so this uses Horizon, which keeps full history, rather than
+RPC) matching the already-recorded `wasm_sha256` exactly, not timing or inference:
+
+| Contract | Upload tx | Ledger | At (UTC) |
+|---|---|---|---|
+| Permissioning | [`11f993d4…`](https://stellar.expert/explorer/testnet/tx/11f993d4dc2799f35f78e61fafc023e78405c7aac30d294bf10c5ba33b4963d3) | 5511288 | 2026-11-02T00:41:20Z |
+| RiskControl | [`10fa2b36…`](https://stellar.expert/explorer/testnet/tx/10fa2b36fae437104ade7ac2c3aaffbd31e1ffd65b267bac54fa53aa9080b17c) | 5511291 | 2026-11-02T00:41:35Z |
+| PTToken | [`84bce952…`](https://stellar.expert/explorer/testnet/tx/84bce95204d61fa6198098e9e3591ce5e2b5a69e5440a68b5d39fe82a8efdfdd) | 5511355 | 2026-11-02T00:46:55Z |
+| MarketConfig | [`7a3331dd…`](https://stellar.expert/explorer/testnet/tx/7a3331dd3ff3cd32958fdb12454e1c79ed3b251c5eb40a3baf4b1f1046350c82) | 5511361 | 2026-11-02T00:47:25Z |
+| RecoveryEscrow | [`b14609b5…`](https://stellar.expert/explorer/testnet/tx/b14609b52f33c21436fd341f68c029176dc39513ca9e36a964e117ab1abaed6b) | 5511376 | 2026-11-02T00:48:40Z |
+
+All five confirmed `successful: true` in Horizon. Written into
+`deployments/testnet/official-dapp/deployment-manifest.json` with `upload_tx_reconstructed: true`
+on each, the same convention TR2's own manifest already uses for its reconstructed `deploy_tx`
+fields — not silently merged in as if the original deployment run had captured them.
+
+### The USDY Stellar Asset Contract's creation: recovered, by a method specific to a built-in SAC
+
+The asset issuer account's own history (not the deployer's — distinguishing, as the task asked,
+that the uploader/creator need not be the eventual deployer) has exactly one `CreateContract`
+operation:
+[`a8805f2f…`](https://stellar.expert/explorer/testnet/tx/a8805f2f7b20b300884f8934242ba924fd47ffeb3cac75dfb92d46c1a87a070e),
+ledger 5511279, 2026-11-02T00:40:35Z — the same practice session as the uploads above. This
+transaction also predates Soroban RPC's retention window, and a built-in Stellar Asset Contract's
+creation needs a different verification method regardless: its real envelope (via Horizon)
+decodes to `create_contract` with `executable == "stellar_asset"` (the built-in path, confirmed
+structurally distinct from a custom-wasm `create_contract`) and
+`contract_id_preimage.asset.credit_alphanum4 == {asset_code: USDY, issuer:
+GDUGKHAJJPEYRF4T5XG7HJSUY3AGMHKHCSTSLZSGOCK2673N5ZKDFIDT}`, matching the recorded asset exactly.
+Separately, and more directly than for any wasm-based contract: a Stellar Asset Contract's address
+is a deterministic function of the network passphrase and the asset alone, not of anything a
+creating transaction returns — so `stellar contract id asset --asset
+USDY:GDUGKHAJJPEYRF4T5XG7HJSUY3AGMHKHCSTSLZSGOCK2673N5ZKDFIDT --network testnet`, a pure offline
+computation, independently reproduces `CB2YO6BCOTN336RQUAMHOBCNABJG74URBIMNUHXB27K2QOLJKDCDXODZ`
+exactly, with no RPC call needed at all. Both checks agree. This is now in the manifest as the
+`usdy_sac` entry's `deploy_tx`, marked reconstructed.
+
+### Source-to-byte reproduction with Rust 1.95.0 explicitly: still 0 of 12, for a now-demonstrated reason
+
+The original attempt above used this machine's own default, 1.94.1, and flagged the version
+difference (vs. the dApp's own reported 1.95.0) as a possible remaining factor on top of the
+already-documented absolute-path embedding. This follow-up installed 1.95.0 explicitly
+(`rustup toolchain install 1.95.0 --target wasm32v1-none`, confirmed not to have changed this
+machine's own default toolchain) and rebuilt the same isolated `git archive` of `665bb67` with
+`cargo +1.95.0 build --workspace --release --target wasm32v1-none --locked`. Result: **0 of 12
+byte-identical, the same as with 1.94.1** — so the Rust version is not, on its own, the
+explanation.
+
+What actually explains it is now demonstrated directly, not inferred: `strings` on this 1.95.0
+build's own `principal_oracle_adapter.wasm` shows the embedded cargo-registry source path
+`/home/mohamed/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/soroban-sdk-26.0.1/src/ledger.rs`;
+`strings` on the actual deployed wasm (re-fetched fresh from Testnet for this comparison, a public
+read) shows `/Users/cedric/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/soroban-sdk-26.0.1/src/ledger.rs`
+instead — a macOS path, under a different person's home directory, embedded in the compiled
+output regardless of which Rust version produced it. Two builds that differ only in their
+filesystem location cannot be byte-identical, independent of toolchain version; this fully
+explains 0/12 on its own. No attempt was made to force a match with a path-remapping build flag
+neither original build used — this task's own instructions are to reproduce the original process,
+not a modified one engineered to match. Recorded in
+`deployments/testnet/official-dapp/deployment-manifest.json`'s
+`source_to_byte_reproducibility_followup_2026_11_15` block, alongside (not replacing) the original
+attempt. On-chain code matching the manifest (the separate claim, already independently confirmed
+above) is unaffected either way.
+
+### The evidence verifier itself: hardened against four real gaps found while relying on its own green output
+
+Reviewing `scripts/deploy/verify-evidence.sh` and `scripts/deploy/lib/resolve-created-contract.py`
+before trusting their exit code found four real issues, all fixed:
+
+1. **A decoded return value that merely looked like an address was treated as proof of creation.**
+   `resolve-created-contract.py` only ever checked what a transaction's `resultMetaXdr` claimed
+   to return — never whether the transaction's real, decoded envelope operation was actually a
+   `CreateContract` (for a direct deploy) or an `InvokeContract` call on the known factory with one
+   of its real creation functions (for TR2's factory-created contracts). Fixed: it now decodes
+   `envelopeXdr` too and refuses to resolve an address at all unless the operation's real shape
+   matches an explicit `--expect-kind create_contract` (optionally cross-checked against
+   `--expect-wasm`) or `--expect-kind invoke_contract --expect-contract ... --expect-function ...`.
+   Covered by `test_a_factory_call_is_identified_as_invoke_contract_not_create_contract` and
+   `test_a_direct_deploy_is_identified_as_create_contract` in
+   `scripts/deploy/tests/test_evidence.py`, against real, saved envelope fixtures.
+2. **Factory mappings were only checked against their own `evidence_reconciliation` block, never
+   against the manifest's own canonical `contracts.<name>.id`.** A factory block that agreed with
+   itself was treated as proof, even though nothing cross-checked it against the one place a
+   reviewer would actually look up a contract's address. Fixed: `verify-evidence.sh` now compares
+   every factory-mapped contract's claimed address against `.contracts.<name>.id` first, failing
+   loudly on any mismatch, before even attempting the on-chain resolution.
+3. **Each contract's coverage (a `deploy_tx`, or a factory mapping) was counted, never tracked as
+   "covered by exactly one."** A contract described by both a `deploy_tx` and a factory mapping
+   (an inconsistency, not a legitimate state) would have been double-counted into a falsely
+   complete-looking total. Fixed with an explicit per-contract coverage tracker that fails if a
+   contract is covered by both, and warns if by neither.
+4. **Concurrent runs shared one hardcoded `/tmp/verify-evidence.out`.** Two invocations of the
+   script at once (e.g. one per manifest) could corrupt each other's captured check output. Fixed
+   with a per-invocation `mktemp -d` scratch directory, cleaned up on exit.
+
+Also added, not fixes to existing bugs but gaps the task asked to close: a check that
+`source.snapshot_sha256`/`snapshot_file` (the official manifest's own attribution of
+`testnet.json.snapshot`) actually match the file's real sha256, and the explicit distinction,
+flagged in the script's own output, between "a source-reproduction attestation is present" and
+"that attestation records success" — a `0 of N` result is now reported as a `WARN`
+("unsuccessful"), never folded into the same `PASS` line that confirms the attestation exists at
+all. Re-run against both manifests after every fix: TR2 now reports 25 passed, 0 failed, 1 warned;
+the official deployment (with the two newly-recovered records above) reports 28 passed, 0 failed,
+2 warned (one warn is simply "built-in SAC, no wasm hash to check," the other is the correctly-
+flagged unsuccessful rebuild). Three new tests were added for the specific negative cases this
+pass was asked to add beyond the first three (a factory mapping inconsistent with the manifest,
+missing required evidence, a recorded unsuccessful source rebuild) — all eleven of
+`scripts/deploy/tests/test_evidence.py`'s tests pass, offline, no network access.
+
+### What this pass leaves open
+
+- Whether the official deployment's five recovered uploads were genuinely *reused* wasm (as
+  opposed to some other explanation for why no fresh upload exists in the 13 November window) is
+  now proven, not merely plausible — the uploads exist, dated 2 November, with byte-exact hash
+  matches. What remains unconfirmed is only why that specific 11-day-old session's artifacts were
+  still available to reuse (e.g., whether Soroban's wasm storage expiry/TTL mechanics were a factor)
+  — a question about Soroban's own storage model, not about this deployment's evidence, and out of
+  this task's scope to chase further.
+- Source-to-byte reproduction for the official deployment remains unresolved in the sense of
+  "reproduced" — it is now resolved in the sense of "the cause is identified and demonstrated,"
+  which is a different, weaker, but honestly-stated claim. Reproducing it exactly would require
+  building on a machine with the identical absolute path the original builder used, which this
+  task's own constraints (do not modify build settings to force a match) correctly keep out of
+  scope.
