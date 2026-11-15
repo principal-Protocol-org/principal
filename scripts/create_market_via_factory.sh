@@ -95,7 +95,46 @@ fi
 # end.
 RESOURCE_FEE_ARGS=()
 if [ -n "${RESOURCE_FEE:-}" ]; then RESOURCE_FEE_ARGS=(--resource-fee "$RESOURCE_FEE"); fi
-inv() { stellar contract invoke --id "$FACTORY_ID" --source "$ISSUER_KEY" --network "$NETWORK" "${RESOURCE_FEE_ARGS[@]}" -- "$@"; }
+
+# Transaction-hash capture, same convention as scripts/deploy/deploy.sh's own invoke(): the CLI's
+# only way to report a submitted tx's hash is "Signing transaction: <hash>" on stderr. A
+# file side channel (not a plain variable) is required only where this is called inside a
+# `x="$(...)"` command substitution (create_tokens/create_engine/create_pool_and_escrow below,
+# each forking a subshell that would otherwise lose a plain LAST_TX assignment the instant it
+# exits) -- the three wiring calls are plain statements, not substituted, so a plain LAST_TX
+# assignment already survives there. Found live before this was added: these six transactions'
+# hashes previously existed only in session run-logs, never in the deployment manifest itself.
+LAST_TX_FILE="$(mktemp)"
+trap 'rm -f "$LAST_TX_FILE"' EXIT
+LAST_TX=""
+inv() {
+  local err out
+  err="$(mktemp)"
+  if ! out="$(stellar contract invoke --id "$FACTORY_ID" --source "$ISSUER_KEY" --network "$NETWORK" "${RESOURCE_FEE_ARGS[@]}" -- "$@" 2>"$err")"; then
+    cat "$err" >&2
+    rm -f "$err"
+    return 1
+  fi
+  LAST_TX="$(grep -oE 'Signing transaction: [0-9a-f]+' "$err" | awk '{print $3}' || true)"
+  printf '%s' "$LAST_TX" >"$LAST_TX_FILE"
+  rm -f "$err"
+  printf '%s' "$out"
+}
+read_last_tx() { LAST_TX="$(cat "$LAST_TX_FILE" 2>/dev/null || true)"; }
+invoke_wired() { # <contract_id> <source_key> -- <fn> <args...>
+  local id="$1" src="$2"
+  shift 2
+  local err out
+  err="$(mktemp)"
+  if ! out="$(stellar contract invoke --id "$id" --source "$src" --network "$NETWORK" "$@" 2>"$err")"; then
+    cat "$err" >&2
+    rm -f "$err"
+    return 1
+  fi
+  LAST_TX="$(grep -oE 'Signing transaction: [0-9a-f]+' "$err" | awk '{print $3}' || true)"
+  rm -f "$err"
+  printf '%s' "$out"
+}
 field() { python3 -c "import sys,json; print(json.load(sys.stdin)['$1'])"; }
 
 echo "== MarketFactory $FACTORY_ID -- salt $SALT -- maturity $MATURITY_TS =="
@@ -125,6 +164,7 @@ TOKENS="$(inv create_tokens \
   --wasm "{\"sy_wrapper\":\"$SY_WASM\",\"pt_token\":\"$PT_WASM\",\"yt_token\":\"$YT_WASM\"}" \
   --params "{\"underlying\":\"$UNDERLYING_ID\",\"maturity\":$MATURITY_TS,\"permissioning\":\"$PERMISSIONING_ID\",\"oracle\":\"$ORACLE_ID\",\"pt_name\":\"$PT_NAME\",\"pt_symbol\":\"$PT_SYMBOL\",\"yt_name\":\"$YT_NAME\",\"yt_symbol\":\"$YT_SYMBOL\",\"decimals\":$DECIMALS}")"
 echo "$TOKENS"
+read_last_tx; TX_CREATE_TOKENS="$LAST_TX"
 SY_ADDR="$(echo "$TOKENS" | field sy_wrapper)"
 PT_ADDR="$(echo "$TOKENS" | field pt_token)"
 YT_ADDR="$(echo "$TOKENS" | field yt_token)"
@@ -136,6 +176,7 @@ ENGINE="$(inv create_engine \
   --tokens "{\"sy_wrapper\":\"$SY_ADDR\",\"pt_token\":\"$PT_ADDR\",\"yt_token\":\"$YT_ADDR\"}" \
   --params "{\"underlying\":\"$UNDERLYING_ID\",\"maturity\":$MATURITY_TS,\"permissioning\":\"$PERMISSIONING_ID\",\"oracle\":\"$ORACLE_ID\",\"risk_control\":\"$RISK_CONTROL_ID\",\"protocol_admin\":\"$PROTOCOL_ADMIN_ADDR\",\"treasury\":\"$TREASURY_ADDR\",\"tokenization_fee_bps\":$TOKENIZATION_FEE_BPS,\"yt_fee_bps\":$YT_FEE_BPS,\"swap_fee_tier_bps\":$SWAP_FEE_TIER_BPS,\"protocol_share_bps\":$PROTOCOL_SHARE_BPS}")"
 echo "$ENGINE"
+read_last_tx; TX_CREATE_ENGINE="$LAST_TX"
 CONFIG_ADDR="$(echo "$ENGINE" | field market_config)"
 MANAGER_ADDR="$(echo "$ENGINE" | field principal_manager)"
 
@@ -147,18 +188,19 @@ POOLESC="$(inv create_pool_and_escrow \
   --engine "{\"market_config\":\"$CONFIG_ADDR\",\"principal_manager\":\"$MANAGER_ADDR\"}" \
   --params "{\"underlying\":\"$UNDERLYING_ID\",\"time_stretch_years\":$TIME_STRETCH_YEARS}")"
 echo "$POOLESC"
+read_last_tx; TX_CREATE_POOL_AND_ESCROW="$LAST_TX"
 POOL_ADDR="$(echo "$POOLESC" | field market_pool)"
 ESCROW_ADDR="$(echo "$POOLESC" | field recovery_escrow)"
 
 if [ "${SKIP_WIRING:-0}" != "1" ]; then
   echo "-- Wiring (ADMIN_KEY, not the issuer): risk_control.add_consumer x2, router.register_market --"
-  stellar contract invoke --id "$RISK_CONTROL_ID" --source "$ADMIN_KEY" --network "$NETWORK" \
-    -- add_consumer --caller "$ADMIN_ADDR" --consumer "$SY_ADDR"
-  stellar contract invoke --id "$RISK_CONTROL_ID" --source "$ADMIN_KEY" --network "$NETWORK" \
-    -- add_consumer --caller "$ADMIN_ADDR" --consumer "$MANAGER_ADDR"
+  invoke_wired "$RISK_CONTROL_ID" "$ADMIN_KEY" -- add_consumer --caller "$ADMIN_ADDR" --consumer "$SY_ADDR"
+  TX_ADD_CONSUMER_SY="$LAST_TX"
+  invoke_wired "$RISK_CONTROL_ID" "$ADMIN_KEY" -- add_consumer --caller "$ADMIN_ADDR" --consumer "$MANAGER_ADDR"
+  TX_ADD_CONSUMER_MANAGER="$LAST_TX"
   if [ -n "${ROUTER_ID:-}" ]; then
-    stellar contract invoke --id "$ROUTER_ID" --source "$ADMIN_KEY" --network "$NETWORK" \
-      -- register_market --caller "$ADMIN_ADDR" --pool "$POOL_ADDR"
+    invoke_wired "$ROUTER_ID" "$ADMIN_KEY" -- register_market --caller "$ADMIN_ADDR" --pool "$POOL_ADDR"
+    TX_REGISTER_MARKET="$LAST_TX"
   else
     echo "ROUTER_ID not set -- skipping router.register_market."
   fi
@@ -178,6 +220,12 @@ CONFIG_ADDR=$CONFIG_ADDR
 MANAGER_ADDR=$MANAGER_ADDR
 POOL_ADDR=$POOL_ADDR
 ESCROW_ADDR=$ESCROW_ADDR
+TX_CREATE_TOKENS=${TX_CREATE_TOKENS:-}
+TX_CREATE_ENGINE=${TX_CREATE_ENGINE:-}
+TX_CREATE_POOL_AND_ESCROW=${TX_CREATE_POOL_AND_ESCROW:-}
+TX_ADD_CONSUMER_SY=${TX_ADD_CONSUMER_SY:-}
+TX_ADD_CONSUMER_MANAGER=${TX_ADD_CONSUMER_MANAGER:-}
+TX_REGISTER_MARKET=${TX_REGISTER_MARKET:-}
 
 REMAINING STEP (not automated): grant compliance standing (underlying authorization +
 Permissioning grant_account + grant_asset for PT/YT where applicable) to $SY_ADDR, $MANAGER_ADDR,

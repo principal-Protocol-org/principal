@@ -270,9 +270,12 @@ if [ "$RISK_WINDOW_LEDGERS" != "17280" ]; then
   fi
 fi
 if [ -n "${RISK_ASSET_LIMIT:-}" ]; then
-  invoke "$RISK_CONTROL_ID" "$ADMIN_KEY" -- set_asset_limit \
-    --caller "$ADMIN_ADDR" --asset "$UNDERLYING_SAC" --new_limit "$RISK_ASSET_LIMIT" >/dev/null
-  manifest_log_tx "risk_control:set_asset_limit" "$LAST_TX"
+  CURRENT_ASSET_LIMIT="$(raw "$(invoke "$RISK_CONTROL_ID" "$ADMIN_KEY" --send=no -- get_asset_limit --asset "$UNDERLYING_SAC")")"
+  if [ "$CURRENT_ASSET_LIMIT" != "$RISK_ASSET_LIMIT" ]; then
+    invoke "$RISK_CONTROL_ID" "$ADMIN_KEY" -- set_asset_limit \
+      --caller "$ADMIN_ADDR" --asset "$UNDERLYING_SAC" --new_limit "$RISK_ASSET_LIMIT" >/dev/null
+    manifest_log_tx "risk_control:set_asset_limit" "$LAST_TX"
+  fi
 fi
 
 ROUTER_ID="$(deploy_or_reuse router router "$ADMIN_KEY" initialize --admin "$ADMIN_ADDR")"
@@ -405,6 +408,17 @@ else
   POOL_ADDR="$(echo "$MARKET_OUT" | grep -oE '^POOL_ADDR=.*' | cut -d= -f2)"
   ESCROW_ADDR="$(echo "$MARKET_OUT" | grep -oE '^ESCROW_ADDR=.*' | cut -d= -f2)"
 
+  # create_market_via_factory.sh now reports its own six transaction hashes the same way it
+  # already reports contract addresses -- logged into the manifest's own transactions[] here,
+  # closing a gap an external review flagged (previously these six existed only in session
+  # run-logs, never in the manifest itself).
+  manifest_log_tx "factory.create_tokens" "$(echo "$MARKET_OUT" | grep -oE '^TX_CREATE_TOKENS=.*' | cut -d= -f2)"
+  manifest_log_tx "factory.create_engine" "$(echo "$MARKET_OUT" | grep -oE '^TX_CREATE_ENGINE=.*' | cut -d= -f2)"
+  manifest_log_tx "factory.create_pool_and_escrow" "$(echo "$MARKET_OUT" | grep -oE '^TX_CREATE_POOL_AND_ESCROW=.*' | cut -d= -f2)"
+  manifest_log_tx "risk_control.add_consumer(SYWrapper)" "$(echo "$MARKET_OUT" | grep -oE '^TX_ADD_CONSUMER_SY=.*' | cut -d= -f2)"
+  manifest_log_tx "risk_control.add_consumer(PrincipalManager)" "$(echo "$MARKET_OUT" | grep -oE '^TX_ADD_CONSUMER_MANAGER=.*' | cut -d= -f2)"
+  manifest_log_tx "router.register_market" "$(echo "$MARKET_OUT" | grep -oE '^TX_REGISTER_MARKET=.*' | cut -d= -f2)"
+
   for name_addr in "sy_wrapper:$SY_ADDR" "pt_token:$PT_ADDR" "yt_token:$YT_ADDR" \
                    "market_config:$CONFIG_ADDR" "principal_manager:$MANAGER_ADDR" \
                    "market_pool:$POOL_ADDR" "recovery_escrow:$ESCROW_ADDR"; do
@@ -420,33 +434,49 @@ sac() { invoke "$UNDERLYING_SAC" "$ISSUER_KEY" -- "$@"; }
 perm() { invoke "$PERMISSIONING_ID" "$ADMIN_KEY" -- "$@"; }
 
 for addr in "$SY_ADDR" "$MANAGER_ADDR" "$POOL_ADDR" "$ESCROW_ADDR" "$TREASURY_ADDRESS" ${EXTRA_COMPLIANCE_ACCOUNTS:-}; do
-  # set_authorized on a classic G-account with no existing trustline to the underlying reverts
-  # the SAC's own TrustlineMissingError (error #13) -- a contract address (C...) never needs
-  # this (the SAC creates its balance entry lazily), but TREASURY_ADDRESS/EXTRA_COMPLIANCE_ACCOUNTS
-  # frequently are G-accounts, and the trustline is that account's own `change_trust` operation --
-  # this script cannot establish it on anyone else's behalf. Found live on the first real run
-  # against a fresh AUTH_REQUIRED asset.
-  if ! sac set_authorized --id "$addr" --authorize true >/dev/null; then
-    if [[ "$addr" == G* ]]; then
-      echo "ERROR: $addr has no trustline to $UNDERLYING_SAC's classic asset yet -- that account must" >&2
-      echo "  run its own 'stellar tx new change-trust --source <key-for-$addr> --line <CODE>:<ISSUER_G_ADDR>'" >&2
-      echo "  before this script's compliance grants can authorize it." >&2
+  # Idempotency (spec §5.4 -- "verify, don't retry"): re-running this loop against an account
+  # that is already authorized/granted used to unconditionally resubmit all four calls anyway,
+  # which is harmless in isolation (these are "set to this state", not toggles) but real, logged
+  # transactions on every re-run -- and, for TREASURY_ADDRESS/EXTRA_COMPLIANCE_ACCOUNTS
+  # specifically, would silently re-authorize an account a compliance action had deliberately
+  # revoked in the meantime. Found live while proving idempotency for Gap A/B (see
+  # docs/TRANCHE_2_TESTNET_ACCEPTANCE.md §11.4). Checked against the SAC's/Permissioning's own
+  # read-only views first now, same pattern already used for set_window_ledgers above.
+  if [ "$(raw "$(invoke "$UNDERLYING_SAC" "$ISSUER_KEY" --send=no -- authorized --id "$addr")")" != "true" ]; then
+    # set_authorized on a classic G-account with no existing trustline to the underlying reverts
+    # the SAC's own TrustlineMissingError (error #13) -- a contract address (C...) never needs
+    # this (the SAC creates its balance entry lazily), but TREASURY_ADDRESS/EXTRA_COMPLIANCE_ACCOUNTS
+    # frequently are G-accounts, and the trustline is that account's own `change_trust` operation --
+    # this script cannot establish it on anyone else's behalf. Found live on the first real run
+    # against a fresh AUTH_REQUIRED asset.
+    if ! sac set_authorized --id "$addr" --authorize true >/dev/null; then
+      if [[ "$addr" == G* ]]; then
+        echo "ERROR: $addr has no trustline to $UNDERLYING_SAC's classic asset yet -- that account must" >&2
+        echo "  run its own 'stellar tx new change-trust --source <key-for-$addr> --line <CODE>:<ISSUER_G_ADDR>'" >&2
+        echo "  before this script's compliance grants can authorize it." >&2
+      fi
+      exit 1
     fi
-    exit 1
+    manifest_log_tx "compliance:set_authorized:$addr" "$LAST_TX"
   fi
-  manifest_log_tx "compliance:set_authorized:$addr" "$LAST_TX"
-  perm grant_account --caller "$ADMIN_ADDR" --account "$addr" >/dev/null
-  manifest_log_tx "compliance:grant_account:$addr" "$LAST_TX"
+  if [ "$(raw "$(invoke "$PERMISSIONING_ID" "$ADMIN_KEY" --send=no -- is_allowed --account "$addr")")" != "true" ]; then
+    perm grant_account --caller "$ADMIN_ADDR" --account "$addr" >/dev/null
+    manifest_log_tx "compliance:grant_account:$addr" "$LAST_TX"
+  fi
 done
 # Anything that actually holds PT/YT (pool/escrow back LP positions and seized balances; the
 # treasury/extra accounts may trade directly) needs the per-asset grant too, not just the
 # account-level one -- found live in an earlier round (docs/TESTNET_DEPLOYMENT_EVIDENCE_2026_11_05.md
 # §10.1): grant_account alone is not enough for anything that holds PT/YT.
 for addr in "$POOL_ADDR" "$ESCROW_ADDR" "$TREASURY_ADDRESS" ${EXTRA_COMPLIANCE_ACCOUNTS:-}; do
-  perm grant_asset --caller "$ADMIN_ADDR" --account "$addr" --asset "$PT_ADDR" >/dev/null
-  manifest_log_tx "compliance:grant_asset_pt:$addr" "$LAST_TX"
-  perm grant_asset --caller "$ADMIN_ADDR" --account "$addr" --asset "$YT_ADDR" >/dev/null
-  manifest_log_tx "compliance:grant_asset_yt:$addr" "$LAST_TX"
+  if [ "$(raw "$(invoke "$PERMISSIONING_ID" "$ADMIN_KEY" --send=no -- is_allowed_for_asset --account "$addr" --asset "$PT_ADDR")")" != "true" ]; then
+    perm grant_asset --caller "$ADMIN_ADDR" --account "$addr" --asset "$PT_ADDR" >/dev/null
+    manifest_log_tx "compliance:grant_asset_pt:$addr" "$LAST_TX"
+  fi
+  if [ "$(raw "$(invoke "$PERMISSIONING_ID" "$ADMIN_KEY" --send=no -- is_allowed_for_asset --account "$addr" --asset "$YT_ADDR")")" != "true" ]; then
+    perm grant_asset --caller "$ADMIN_ADDR" --account "$addr" --asset "$YT_ADDR" >/dev/null
+    manifest_log_tx "compliance:grant_asset_yt:$addr" "$LAST_TX"
+  fi
 done
 
 manifest_set_path ".underlying.kind" "sac"

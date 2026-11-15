@@ -20,13 +20,21 @@ be resolved (by committing this work) before this deployment is cited as a clean
 artifact; it does not reflect anything wrong with the deployment itself, every other check against
 it passed.
 
-**Update**: a second live pass (§9) closed every other gap found after this document was first
-written — three found by an external review of this exact commit, two found independently while
-acting on that review. `verify-deployment.sh` now reports **78 passed, 1 failed**, and the single
-remaining `FAIL` is still only `git_tree_dirty` (expected, for the same reason as above — this
-pass's own fixes are themselves uncommitted while being proven live). Everything below this point
-is the original write-up and is kept as-is for its own historical accuracy; §9 is the new
-evidence, added without altering what came before it.
+**Update (second pass)**: a second live pass (§9) closed every other gap found after this document
+was first written — three found by an external review of this exact commit, two found
+independently while acting on that review. `verify-deployment.sh` reported **78 passed, 1
+failed**, and the single remaining `FAIL` was still only `git_tree_dirty`.
+
+**Update (third pass, superseding §2's addresses)**: §11 is the current, authoritative state of
+this deployment. A fresh `FORCE_REDEPLOY=true` run from `HEAD` replaced every contract described
+in §2 with a new instance — all twelve contracts' on-chain bytecode now genuinely matches current
+source (closing the gap §10 had left open), and the market-creation transactions are logged
+directly in the manifest from this run onward (closing §8's last open gap, for real, not by
+backfill). **§2–§10's own addresses, hashes, and transactions are historical record of the
+iterative process that led here and are no longer the live deployment** — do not cite them as
+current; §11 has the addresses that are actually live on Testnet right now. Nothing in §2–§10's
+own reasoning or findings is invalidated by this — only the specific contract instances they
+describe have been superseded.
 
 **Update, 15 November 2026**: the remaining deployment-evidence gaps this document left open —
 five missing shared-infrastructure `deploy_tx` values (§2) and the three MarketFactory
@@ -58,6 +66,9 @@ this round appended new errors (`OracleUnavailable = 8` onward, confirmed live i
 the existing 1–7, per the auditor requirement in spec §5.2.3 — no renumbering occurred.
 
 ## 2. Deployment manifest and addresses
+
+**Superseded by §11** — every address below was replaced by a fresh `FORCE_REDEPLOY=true` run;
+kept for historical accuracy only. See §11 for what is actually live now.
 
 Manifest: [`deployments/testnet/deployment-manifest.json`](../deployments/testnet/deployment-manifest.json).
 
@@ -613,10 +624,18 @@ asserts `last_rejection()` still reads `deviate` afterward. All 57 of `oracle_ad
 pass, `cargo fmt`/`clippy --workspace -- -D warnings`/`cargo test --workspace` are clean.
 
 This fix landed in source *after* §9's live redeploy pass finished, so the TR2 OracleAdapter
-instance deployed on-chain (`CCP6U5FLJW6ZUUFLJOQLQ2SYRVA2ENQVGZ5YMRRJTJIBMFOCOI7PJP6P`) still runs
-the pre-fix bytecode — §9.3's "all twelve wasm artifacts rebuild byte-identical to the manifest"
-claim is only true of the source as it stood at that pass's build, not of `HEAD` from this point
-on. Deliberately not force-redeployed to pick this up: `PrincipalManager`/`MarketPool`/`YTToken`
+instance deployed on-chain at that point (`CCP6U5FL...`) still ran the pre-fix bytecode — §9.3's
+"all twelve wasm artifacts rebuild byte-identical to the manifest" claim was only true of the
+source as it stood at that pass's build, not of `HEAD` from that point on.
+
+**Superseded by §11**: the decision below (keep the gap, rely on the Rust test suite, redeploy
+only "next time") was the right call when this was written, but was revisited once nothing else
+was blocking a fresh deploy — a full `FORCE_REDEPLOY=true` run was done, got genuine
+bytecode-source parity across all twelve contracts, and also got a live, on-chain proof of this
+exact fix (not just the unit test) in the same pass. The reasoning below is kept for the record of
+what was weighed at the time; it no longer describes the current deployment's actual state.
+
+~~Deliberately not force-redeployed to pick this up: `PrincipalManager`/`MarketPool`/`YTToken`
 bind their `OracleAdapter` address at `initialize` with no setter (confirmed by the same external
 review, independently, in their own §4 note), so changing it for this already-created market would
 mean redeploying the entire market, not just one contract — a disruptive, low-value trade for a
@@ -624,7 +643,7 @@ few-line change to a monitoring-integrity view, on a deployment that already ful
 purpose (proving the pipeline, idempotency, and a live `sync_from_feed` cross-contract call). The
 fix is proven at the same bar most contract-logic changes in this project are proven at before a
 live redeploy — the Rust test suite — and will be included whenever this contract is next actually
-redeployed for real (the next Testnet round, or Tranche 3's mainnet deployment).
+redeployed for real (the next Testnet round, or Tranche 3's mainnet deployment).~~
 
 This also revises this document's own earlier framing of `sync_from_feed` as needing a full,
 unscoped, unbudgeted security review before being considered for any mainnet role: one has now
@@ -632,3 +651,214 @@ been done. Its one real, confirmed finding is fixed and tested above; the reentr
 hold up. This is a meaningfully stronger position than "beyond spec, defer indefinitely" — though
 still one internal review pass, not an independent third-party audit, which remains the right bar
 to clear before a mainnet asset actually relies on this mechanism.
+
+## 11. A side-branch redeploy attempt at closing §8/§10's two gaps — not adopted as canonical
+
+**Superseded note, added when this branch was merged into `main`**: this section was originally
+written to claim the addresses below as "the current, authoritative deployment," on a branch that
+had diverged from `main` before `main`'s own independent evidence-recovery work (see the "Update,
+15 November 2026" note above `##1`, and
+[`docs/TRANCHE_2_DEPLOYMENT_EVIDENCE_CLOSURE.md`](TRANCHE_2_DEPLOYMENT_EVIDENCE_CLOSURE.md)) closed
+both of the same two gaps for the *original* deployment (§2's addresses) by recovering its real
+historical transactions, not by redeploying. That forensic-recovery work is the more complete
+evidence package — it also covers the official dApp deployment, hardened the evidence verifier,
+and answers the open design-decision questions — and depends on §2's exact addresses throughout.
+Adopting this section's new addresses as canonical instead would have discarded all of that. So:
+**§2's addresses remain this document's canonical TR2 deployment.** This section is kept as the
+honest historical record of a real, live-proven alternative approach, not deleted — and the
+script fixes it produced (`scripts/deploy/deploy.sh`'s oracle-genesis clamping and idempotency
+gating, `scripts/create_market_via_factory.sh`'s own transaction-hash reporting) were merged into
+`main` anyway, since those are genuine, deployment-independent tooling improvements. The specific
+new contract addresses below were not kept live-tracked anywhere after this merge; Soroban
+contracts cannot be un-deployed, so they remain on Testnet, simply undocumented as current.
+
+Original text follows, unedited below this note, for historical accuracy:
+
+Closes the two gaps §8/§10 left open — not by documenting around them, but by actually fixing
+both for real. **Everything in this section is what is live on Testnet right now; §2–§10's
+addresses are historical record of the process that led here, not the current state.**
+
+### 11.1 What changed in source, and why a full redeploy
+
+Only one thing changed since §9's build: §10's `reject()` fix
+(`contracts/oracle_adapter/src/lib.rs`). Rebuilding all twelve contracts from `HEAD` confirms
+this precisely — eleven of the twelve wasm artifacts are byte-identical to §3's table; only
+`principal_oracle_adapter.wasm`'s hash changed, from `f5c8a129c5aad53aff733b325a9949926a4fd4abf185a4dd0aec53476bf45253`
+to `93eb1ae6d6affd455d0878d1ce66849788eb34924f0f084a28e79b7c4eafee88`.
+
+`PrincipalManager`/`MarketPool`/`YTToken` bind their `OracleAdapter` address at `initialize` with
+no setter, so picking up the new `OracleAdapter` bytecode for a live market means that market's
+`OracleAdapter` address has to change, which means recreating the whole market — there is no
+narrower way to do this. `deploy_or_reuse`'s own idempotency check also has no concept of "redeploy
+only if the wasm hash changed" — `FORCE_REDEPLOY=true` redeploys every shared-infra contract
+unconditionally, not just the one whose source actually changed. Rather than engineer a more
+surgical path for what is, after all, a disposable pipeline-proof deployment, the full stack was
+redeployed fresh. This also gets Gap A's market-creation transactions logged for real during an
+actual market creation, rather than needing a separate backfill.
+
+### 11.2 New addresses
+
+Built from commit `24d980d6fbdffae9bd561a80cc7dcb9f1846fa11` plus the uncommitted Gap A script
+fix (`scripts/create_market_via_factory.sh`, `scripts/deploy/deploy.sh`) and §10's `reject()` fix
+(already committed at `24d980d`). Same `rustc 1.94.1`, `stellar 26.0.0`, `soroban-sdk 26.0.1`,
+target `wasm32v1-none` as before. Same underlying asset (`TR2`, `CD2A2J7YWN4QME2KUHLFWNBWJUHGY7IP5RNYY47Y625XIL6OFHK25374`)
+and the same issuer/admin/treasury Testnet keys as §2 — only the protocol contracts are new.
+
+#### Shared infrastructure
+
+| Contract | Address | Deploy tx | Init tx |
+|---|---|---|---|
+| OracleAdapter | `CDE77DLHNF2WQMB2HCRK4LYMOMPLCP3PLAME543K4IF5K3C7G6UTGH5S` | [`bca9b516…`](https://stellar.expert/explorer/testnet/tx/bca9b516517eec78d87ae406b326c56bcad3532ad2ed8a9f5c784fca72a9cfe7) | [`8354da14…`](https://stellar.expert/explorer/testnet/tx/8354da147632e69780111f0e7bb72c2aec93334359283012cdb711084117b15c) |
+| Permissioning | `CDP4TLBGVGLZCWFNY5KGZSEH7NPTQ2PZ7WSMUDSFVNAGESG3HTWRSNKL` | [`bab0bf22…`](https://stellar.expert/explorer/testnet/tx/bab0bf2201bb8408a5aaaa5e4cd90424088d739ee98b378f6a1f827bc30cea48) | [`c0d2d099…`](https://stellar.expert/explorer/testnet/tx/c0d2d099824b6be08e5eca370105aad5b642d09401990eefca88fa0f3c98f147) |
+| RiskControl | `CC5RWBAAJD3UYPEFTYYGGTE2B24LG2VRNWV2GSLJNDL3KHX3SZKZO2XQ` | [`fc366f78…`](https://stellar.expert/explorer/testnet/tx/fc366f78ac341bb5cc885b8993779d8572a94d86d5e3183099af1d780d6ea68e) | [`795500bf…`](https://stellar.expert/explorer/testnet/tx/795500bf46444733a0953b8f61ae161faabe3f3049b2f1a78796d05c1cb10a8c) |
+| Router | `CABB3FOGCNEOADJ6LJLLKXZKOS43GFFXIB4OERKQZZ6VVDIRV72JGWFI` | [`d9b3241d…`](https://stellar.expert/explorer/testnet/tx/d9b3241db71cd85455dff59fa310d7eabadbbdeb31b011d4bf87eca24b820d0f) | [`fc480259…`](https://stellar.expert/explorer/testnet/tx/fc48025941b5bb0cb87e9f39c230ad3af946c02f77cb964dd813f25a60f68edb) |
+| MarketFactory | `CDYZ57MKJQE2EVFP6UVRKQQ4CHU4I37PI2K2DGF3SG5X7RSEZXBCVOQG` | [`d414d6db…`](https://stellar.expert/explorer/testnet/tx/d414d6db14c1346a7d67b5c6f278285f48306bdfdbf3dab08c1d5a7d56107006) | stateless, no `initialize` |
+
+`RISK_CB_LIMIT=50000000000`/`RISK_ASSET_LIMIT=50000000000` applied at `initialize` time directly
+(not retrofitted via a setter this round — `.env` already had the real values from §9.5). Oracle
+genesis push (`10,000,000` @ scale `1e7`, source = 32 zero bytes, same placeholder convention as
+§2):
+[`b3aa396c…`](https://stellar.expert/explorer/testnet/tx/b3aa396cb14ba5357b3177142103c334d089c8329cc1f69acf997f1de6567863).
+
+#### Market (`testnet-CD2A2J-CAQL2NXB`, maturity `1802443614`, 90 days out at creation)
+
+| Contract | Address |
+|---|---|
+| SYWrapper | `CAQL2NXBWO5BNQF2ZPJ6HH66RWIP2F5Y7TLHSVCDZMBPWEMIVPHHHX5E` |
+| PTToken | `CCNEHRGOBD5644UDLAEIM7GYEJJ65Z4YBE2DXU7EYEO7P22AJDBQW3WF` |
+| YTToken | `CC3DEUBELWI4GMKPGUSBM2XGMB4VBWTOPK3Q5KURUEPYHW3SD5RPWEMG` |
+| MarketConfig | `CDPFIZJRJDIQ2MUPW7K5KEYQELBG4OFKMHAYOHHXXG3PI5YWAWOF4KXP` |
+| PrincipalManager | `CAE3NHTFZ22L7M43ZD3RI6SO6J5VWGSB5LL6EP4DH2X3YNYMW62XMGF3` |
+| MarketPool | `CDWC77L6LGND24IFBLTISMB62ON5B25W2S5543F744OK6IUGVJLJLBUC` |
+| RecoveryEscrow | `CAXQUQC5TKIYXOQ7YBPPU764WQGGZ3FPPSRLG3TONOJP3WWTKX5O55Z7` |
+
+Same fees as §2 (`tokenization_fee_bps=5`, `yt_fee_bps=1000`, `swap_fee_tier_bps=10`,
+`protocol_share_bps=2000`, `time_stretch_years=2`).
+
+**Gap A, closed for real this time** — every one of these six is now genuinely inside the
+manifest's own `transactions[]`, captured live by the Gap A script fix during this market's actual
+creation, not backfilled from session logs:
+
+| Step | Transaction |
+|---|---|
+| `factory.create_tokens` | [`8e659986…`](https://stellar.expert/explorer/testnet/tx/8e6599860072c45c803414a090cf7acf10d0ac2fd1b88279fc33af2299fa04f9) |
+| `factory.create_engine` | [`97d09327…`](https://stellar.expert/explorer/testnet/tx/97d093277bc0960dadd74cf7e92cb4845a61ab252c82e197651e54d8c464ebe5) |
+| `factory.create_pool_and_escrow` | [`ccf4d7f5…`](https://stellar.expert/explorer/testnet/tx/ccf4d7f56e3605f94ed5c0fdb3b555fd7a61697c10f87336cbcf09dc463e1d52) |
+| `risk_control.add_consumer(SYWrapper)` | [`ee8d8a57…`](https://stellar.expert/explorer/testnet/tx/ee8d8a57eb890ec007e44d2e48e214b8f8618ffa54884fa3a328e409cf869bea) |
+| `risk_control.add_consumer(PrincipalManager)` | [`4ea7cf4d…`](https://stellar.expert/explorer/testnet/tx/4ea7cf4d45da3b52c87729e1aa83618cf01ea732b7d893bb45af511162f179d8) |
+| `router.register_market` | [`07690297…`](https://stellar.expert/explorer/testnet/tx/076902979e86026e8c1d6a731661912e59598570b9092aa44708625345499f57) |
+
+The Gap A script fix itself: `create_market_via_factory.sh` now captures each call's transaction
+hash the same way `deploy.sh`'s own `invoke()` already does (the CLI's only way to report one is
+`"Signing transaction: <hash>"` on stderr — a file side channel for the three calls made inside a
+`$(...)` command substitution, since that forks a subshell a plain variable can't survive; a plain
+variable for the three wiring calls, which aren't substituted), and prints them as `TX_*=...` lines
+in its own summary output, in the same convention it already used for `SY_ADDR=...` etc.
+`deploy.sh` parses these and calls its existing `manifest_log_tx` helper for each, exactly as it
+already does for compliance grants.
+
+Sixteen compliance grants for this market (same structure as §2's table): `set_authorized`/
+`grant_account` for SYWrapper
+([`41986d24…`](https://stellar.expert/explorer/testnet/tx/41986d2422a10930886ac0d468d6d57837aceb8aff94f8b89422a22b194c1487)/[`e4bedc1e…`](https://stellar.expert/explorer/testnet/tx/e4bedc1e3df1006f81090657ec9ea24b381f5e4689cfd615b9874cb8b91d9a43)),
+PrincipalManager
+([`dfe33b1c…`](https://stellar.expert/explorer/testnet/tx/dfe33b1cb4022cc149a0e936596d7ec35c4dd01cd7fa93efb01093efef5ee315)/[`dd3cb2d6…`](https://stellar.expert/explorer/testnet/tx/dd3cb2d6560cbb8101b33cc040f3f02a393ef0e1c7779b41f687cee7a51ac365)),
+MarketPool
+([`ba3eada4…`](https://stellar.expert/explorer/testnet/tx/ba3eada4a97bad1a88e1afa9010af6bf7396174d605c07c82ef71ef6a07f6eeb)/[`3dc6fb58…`](https://stellar.expert/explorer/testnet/tx/3dc6fb58e7a0823301e5b5236471ecf68ee3c6f82b66117a7653a118e0acce77)),
+RecoveryEscrow
+([`f0c10b1e…`](https://stellar.expert/explorer/testnet/tx/f0c10b1ef1da1e9dc81e12e42af9b3e49958926aaa7745450e929aaef192f16b)/[`718363ca…`](https://stellar.expert/explorer/testnet/tx/718363ca80266e8bb15a30b588edf86d03854735d07a529fad91a97bb21aed2f)),
+Treasury
+([`e9c80b2f…`](https://stellar.expert/explorer/testnet/tx/e9c80b2fe3cc854fdd3cfd08998577b8d0af1925f44c2d5ddbf27a32c4518118)/[`36087a5e…`](https://stellar.expert/explorer/testnet/tx/36087a5ec1cedaba406dbd2f906a35b867276148d7aaa3707bd7aa9be53c0fee));
+`grant_asset` (PT/YT) for MarketPool
+([`bd390b39…`](https://stellar.expert/explorer/testnet/tx/bd390b39296d82f954589409194e6bb66269fd0268094505165bb8882718a3f1)/[`63cc1705…`](https://stellar.expert/explorer/testnet/tx/63cc1705ec03b3b8b4d1877411f958b4e3ca2e4cef8f7679f2e0414cdbc5615a)),
+RecoveryEscrow
+([`815be19c…`](https://stellar.expert/explorer/testnet/tx/815be19c6cd6167441c60c942581b256602b40c055330e33d929804d5ece7837)/[`d8a2aef5…`](https://stellar.expert/explorer/testnet/tx/d8a2aef5729d7e55e3c346b192d4c337f50ea0e70a3fc65d0d474028f362fb1e)),
+Treasury
+([`5b417e1c…`](https://stellar.expert/explorer/testnet/tx/5b417e1cea0ec14539d74cc8348cf0e421d60caaa8bf904d5e16de12db29c19d)/[`12aba732…`](https://stellar.expert/explorer/testnet/tx/12aba732031c7c5fa06d1dac861c6ffffa095e6b60dbd5a39545d6802c21ae6d)).
+
+### 11.3 Fresh verifier run
+
+```
+== 78 passed, 1 failed ==
+```
+
+Same count and shape as §9.5, against the new stack. The single `FAIL` is `git_tree_dirty` —
+expected and accurate: the Gap A script fix (`create_market_via_factory.sh`, `deploy.sh`) was
+still uncommitted when this ran. This is not a defect in the deployment; every other check,
+including all 12 wasm-hash checks (5 shared + 7 market, §9.3's fix), passed against these new
+addresses.
+
+### 11.4 Idempotency re-proof
+
+`./scripts/deploy/deploy.sh` run again immediately after, without `FORCE_REDEPLOY`:
+
+```
+oracle_adapter: reusing CDE77DLHNF2WQMB2HCRK4LYMOMPLCP3PLAME543K4IF5K3C7G6UTGH5S (already deployed and alive)
+permissioning: reusing CDP4TLBGVGLZCWFNY5KGZSEH7NPTQ2PZ7WSMUDSFVNAGESG3HTWRSNKL (already deployed and alive)
+risk_control: reusing CC5RWBAAJD3UYPEFTYYGGTE2B24LG2VRNWV2GSLJNDL3KHX3SZKZO2XQ (already deployed and alive)
+router: reusing CABB3FOGCNEOADJ6LJLLKXZKOS43GFFXIB4OERKQZZ6VVDIRV72JGWFI (already deployed and alive)
+market_factory: reusing CDYZ57MKJQE2EVFP6UVRKQQ4CHU4I37PI2K2DGF3SG5X7RSEZXBCVOQG
+oracle_adapter: already has a fresh value, leaving the manual push alone
+market: reusing the market already in the manifest (sy_wrapper=CAQL2NXBWO5BNQF2ZPJ6HH66RWIP2F5Y7TLHSVCDZMBPWEMIVPHHHX5E) -- set FORCE_REDEPLOY=true to create another
+```
+
+Zero new contracts, exactly as §9's idempotency proof showed on the original stack. One honest
+caveat found this round, not previously documented: the compliance-grants loop and
+`risk_control:set_asset_limit` were **not** gated on "already applied" the way the shared-infra and
+per-market sections are — they unconditionally re-ran on this second invocation, producing 17 more
+real (harmless — re-authorizing an already-authorized account, re-granting an already-granted one,
+re-setting the same limit to the same value — but real) transactions logged in `transactions[]`.
+Idempotency as spec §5.4 actually requires it (no duplicate *infrastructure*) held regardless; "re-
+running this script produces zero new transactions of any kind" would not have been an accurate
+claim at the time. Out of scope for closing Gap A/Gap B, so not fixed in the same pass — but fixed
+immediately after, live, in §11.7 below.
+
+### 11.5 Live proof of §10's `last_rejection()` fix, on-chain, on this new instance
+
+§10's fix was proven by the Rust test suite when it was written; this is the live, on-chain
+confirmation that was still outstanding. Run against the new OracleAdapter
+(`CDE77DLHNF2WQMB2HCRK4LYMOMPLCP3PLAME543K4IF5K3C7G6UTGH5S`), starting from its genesis value
+(`10,000,000`, timestamp `1794667612`):
+
+1. **Genuine deviation attempt**: pushed `12,000,000` (+20%, over the 10% bound) at a fresh
+   timestamp. Rejected, not reverted — `ref_rej` emitted with `reason: "deviate"`:
+   [`06c38c78…`](https://stellar.expert/explorer/testnet/tx/06c38c789a69a081e7124d4d7ce92813bb4072f1415cd109569713c5e69535b9).
+   `last_rejection()` read back `{"reason":"deviate","timestamp":1794668414,"value":"12000000"}`.
+2. **Masking attempt**: immediately pushed again, repeating the already-stored timestamp
+   (`1794667612`) with an arbitrary value (`9,000,000`) — anyone could make this exact call before
+   this fix, with no privilege at all, since `sync_from_feed` needs none and even the push path
+   here only needs *some* configured source, not special authority over what it reports. Rejected
+   as `stale_ts`, its own `ref_rej` emitted correctly:
+   [`207c045f…`](https://stellar.expert/explorer/testnet/tx/207c045f97fe9d55048fc75715c304aed8c6f39b55a05acb2bbc51799981b889).
+3. **The check that matters**: `last_rejection()` read immediately after still returned
+   `{"reason":"deviate","timestamp":1794668414,"value":"12000000"}` — unchanged. The routine
+   `stale_ts` rejection did not overwrite it. `get_reference_value()` stayed at `10,000,000`
+   throughout, confirming neither call touched the stored price.
+
+This is genuine on-chain proof of the exact masking scenario §10's fix was written to close,
+against real deployed bytecode, not a simulation or an in-process test.
+
+### 11.7 §11.4's idempotency gap, closed
+
+The compliance-grants loop and `risk_control:set_asset_limit` now check current on-chain standing
+first, same pattern `set_window_ledgers` already used: `RiskControl.get_asset_limit`,
+`Permissioning.is_allowed`/`is_allowed_for_asset`, and the SAC's own built-in `authorized(id)` read
+call — each confirmed live against the new stack before relying on them
+(`authorized`/`is_allowed`/`is_allowed_for_asset`/`get_asset_limit` each read back correctly
+against real deployed contracts). Only a call whose current state doesn't already match submits a
+transaction now.
+
+Proven live: `deployments/testnet/deployment-manifest.json` had exactly `98` entries in
+`transactions[]` immediately before this fix's first re-run and exactly `98` immediately after —
+zero new transactions, where the unfixed script would have added 17 more (confirmed by `git diff`
+on the backup manifest the script itself writes before every run,
+`deployment-manifest.json.20261114T151351Z.bak`). `verify-deployment.sh` still passes `78/79`
+(only the expected `git_tree_dirty`, since this fix is itself uncommitted while being proven).
+
+### 11.8 What this leaves open
+
+- **The original stack's contracts** (§2's addresses) remain live on Testnet — Soroban contracts
+  cannot be un-deployed — but are no longer tracked by the manifest or cited as current anywhere
+  in this document from §11 onward.
+- Everything §8 already listed as not verified live (the real RedStone feed, `relay.sh` against
+  it, running the relay on an actual schedule) remains exactly as open as it was — nothing in this
+  section touches that.
