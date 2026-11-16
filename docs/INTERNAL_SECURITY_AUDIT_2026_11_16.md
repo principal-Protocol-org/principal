@@ -17,38 +17,50 @@ fourteen contracts in the workspace — `oracle_adapter`, `risk_control`, `permi
 `integration_tests` suite — along with every contract's own unit tests and the full integration
 test suite.
 
-**One Critical-severity finding was identified and fixed**: `RouterContract::initialize` had no
+**Two Critical-severity findings were identified and fixed.** `RouterContract::initialize` had no
 authorization check at all, meaning any account could seize administrative control of the shared
 Router instance during the window between its deployment and its intended initialization
-transaction. This has been fixed and is now covered by a dedicated regression test specifically
-designed to catch its reintroduction (see Finding C-1).
+transaction (Finding C-1). Separately, in a follow-up review pass after this document's first
+findings had already landed and the H-3 fix was in progress, `SYWrapper.withdraw_gained` was found
+to accept a caller-supplied, negative `baseline` with no balance check anywhere on the withdrawal
+path it shares with every other caller — letting an eligible account (with no deposit of its own
+required) withdraw underlying belonging to other depositors, bounded only by the wrapper's real
+token balance (Finding C-2). Both are fixed and each is now covered by dedicated regression tests
+specifically designed to catch reintroduction.
 
-Across the full review, **30 findings** were identified and individually verified against the real
+Across the full review, **34 findings** were identified and individually verified against the real
 contract source before being accepted. Of these:
 
-- **1 Critical** finding — fixed.
-- **3 High** findings — 1 fixed (covering four separate functions), 2 remain open as
-  architectural recommendations requiring a product/operations decision rather than a code fix
+- **2 Critical** findings — both fixed.
+- **3 High** findings — 2 fixed (one covering four separate functions, one closing the
+  `sync_from_feed` rate-limit gap, itself later found to measure the wrong clock and corrected
+  during the same follow-up pass that surfaced C-2 — see Finding H-3), 1 remains open as an
+  architectural recommendation requiring a product/operations decision rather than a code fix
   (see §5, Outstanding Recommendations).
-- **11 Medium** findings — 9 fixed, 2 remain open as architectural recommendations.
-- **10 Low** findings — all fixed.
+- **13 Medium** findings — 10 fixed, 3 remain open as architectural or operational
+  recommendations.
+- **11 Low** findings — 10 fixed; 1 confirmed but not independently fixable from this repository
+  (a transitively pinned dependency advisory — see Finding L-11).
 - **5 Informational** findings — 2 fixed (documentation accuracy), 3 are confirmed non-issues or
   accepted, documented limitations requiring no code change.
 
 Every fix was implemented, tested, and the entire workspace was re-verified after all changes
 landed: `cargo fmt --all -- --check` is clean, `cargo clippy --workspace --all-targets --locked --
--D warnings` is clean, and `cargo test --workspace` passes **477 of 477 tests**, zero failures,
-zero ignored. Line coverage across the full workspace stands at **98.24%** and region coverage at
-**98.21%** (see §6 for the full per-crate breakdown).
+-D warnings` is clean, and `cargo test --workspace` passes with zero failures and zero ignored
+tests. §6's per-crate coverage breakdown predates the follow-up pass's additional regression tests
+and is scheduled for re-measurement.
 
-No finding in this review involved a path to direct, unrecoverable fund loss from an external,
-unprivileged attacker. The Critical finding was a full administrative takeover vector; the fixed
-High findings were reliability/availability issues (transactions failing closed, not funds moving
-incorrectly); the fixed Medium findings included real accounting-correctness and compliance-
-traceability defects, none of which allowed value extraction beyond what was already deposited.
-The two open High-severity items are both architectural — key-management concentration and an
-oracle-integration rate limit — and are deliberately left as explicit recommendations rather than
-rushed fixes, for the reasons given in §5.
+This review did identify one path to direct fund loss reachable by an external, unprivileged
+attacker: Finding C-2, now fixed. Absent that finding, no other finding in this review involved
+such a path. The Critical findings were a full administrative takeover vector (C-1) and a direct
+custody-invariant violation (C-2); the fixed High findings were reliability/availability issues
+(transactions failing closed, not funds moving incorrectly) and a rate-limit gap on a
+permissionless path that is now closed and clocked correctly; the fixed Medium findings included
+real accounting-correctness, compliance-traceability, and initialization-authorization defects,
+none of which (beyond C-2 itself) allowed value extraction beyond what was already deposited. The
+one remaining open High-severity item is architectural — key-management concentration — and is
+deliberately left as an explicit recommendation rather than a rushed fix, for the reasons given in
+§5.
 
 ---
 
@@ -115,9 +127,10 @@ fixes).
 | ID | Title | Severity | Status |
 |---|---|---|---|
 | C-1 | `Router::initialize` had no authorization check | Critical | **Fixed** |
+| C-2 | `SYWrapper.withdraw_gained` accepted a negative caller-supplied baseline with no balance check anywhere on the path | Critical | **Fixed** |
 | H-1 | Router functions chained a live, oracle/rate-derived value into a further authorized call | High | **Fixed** (4 functions) |
 | H-2 | Oracle/Permissioning/RiskControl/Router administration concentrated in one unprotected key | High | Open — recommendation |
-| H-3 | `sync_from_feed`'s per-call deviation guard has no time-windowed budget | High | Open — recommendation |
+| H-3 | `sync_from_feed`'s per-call deviation guard has no time-windowed budget | High | **Fixed** |
 | M-1 | A panicking SEP-40 feed aborted `sync_from_feed` instead of rejecting gracefully | Medium | **Fixed** |
 | M-2 | RiskControl's circuit-breaker window was a hard "tumbling" reset, allowing ~2x the limit at the boundary | Medium | **Fixed** |
 | M-3 | PT/YT balance and supply arithmetic relied solely on a global build setting, not typed checks | Medium | **Fixed** |
@@ -129,6 +142,8 @@ fixes).
 | M-9 | Per-address deposit cap was never released when SY was withdrawn through a custodian contract | Medium | **Fixed** |
 | M-10 | `MarketPool`'s admin is a static snapshot of the issuer, never re-derived live | Medium | Open — recommendation |
 | M-11 | `Router.register_market`'s topology cross-check had no regression test | Medium | **Fixed** |
+| M-12 | `initialize` did not require the nominated admin's own signature in OracleAdapter, Permissioning, or RiskControl | Medium | **Fixed** |
+| M-13 | RecoveryEscrow allows only one unfinalized YT recovery record globally, blockable for a market's remaining lifetime | Medium | Open — recommendation |
 | L-1 | `get_active_source()` not updated by the SEP-40 pull path | Low | **Fixed** |
 | L-2 | Yield-index module doc overstated "no path dependence" | Low | **Fixed** |
 | L-3 | No sanity check on oracle rate positivity before use as a divisor | Low | **Fixed** |
@@ -139,6 +154,7 @@ fixes).
 | L-8 | Permissioning's negative-authorization tests did not cover three of its admin-gated functions | Low | **Fixed** |
 | L-9 | A RiskControl regression test asserted nothing beyond "does not panic" | Low | **Fixed** |
 | L-10 | Salt-reuse protection in MarketFactory was asserted in comments, not tested | Low | **Fixed** |
+| L-11 | Locked dependency tree includes a `crypto-bigint` constant-time timing advisory (RUSTSEC-2026-0387) | Low | Confirmed — tracked, not independently fixable |
 | I-1 | PT settlement uses a historical high-water-mark rate, not necessarily the rate at maturity | Informational | Confirmed intended — no action |
 | I-2 | Recipient-side compliance is enforced at the token layer, not duplicated at the pool layer | Informational | Confirmed correct — no action |
 | I-3 | `SYWrapper`'s module doc overstated its own exchange-rate behavior | Informational | **Fixed** |
@@ -177,6 +193,70 @@ since there is nothing left for a missing call to fail against. A new test,
 this codebase built specifically to close that blind spot: it mocks no authorizations at all for
 the call that must fail, then mocks the admin's signature for exactly one invocation for the call
 that must succeed. It passes.
+
+---
+
+### C-2 — `SYWrapper.withdraw_gained` accepted a negative baseline with no balance check anywhere on the path
+
+**Severity:** Critical · **Status:** Fixed
+
+**Affected functions:** `withdraw_gained`, `do_withdraw`, `sub_balance`
+(`contracts/sy_wrapper/src/lib.rs`)
+
+Found during an independent follow-up review pass after this document's first findings had
+already landed, while the H-3 fix was in progress.
+
+`withdraw_gained(from, baseline, to, min_underlying_out)` computes `shares = balance_of(from) -
+baseline`, where `baseline` is an unvalidated, caller-supplied `i128` representing a balance
+snapshot `from` is claimed to have held in the past (intended for a Router flow composing a
+wrap-then-flash-mint, reading its own balance via `balance_of` immediately beforehand). Nothing
+rejected a negative `baseline`: supplying one inflates `shares` to more than `balance_of(from)`,
+with no cap. Unlike `withdraw`/`withdraw_crediting`, this path performed no `balance < shares`
+check before calling the shared `do_withdraw`, and `do_withdraw` itself had no such check either —
+it computed `underlying_out = shares_to_underlying(shares)`, decremented the global
+`TotalUnderlying`/`TotalShares` by that inflated amount, called `sub_balance` (which stores
+`balance - shares` with no floor, silently producing a negative stored balance rather than
+rejecting), and transferred `underlying_out` of the real underlying token out of the wrapper's own
+pooled custody to `to`.
+
+**Attack preconditions:** the caller needs Principal Permissioning and underlying-SAC
+authorization — the same floor every depositor needs — and the wrapper must hold some pooled
+underlying (i.e., at least one real deposit has occurred). **No prior deposit by the attacker is
+required**: with `balance_of(attacker) == 0` and a sufficiently negative `baseline`, `shares`
+alone determines the payout.
+
+**Impact:** an eligible account could withdraw underlying belonging to other depositors, corrupt
+`TotalShares`/`TotalUnderlying`, and drive its own stored share balance negative. The loss in any
+single call is bounded by the wrapper's real underlying token balance (the final SAC-level
+transfer reverts past that), but nothing bounded it below the full custody balance, and the
+corrupted totals and negative balance would persist and compound across repeated calls.
+
+**Fix:** two changes, not one, to close this for every current and future caller rather than only
+the one call site:
+
+1. `do_withdraw` now independently enforces `shares <= get_balance(from)` before computing any
+   payout — the one function every withdrawal path (`withdraw`, `withdraw_crediting`,
+   `withdraw_all`, `withdraw_gained`) funnels through, so this protects all of them regardless of
+   whether each call site's own guard is correct.
+2. `withdraw_gained` additionally rejects `baseline < 0` explicitly and up front, before any
+   arithmetic on it — both for a clearer, specific error, and because computing `balance -
+   baseline` at `baseline == i128::MIN` would itself overflow `i128` (no positive counterpart to
+   `i128::MIN` exists), which the explicit check preempts entirely.
+
+**Regression tests** (`contracts/sy_wrapper/src/test.rs`): a negative baseline is rejected; the
+most adversarial input, `i128::MIN`, is rejected without an arithmetic-overflow panic masking the
+real check; a rejected call leaves `TotalShares`, `TotalUnderlying`, and every account balance
+(including the attacker's own token balance) completely unchanged; the same rejection holds even
+when the attacker has a real, nonzero SY balance of their own; and the legitimate case — a genuine
+positive gain above a real prior baseline — still succeeds and returns the correct amount.
+
+**Why this was missed in this document's first pass:** no unit test in `sy_wrapper/src/test.rs`
+exercised `withdraw_gained` at all before this fix; its only prior test coverage was an integration
+test for the unrelated zero-gain tolerance case (`contracts/integration_tests/tests/
+liquidity_and_router.rs`). The function's own doc comment correctly explained *why* a derived
+`shares` value is read live rather than taken as a direct argument (simulation/execution drift,
+mirroring `withdraw_all`), but that same reasoning was never checked against what it implies for a
+hostile, directly-invoked caller rather than the Router's own well-formed baseline.
 
 ---
 
@@ -246,26 +326,56 @@ recommendation.
 
 ### H-3 — `sync_from_feed`'s deviation guard has no time-windowed budget
 
-**Severity:** High · **Status:** Open — recommendation, not fixed in this pass
+**Severity:** High · **Status:** Fixed
 
 `OracleAdapter.sync_from_feed` is callable by anyone, for free, with no cooldown, and is explicitly
 documented in this codebase as beyond the originally funded specification — an additional,
-trust-minimized pull path layered on top of the primary push-based relay. Its deviation guard is
+trust-minimized pull path layered on top of the primary push-based relay. Its deviation guard was
 checked only against the immediately prior stored price, with no longer-term anchor or
 elapsed-time-scaled budget. Because the reference value is enforced monotonically non-decreasing
 by design (the yield-index and PT settlement math both depend on this), a misbehaving, buggy, or
-later-compromised feed can compound the per-call deviation bound over repeated calls — at a
-plausible 5% per call roughly every Stellar ledger, over 10x within an hour is achievable with no
+later-compromised feed could compound the per-call deviation bound over repeated calls — at a
+plausible 5% per call roughly every Stellar ledger, over 10x within an hour was achievable with no
 circuit breaker of its own on the oracle side.
 
-**Why this was not fixed in this pass:** the correct mitigation (a minimum interval between
-accepted feed-driven updates, and/or a cumulative-deviation budget measured over a real-time
-window, analogous to RiskControl's own windowing) requires a specific, deliberately chosen
-parameter — how fast is too fast — which is a risk-policy decision, not something to default
-without the people operating this protocol signing off on the exact number. This mechanism is
-already explicitly flagged in its own module documentation as needing a dedicated security review
-before any mainnet asset relies on it; this finding is that review's own output, not a reason to
-rush an arbitrary threshold into place. See §5.
+**Fix:** `sync_from_feed` now enforces a minimum real-time interval between two *accepted*
+feed-driven updates, closing the compounding path without touching the push-based relay or the
+underlying deviation/monotonicity checks. A new admin-gated `set_feed_min_interval` /
+`feed_min_interval_seconds` pair configures the interval per deployment (`0` disables it
+entirely, for environments — e.g. automated test flows — that intentionally want unthrottled
+pulls); the contract's own default if never configured is `DEFAULT_FEED_MIN_INTERVAL_SECONDS =
+300` (5 minutes). An update offered before the interval has elapsed is rejected with reason
+`"throttle"` — a new, deliberately non-significant rejection reason (it never overwrites
+`last_rejection()`, consistent with the existing `stale_ts`/`no_data` convention), since being
+throttled is routine, expected behavior for a permissionless path, not evidence of a bad feed.
+`current_ts == 0` (no prior accepted value yet) is always exempt, so the very first sync into a
+freshly deployed adapter is never throttled.
+
+This did introduce one operational interaction worth recording: `scripts/deploy/deploy.sh`'s
+existing bootstrap flow pushes a manual genesis value and then immediately calls `sync_from_feed`
+once, which — at the real configured interval — would always be throttled on a fresh deployment
+(the gap since the just-made genesis push is near-zero). `deploy.sh` now sets the interval to `0`
+for that one bootstrap call only, then restores the real configured value (`.env`'s
+`ORACLE_FEED_MIN_INTERVAL_SECONDS`, default `300`) immediately after — preserving full protection
+for every subsequent call, including every later permissionless one, while not blocking the one
+deliberate, admin-controlled call that originates the series.
+
+Two new tests (`contracts/oracle_adapter/src/test.rs`) cover this: one proves the first update is
+never throttled, a genuine second update offered too soon is rejected as `"throttle"` without
+touching `last_rejection()`, and the same update succeeds once the interval elapses; the other
+confirms `set_feed_min_interval` is admin-only and that `seconds = 0` disables the throttle.
+
+**Follow-up correction (found during an independent review of this fix's own first pass):** the
+throttle as first implemented measured the real-time gap against the stored `Timestamp` field —
+the *feed's own self-reported* observation time — rather than against when this contract actually
+accepted that prior update. A compromised or malicious configured feed could present several
+monotonically increasing but real-time-stale timestamps (all comfortably behind the ledger clock)
+and clear the throttle repeatedly with effectively zero real time elapsed between calls, defeating
+its purpose while still passing every other check (`future_ts`, monotonicity, deviation).
+Corrected by adding a dedicated `LastFeedAcceptLedgerTs` storage key, written only on a genuine
+acceptance to `env.ledger().timestamp()`, and measuring the throttle against that instead. A new
+test (`throttle_clock_is_ledger_acceptance_time_not_the_feeds_own_reported_timestamp`) reproduces
+the exact bypass pattern against the corrected code and confirms it no longer succeeds.
 
 ---
 
@@ -507,7 +617,61 @@ disagrees, and still succeeds when everything agrees.
 
 ---
 
-### L-1 through L-10 — Lower-severity findings, all fixed
+### M-12 — `initialize` did not require the nominated admin's own signature in OracleAdapter, Permissioning, or RiskControl
+
+**Severity:** Medium · **Status:** Fixed
+
+Found during the same follow-up review pass as C-2. Every `initialize` across this codebase that
+takes an `admin` address calls `admin.require_auth()` as a cryptographic binding to the nominated
+address — confirmed present in Router (see C-1's own fix), `SYWrapper`, `MarketConfig`, `PTToken`,
+`YTToken`, `PrincipalManager`, and `MarketPool`. `OracleAdapter`, `Permissioning`, and
+`RiskControl` were the three exceptions: each wrote the supplied `admin` during first
+initialization with no signature check at all. Since initialization is one-shot
+(`AlreadyInitialized` blocks any correction afterward), a directly deployed instance of any of
+these three contracts left uninitialized for any window — a manual deployment step, a partial or
+interrupted setup flow, a monitoring process trusting an address before confirming
+initialization — could be claimed by the first caller, who may nominate any admin address, exactly
+the same root-cause class as C-1 (though a narrower blast radius, since the factory-deployed,
+atomically-initialized per-market contracts are not affected the same way).
+
+**Fix:** `admin.require_auth()` added as the first statement in each of the three `initialize`
+functions, matching the pattern already used everywhere else in this codebase.
+
+**Regression tests:** one per contract (`initialize_requires_the_admins_own_signature` in each of
+`oracle_adapter`, `permissioning`, and `risk_control`'s own `test.rs`), mirroring C-1's own test
+design exactly: no authorizations mocked at all for the call that must fail, then the admin's
+signature mocked for exactly one invocation for the call that must succeed. All three pass.
+
+---
+
+### M-13 — RecoveryEscrow allows only one unfinalized YT recovery record globally
+
+**Severity:** Medium · **Status:** Open — recommendation (pre-existing, deliberate design choice)
+
+**Affected functions:** `seize_one`, `finalize_record` (`contracts/recovery_escrow/src/lib.rs`)
+
+Confirmed accurate during the same follow-up review pass as C-2, though this is a pre-existing,
+deliberate design decision already explained in the code's own doc comments (`RecoveryRecord`'s
+`yt_yield_at_seize` field doc), not a newly discovered defect. Pending YT yield is pooled by the
+escrow's own holding address rather than tracked per record, so only one unfinalized YT recovery
+record is permitted to exist at a time — enforced by an `UnfinalizedYtRecord` guard — which is
+exactly what keeps that pooled yield attributable to a single record. `finalize_record` settles a
+record's held PT/YT through `PrincipalManager.redeem`, which itself requires the market to be at
+or past maturity; a YT record seized before maturity therefore cannot be finalized, and the guard
+it holds is not released, until maturity arrives. One early YT seizure can consequently block
+every other restricted holder's YT recovery for the remainder of that market's lifetime.
+
+**Why this is not fixed in this pass:** the correct remediation — per-record custody addresses, or
+independently tracking each record's own pro-rata yield index — is itself a design change with its
+own tradeoffs (more storage, more complexity in the yield-pooling invariant this mechanism
+currently relies on), not a narrow bug fix, and belongs with whoever operates this protocol
+deciding whether multiple simultaneous YT recoveries are an operational requirement. At minimum,
+operators should treat the maximum blocking interval (the remaining time to maturity at the moment
+of the first YT seizure) as a known operational constraint rather than an unbounded one. See §5.
+
+---
+
+### L-1 through L-11 — Lower-severity findings
 
 The following were each individually verified, fixed, and covered by a new or corrected test:
 
@@ -546,6 +710,19 @@ The following were each individually verified, fixed, and covered by a new or co
   before/after-limit-removal behavior directly.
 - **L-10.** MarketFactory's salt-reuse protection was described in comments, never exercised by a
   test. Added.
+- **L-11.** `cargo audit --no-fetch` confirms the locked dependency tree includes `crypto-bigint
+  0.5.5`, flagged by `RUSTSEC-2026-0387` for timing variability in operations intended to be
+  constant-time. Found during the same follow-up review pass as C-2, and re-confirmed directly via
+  a live `cargo audit` run rather than taken on an earlier report's word. The dependency is
+  transitive, not direct: pulled in via `soroban-env-host → k256 → ecdsa → elliptic-curve →
+  crypto-bigint`, not referenced anywhere in this workspace's own contract code, and no contract
+  here performs secret-dependent cryptographic operations through it. `cargo update -p
+  crypto-bigint --dry-run` confirms no semver-compatible newer version is available under the
+  current lockfile — `elliptic-curve 0.13.8`'s own requirement pins it, and that in turn is fixed
+  by the currently vendored `soroban-env-host` version, not by this repository's `Cargo.toml`.
+  **Status:** confirmed, tracked; not independently fixable from this repository today. Resolving
+  it requires an upstream `soroban-sdk`/`soroban-env-host` release that bumps this chain; revisit on
+  the next SDK upgrade.
 
 ---
 
@@ -577,12 +754,12 @@ The following were each individually verified, fixed, and covered by a new or co
 
 ## 5. Outstanding Recommendations
 
-Four findings (H-2, H-3, M-4, M-10) were deliberately left unfixed in this pass because each
-requires a specific, consequential decision — a key-management model, a risk-tolerance parameter,
-an emergency-recovery authorization scheme — that belongs with whoever will actually operate this
-protocol in production, not embedded unilaterally inside a code review. Rushing any of these would
-trade one risk for another, less well-understood one. They are restated here together because they
-are related and worth deciding as a set rather than independently:
+Four findings (H-2, M-4, M-10, M-13) were deliberately left unfixed in this pass because each
+requires a specific, consequential decision — a key-management model, an emergency-recovery
+authorization scheme, a recovery-concurrency redesign — that belongs with whoever will actually
+operate this protocol in production, not embedded unilaterally inside a code review. Rushing any
+of these would trade one risk for another, less well-understood one. They are restated here
+together because they are related and worth deciding as a set rather than independently:
 
 1. **Administrative key model (H-2, and M-10 as a special case of the same question).** Decide
    whether Oracle, Permissioning, RiskControl, and Router should share one multisig-protected
@@ -593,15 +770,15 @@ are related and worth deciding as a set rather than independently:
    `MarketPool` admin-staleness question should be resolved as part of the same decision, since it
    is the same underlying tradeoff (live re-derivation vs. a cheaper, staler snapshot).
 
-2. **Rate limit for the SEP-40 pull path (H-3).** Decide a concrete minimum interval and/or
-   cumulative-deviation budget for `sync_from_feed`, informed by the real update cadence of
-   whichever feed is actually integrated for the first mainnet asset, and have that specific
-   number reviewed before this mechanism is relied upon for a live market.
-
-3. **Emergency settlement path (M-4).** Decide whether, and under what authorization and delay, a
+2. **Emergency settlement path (M-4).** Decide whether, and under what authorization and delay, a
    market with no fresh oracle observation by its own maturity should be settleable from the last
    known rate, versus remaining permanently blocked until the oracle recovers. This is a genuine
    availability-versus-safety tradeoff that deserves explicit sign-off.
+
+3. **Recovery concurrency (M-13).** Decide whether RecoveryEscrow's current one-unfinalized-
+   YT-record-at-a-time constraint is operationally acceptable for this deployment, given it can
+   block every other restricted holder's YT recovery for the remainder of a market's lifetime once
+   triggered, or whether a per-record redesign is needed before go-live.
 
 ---
 
@@ -619,13 +796,17 @@ further test-writing.
 
 ## 7. Conclusion
 
-This review found and closed one Critical finding (a complete, unauthenticated administrative
-takeover path on the Router contract) and a further 25 findings ranging from High to Low severity,
-spanning authorization, arithmetic safety, accounting correctness, compliance traceability, and
-test coverage. Every fixable finding was fixed, tested, and independently re-verified; the four
-findings left open are architectural or policy decisions, clearly scoped and handed off rather
-than quietly deferred. The workspace, in its final state, builds cleanly, lints cleanly, and passes
-its entire test suite, with line coverage exceeding the 98% target set for this review.
+This review found and closed two Critical findings (a complete, unauthenticated administrative
+takeover path on the Router contract, and a direct custody-invariant violation in SYWrapper's
+`withdraw_gained`, the latter surfaced during an independent follow-up pass) and a further 28
+findings ranging from High to Low severity, spanning authorization, arithmetic safety, accounting
+correctness, compliance traceability, and test coverage. Every fixable finding was fixed, tested,
+and independently re-verified; the four findings left open are architectural or policy decisions,
+clearly scoped and handed off rather than quietly deferred. The workspace, in its final state,
+builds cleanly, lints cleanly, and passes its entire test suite.
 
 This document, together with the four remaining open recommendations in §5, should be treated as a
-required input to the mainnet launch decision, not merely a historical record of this pass.
+required input to the mainnet launch decision, not merely a historical record of this pass. The
+follow-up pass that surfaced C-2 and M-12, and corrected H-3's own first implementation, is itself
+evidence for why an independent second review ahead of mainnet is worth the time: a finding this
+severe was not caught by this document's own first pass.

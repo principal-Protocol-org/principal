@@ -1,9 +1,35 @@
 use soroban_sdk::{
-    testutils::{Address as _, Ledger as _},
-    Address, Env,
+    testutils::{Address as _, Ledger as _, MockAuth, MockAuthInvoke},
+    Address, Env, IntoVal,
 };
 
 use super::{RiskControlContract, RiskControlContractClient, DEFAULT_WINDOW_LEDGERS};
+
+/// Regression for a follow-up finding (PRINCIPAL-004): `initialize` must bind to the nominated
+/// admin's own signature -- see `permissioning`'s identical regression test for the full
+/// rationale on why `setup()`'s blanket `mock_all_auths()` cannot catch a missing
+/// `require_auth()` call on its own.
+#[test]
+fn initialize_requires_the_admins_own_signature() {
+    let env = Env::default();
+    let id = env.register_contract(None, RiskControlContract);
+    let client = RiskControlContractClient::new(&env, &id);
+    let admin = Address::generate(&env);
+
+    assert!(client.try_initialize(&admin, &0_i128).is_err());
+
+    client
+        .mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "initialize",
+                args: (&admin, 0_i128).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .initialize(&admin, &0_i128);
+}
 
 fn advance_ledgers(env: &Env, n: u32) {
     env.ledger().with_mut(|li| li.sequence_number += n);

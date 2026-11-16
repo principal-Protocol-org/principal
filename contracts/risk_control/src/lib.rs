@@ -130,6 +130,10 @@ impl RiskControlContract {
         if env.storage().instance().has(&DataKey::Admin) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
+        // Binds initialization to the nominated admin's own signature -- see Permissioning's
+        // identical fix for the full rationale. Found during a follow-up review after this
+        // contract's first audit pass.
+        admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Paused, &false);
         env.storage().instance().set(&DataKey::CbLimit, &cb_limit);

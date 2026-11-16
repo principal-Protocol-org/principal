@@ -1,0 +1,835 @@
+diff --git a/contracts/oracle_adapter/src/lib.rs b/contracts/oracle_adapter/src/lib.rs
+index 383a471..8fe6ee9 100644
+--- a/contracts/oracle_adapter/src/lib.rs
++++ b/contracts/oracle_adapter/src/lib.rs
+@@ -139,8 +139,15 @@ pub enum DataKey {
+     FeedSource,
+     FeedAsset,
+     LastUpdateWasFeed,
++    FeedMinIntervalSeconds,
+ }
+ 
++/// Default minimum real-time gap between two *accepted* `sync_from_feed` updates, applied when
++/// `set_feed_min_interval` has never been called. Five minutes: comfortably slower than any
++/// SEP-40 feed's real heartbeat, so legitimate tracking is unaffected, while bounding how fast a
++/// permissionless caller can compound the per-call deviation cap (see `sync_from_feed`).
++pub const DEFAULT_FEED_MIN_INTERVAL_SECONDS: u64 = 300;
++
+ /// SEP-40's own asset discriminant (ecosystem/sep-0040.md) -- a feed may quote several assets
+ /// against one `base()`, so a pull must say which one.
+ #[contracttype]
+@@ -169,7 +176,8 @@ pub trait Sep40Interface {
+ 
+ /// The most recent `set_reference_value` call this contract refused, if any. `reason` is one of
+ /// a small fixed set of short symbols (`decrease`, `stale_ts`, `deviate`, `fb_value`, and, from
+-/// `sync_from_feed`, `oob` and `feed_err` -- the latter covering both a feed returning an error
++/// `sync_from_feed`, `oob`, `throttle` -- too soon after the last accepted feed update, see
++/// `set_feed_min_interval` -- and `feed_err`, the latter covering both a feed returning an error
+ /// and a feed panicking internally, since `try_decimals`/`try_lastprice` surface both the same
+ /// way) rather than a free-form string, so a dashboard can map it to display text without
+ /// parsing.
+@@ -296,6 +304,31 @@ impl OracleAdapterContract {
+             .set(&DataKey::MaxDeviationBps, &max_deviation_bps);
+     }
+ 
++    /// Minimum real-time gap, in seconds, between two *accepted* `sync_from_feed` updates.
++    /// `0` disables the throttle entirely (intended for tests and tightly-controlled ops, not
++    /// for a live market). Admin-only. Does not apply to the admin-only push path
++    /// (`set_reference_value`): the throttle exists specifically because `sync_from_feed` is
++    /// callable by anyone, for free, at every ledger -- see that function's doc for the bound.
++    pub fn set_feed_min_interval(env: Env, caller: Address, seconds: u64) {
++        caller.require_auth();
++        let admin = Self::require_admin(&env);
++        if caller != admin {
++            panic_with_error!(&env, Error::Unauthorized);
++        }
++        env.storage()
++            .instance()
++            .set(&DataKey::FeedMinIntervalSeconds, &seconds);
++    }
++
++    /// Effective throttle, i.e. the configured value or
++    /// `DEFAULT_FEED_MIN_INTERVAL_SECONDS` if `set_feed_min_interval` was never called.
++    pub fn feed_min_interval_seconds(env: Env) -> u64 {
++        env.storage()
++            .instance()
++            .get(&DataKey::FeedMinIntervalSeconds)
++            .unwrap_or(DEFAULT_FEED_MIN_INTERVAL_SECONDS)
++    }
++
+     /// Configure an optional sane absolute range checked against *every* accepted value,
+     /// including the first-ever submission (which is otherwise exempt from the deviation guard,
+     /// since there is nothing yet to deviate from). Unset by default -- no bound is enforced
+@@ -540,6 +573,31 @@ impl OracleAdapterContract {
+                 false,
+             );
+         }
++        // Rate limit (audit finding H-3). The deviation guard below only bounds one *step*; with
++        // this function callable by anyone at every ~5s ledger, a misbehaving or compromised
++        // feed could compound `max_deviation_bps` hundreds of times an hour and walk the stored
++        // price arbitrarily far. Require a minimum real-time gap since the last *accepted*
++        // update, measured on the ledger clock against the stored `Timestamp` -- never against
++        // the feed's own reported time, which the feed controls. Together with the per-asset
++        // deviation cap this bounds worst-case drift to (1 + max_deviation_bps/10_000) raised to
++        // (3600 / interval) per hour. Checked before `decrease`/`deviate` so a throttled call is a
++        // routine, non-significant rejection and cannot be used to spam the significant
++        // `last_rejection()` slot. The very first update is explicitly exempt (`current_ts == 0`
++        // means there is no prior accepted update to throttle against) -- explicit rather than
++        // relying on the ledger clock being large, which it is on a real network but not in tests.
++        let min_interval = Self::feed_min_interval_seconds(env.clone());
++        if min_interval > 0
++            && current_ts > 0
++            && env.ledger().timestamp().saturating_sub(current_ts) < min_interval
++        {
++            return Self::reject(
++                &env,
++                value,
++                data.timestamp,
++                symbol_short!("throttle"),
++                false,
++            );
++        }
+         if value < current_price {
+             return Self::reject(&env, value, data.timestamp, symbol_short!("decrease"), true);
+         } else if current_price > 0 {
+diff --git a/contracts/oracle_adapter/src/test.rs b/contracts/oracle_adapter/src/test.rs
+index 8fab0d5..b6fcec2 100644
+--- a/contracts/oracle_adapter/src/test.rs
++++ b/contracts/oracle_adapter/src/test.rs
+@@ -818,7 +818,7 @@ fn sync_from_feed_rejects_a_decrease() {
+     });
+     client.set_reference_value(&admin, &primary, &10_000_000_i128, &100_u64);
+     feed.set_price(&asset, &9_000_000_i128, &200_u64);
+-    env.ledger().with_mut(|li| li.timestamp = 300);
++    env.ledger().with_mut(|li| li.timestamp = 400); // >= 300s past the push: clears the throttle
+ 
+     assert!(!client.sync_from_feed());
+     assert_eq!(
+@@ -842,7 +842,7 @@ fn sync_from_feed_rejects_excess_deviation() {
+     client.set_reference_value(&admin, &primary, &10_000_000_i128, &100_u64);
+     // MAX_DEVIATION_BPS is 1_000 (10%); +50% is well over it.
+     feed.set_price(&asset, &15_000_000_i128, &200_u64);
+-    env.ledger().with_mut(|li| li.timestamp = 300);
++    env.ledger().with_mut(|li| li.timestamp = 400); // >= 300s past the push: clears the throttle
+ 
+     assert!(!client.sync_from_feed());
+     assert_eq!(
+@@ -868,7 +868,7 @@ fn a_routine_rejection_cannot_mask_a_prior_significant_one() {
+     client.set_reference_value(&admin, &primary, &10_000_000_i128, &100_u64);
+     // A genuine deviation attempt: +50%, well over the 10% bound.
+     feed.set_price(&asset, &15_000_000_i128, &200_u64);
+-    env.ledger().with_mut(|li| li.timestamp = 300);
++    env.ledger().with_mut(|li| li.timestamp = 400); // >= 300s past the push: clears the throttle
+     assert!(!client.sync_from_feed());
+     assert_eq!(
+         client.last_rejection().unwrap().reason,
+diff --git a/contracts/oracle_adapter/test_snapshots/test/a_routine_rejection_cannot_mask_a_prior_significant_one.1.json b/contracts/oracle_adapter/test_snapshots/test/a_routine_rejection_cannot_mask_a_prior_significant_one.1.json
+index 817a5b8..cb01b8c 100644
+--- a/contracts/oracle_adapter/test_snapshots/test/a_routine_rejection_cannot_mask_a_prior_significant_one.1.json
++++ b/contracts/oracle_adapter/test_snapshots/test/a_routine_rejection_cannot_mask_a_prior_significant_one.1.json
+@@ -94,9 +94,6 @@
+     ],
+     [],
+     [],
+-    [],
+-    [],
+-    [],
+     []
+   ],
+   "ledger": {
+@@ -179,42 +176,6 @@
+                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                       }
+                     },
+-                    {
+-                      "key": {
+-                        "vec": [
+-                          {
+-                            "symbol": "LastRejectReason"
+-                          }
+-                        ]
+-                      },
+-                      "val": {
+-                        "symbol": "deviate"
+-                      }
+-                    },
+-                    {
+-                      "key": {
+-                        "vec": [
+-                          {
+-                            "symbol": "LastRejectedTimestamp"
+-                          }
+-                        ]
+-                      },
+-                      "val": {
+-                        "u64": "200"
+-                      }
+-                    },
+-                    {
+-                      "key": {
+-                        "vec": [
+-                          {
+-                            "symbol": "LastRejectedValue"
+-                          }
+-                        ]
+-                      },
+-                      "val": {
+-                        "i128": "15000000"
+-                      }
+-                    },
+                     {
+                       "key": {
+                         "vec": [
+@@ -404,10 +365,10 @@
+                       "val": {
+                         "vec": [
+                           {
+-                            "i128": "9000000"
++                            "i128": "15000000"
+                           },
+                           {
+-                            "u64": "100"
++                            "u64": "200"
+                           }
+                         ]
+                       }
+diff --git a/contracts/oracle_adapter/test_snapshots/test/last_update_was_feed_toggles_correctly_between_push_and_pull.1.json b/contracts/oracle_adapter/test_snapshots/test/last_update_was_feed_toggles_correctly_between_push_and_pull.1.json
+index 80d28fb..87905b1 100644
+--- a/contracts/oracle_adapter/test_snapshots/test/last_update_was_feed_toggles_correctly_between_push_and_pull.1.json
++++ b/contracts/oracle_adapter/test_snapshots/test/last_update_was_feed_toggles_correctly_between_push_and_pull.1.json
+@@ -95,42 +95,12 @@
+     ],
+     [],
+     [],
+-    [],
+-    [],
+-    [
+-      [
+-        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+-        {
+-          "function": {
+-            "contract_fn": {
+-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+-              "function_name": "set_reference_value",
+-              "args": [
+-                {
+-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+-                },
+-                {
+-                  "bytes": "0100000000000000000000000000000000000000000000000000000000000000"
+-                },
+-                {
+-                  "i128": "10300000"
+-                },
+-                {
+-                  "u64": "400"
+-                }
+-              ]
+-            }
+-          },
+-          "sub_invocations": []
+-        }
+-      ]
+-    ],
+     []
+   ],
+   "ledger": {
+     "protocol_version": 26,
+     "sequence_number": 0,
+-    "timestamp": 500,
++    "timestamp": 300,
+     "network_id": "0000000000000000000000000000000000000000000000000000000000000000",
+     "base_reserve": 0,
+     "min_persistent_entry_ttl": 4096,
+@@ -252,7 +222,7 @@
+                         ]
+                       },
+                       "val": {
+-                        "i128": "10300000"
++                        "i128": "10000000"
+                       }
+                     },
+                     {
+@@ -276,7 +246,7 @@
+                         ]
+                       },
+                       "val": {
+-                        "u64": "400"
++                        "u64": "100"
+                       }
+                     }
+                   ]
+@@ -328,26 +298,6 @@
+         },
+         "live_until": 6311999
+       },
+-      {
+-        "entry": {
+-          "last_modified_ledger_seq": 0,
+-          "data": {
+-            "contract_data": {
+-              "ext": "v0",
+-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+-              "key": {
+-                "ledger_key_nonce": {
+-                  "nonce": "4837995959683129791"
+-                }
+-              },
+-              "durability": "temporary",
+-              "val": "void"
+-            }
+-          },
+-          "ext": "v0"
+-        },
+-        "live_until": 6311999
+-      },
+       {
+         "entry": {
+           "last_modified_ledger_seq": 0,
+@@ -449,5 +399,36 @@
+       }
+     ]
+   },
+-  "events": []
++  "events": [
++    {
++      "event": {
++        "ext": "v0",
++        "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
++        "type_": "contract",
++        "body": {
++          "v0": {
++            "topics": [
++              {
++                "symbol": "ref_rej"
++              }
++            ],
++            "data": {
++              "vec": [
++                {
++                  "i128": "10200000"
++                },
++                {
++                  "u64": "200"
++                },
++                {
++                  "symbol": "throttle"
++                }
++              ]
++            }
++          }
++        }
++      },
++      "failed_call": false
++    }
++  ]
+ }
+\ No newline at end of file
+diff --git a/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_accepts_a_price_already_at_protocol_scale.1.json b/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_accepts_a_price_already_at_protocol_scale.1.json
+index 598d336..d1e9354 100644
+--- a/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_accepts_a_price_already_at_protocol_scale.1.json
++++ b/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_accepts_a_price_already_at_protocol_scale.1.json
+@@ -65,9 +65,6 @@
+       ]
+     ],
+     [],
+-    [],
+-    [],
+-    [],
+     []
+   ],
+   "ledger": {
+@@ -138,18 +135,6 @@
+                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                       }
+                     },
+-                    {
+-                      "key": {
+-                        "vec": [
+-                          {
+-                            "symbol": "LastUpdateWasFeed"
+-                          }
+-                        ]
+-                      },
+-                      "val": {
+-                        "bool": true
+-                      }
+-                    },
+                     {
+                       "key": {
+                         "vec": [
+@@ -174,18 +159,6 @@
+                         "u64": "3600"
+                       }
+                     },
+-                    {
+-                      "key": {
+-                        "vec": [
+-                          {
+-                            "symbol": "Price"
+-                          }
+-                        ]
+-                      },
+-                      "val": {
+-                        "i128": "10500000"
+-                      }
+-                    },
+                     {
+                       "key": {
+                         "vec": [
+@@ -197,18 +170,6 @@
+                       "val": {
+                         "bytes": "0100000000000000000000000000000000000000000000000000000000000000"
+                       }
+-                    },
+-                    {
+-                      "key": {
+-                        "vec": [
+-                          {
+-                            "symbol": "Timestamp"
+-                          }
+-                        ]
+-                      },
+-                      "val": {
+-                        "u64": "100"
+-                      }
+                     }
+                   ]
+                 }
+@@ -340,5 +301,36 @@
+       }
+     ]
+   },
+-  "events": []
++  "events": [
++    {
++      "event": {
++        "ext": "v0",
++        "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
++        "type_": "contract",
++        "body": {
++          "v0": {
++            "topics": [
++              {
++                "symbol": "ref_rej"
++              }
++            ],
++            "data": {
++              "vec": [
++                {
++                  "i128": "10500000"
++                },
++                {
++                  "u64": "100"
++                },
++                {
++                  "symbol": "throttle"
++                }
++              ]
++            }
++          }
++        }
++      },
++      "failed_call": false
++    }
++  ]
+ }
+\ No newline at end of file
+diff --git a/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_does_not_touch_active_source.1.json b/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_does_not_touch_active_source.1.json
+index 17a794b..733b56c 100644
+--- a/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_does_not_touch_active_source.1.json
++++ b/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_does_not_touch_active_source.1.json
+@@ -94,8 +94,6 @@
+     ],
+     [],
+     [],
+-    [],
+-    [],
+     []
+   ],
+   "ledger": {
+@@ -187,7 +185,7 @@
+                         ]
+                       },
+                       "val": {
+-                        "bool": true
++                        "bool": false
+                       }
+                     },
+                     {
+@@ -223,7 +221,7 @@
+                         ]
+                       },
+                       "val": {
+-                        "i128": "10200000"
++                        "i128": "10000000"
+                       }
+                     },
+                     {
+@@ -247,7 +245,7 @@
+                         ]
+                       },
+                       "val": {
+-                        "u64": "200"
++                        "u64": "100"
+                       }
+                     }
+                   ]
+@@ -400,5 +398,36 @@
+       }
+     ]
+   },
+-  "events": []
++  "events": [
++    {
++      "event": {
++        "ext": "v0",
++        "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
++        "type_": "contract",
++        "body": {
++          "v0": {
++            "topics": [
++              {
++                "symbol": "ref_rej"
++              }
++            ],
++            "data": {
++              "vec": [
++                {
++                  "i128": "10200000"
++                },
++                {
++                  "u64": "200"
++                },
++                {
++                  "symbol": "throttle"
++                }
++              ]
++            }
++          }
++        }
++      },
++      "failed_call": false
++    }
++  ]
+ }
+\ No newline at end of file
+diff --git a/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_rejects_a_decrease.1.json b/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_rejects_a_decrease.1.json
+index 7049095..8d39374 100644
+--- a/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_rejects_a_decrease.1.json
++++ b/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_rejects_a_decrease.1.json
+@@ -94,8 +94,6 @@
+     ],
+     [],
+     [],
+-    [],
+-    [],
+     []
+   ],
+   "ledger": {
+@@ -178,42 +176,6 @@
+                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                       }
+                     },
+-                    {
+-                      "key": {
+-                        "vec": [
+-                          {
+-                            "symbol": "LastRejectReason"
+-                          }
+-                        ]
+-                      },
+-                      "val": {
+-                        "symbol": "decrease"
+-                      }
+-                    },
+-                    {
+-                      "key": {
+-                        "vec": [
+-                          {
+-                            "symbol": "LastRejectedTimestamp"
+-                          }
+-                        ]
+-                      },
+-                      "val": {
+-                        "u64": "200"
+-                      }
+-                    },
+-                    {
+-                      "key": {
+-                        "vec": [
+-                          {
+-                            "symbol": "LastRejectedValue"
+-                          }
+-                        ]
+-                      },
+-                      "val": {
+-                        "i128": "9000000"
+-                      }
+-                    },
+                     {
+                       "key": {
+                         "vec": [
+diff --git a/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_rejects_excess_deviation.1.json b/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_rejects_excess_deviation.1.json
+index b69e139..cb01b8c 100644
+--- a/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_rejects_excess_deviation.1.json
++++ b/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_rejects_excess_deviation.1.json
+@@ -176,42 +176,6 @@
+                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                       }
+                     },
+-                    {
+-                      "key": {
+-                        "vec": [
+-                          {
+-                            "symbol": "LastRejectReason"
+-                          }
+-                        ]
+-                      },
+-                      "val": {
+-                        "symbol": "deviate"
+-                      }
+-                    },
+-                    {
+-                      "key": {
+-                        "vec": [
+-                          {
+-                            "symbol": "LastRejectedTimestamp"
+-                          }
+-                        ]
+-                      },
+-                      "val": {
+-                        "u64": "200"
+-                      }
+-                    },
+-                    {
+-                      "key": {
+-                        "vec": [
+-                          {
+-                            "symbol": "LastRejectedValue"
+-                          }
+-                        ]
+-                      },
+-                      "val": {
+-                        "i128": "15000000"
+-                      }
+-                    },
+                     {
+                       "key": {
+                         "vec": [
+diff --git a/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_rescales_down_from_a_feed_with_more_decimals.1.json b/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_rescales_down_from_a_feed_with_more_decimals.1.json
+index 59955a0..387868e 100644
+--- a/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_rescales_down_from_a_feed_with_more_decimals.1.json
++++ b/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_rescales_down_from_a_feed_with_more_decimals.1.json
+@@ -65,7 +65,6 @@
+       ]
+     ],
+     [],
+-    [],
+     []
+   ],
+   "ledger": {
+@@ -136,18 +135,6 @@
+                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                       }
+                     },
+-                    {
+-                      "key": {
+-                        "vec": [
+-                          {
+-                            "symbol": "LastUpdateWasFeed"
+-                          }
+-                        ]
+-                      },
+-                      "val": {
+-                        "bool": true
+-                      }
+-                    },
+                     {
+                       "key": {
+                         "vec": [
+@@ -172,18 +159,6 @@
+                         "u64": "3600"
+                       }
+                     },
+-                    {
+-                      "key": {
+-                        "vec": [
+-                          {
+-                            "symbol": "Price"
+-                          }
+-                        ]
+-                      },
+-                      "val": {
+-                        "i128": "15000000"
+-                      }
+-                    },
+                     {
+                       "key": {
+                         "vec": [
+@@ -195,18 +170,6 @@
+                       "val": {
+                         "bytes": "0100000000000000000000000000000000000000000000000000000000000000"
+                       }
+-                    },
+-                    {
+-                      "key": {
+-                        "vec": [
+-                          {
+-                            "symbol": "Timestamp"
+-                          }
+-                        ]
+-                      },
+-                      "val": {
+-                        "u64": "100"
+-                      }
+                     }
+                   ]
+                 }
+@@ -338,5 +301,36 @@
+       }
+     ]
+   },
+-  "events": []
++  "events": [
++    {
++      "event": {
++        "ext": "v0",
++        "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
++        "type_": "contract",
++        "body": {
++          "v0": {
++            "topics": [
++              {
++                "symbol": "ref_rej"
++              }
++            ],
++            "data": {
++              "vec": [
++                {
++                  "i128": "15000000"
++                },
++                {
++                  "u64": "100"
++                },
++                {
++                  "symbol": "throttle"
++                }
++              ]
++            }
++          }
++        }
++      },
++      "failed_call": false
++    }
++  ]
+ }
+\ No newline at end of file
+diff --git a/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_rescales_up_from_a_feed_with_fewer_decimals.1.json b/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_rescales_up_from_a_feed_with_fewer_decimals.1.json
+index 6c5e194..daf5074 100644
+--- a/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_rescales_up_from_a_feed_with_fewer_decimals.1.json
++++ b/contracts/oracle_adapter/test_snapshots/test/sync_from_feed_rescales_up_from_a_feed_with_fewer_decimals.1.json
+@@ -65,7 +65,6 @@
+       ]
+     ],
+     [],
+-    [],
+     []
+   ],
+   "ledger": {
+@@ -136,18 +135,6 @@
+                         "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                       }
+                     },
+-                    {
+-                      "key": {
+-                        "vec": [
+-                          {
+-                            "symbol": "LastUpdateWasFeed"
+-                          }
+-                        ]
+-                      },
+-                      "val": {
+-                        "bool": true
+-                      }
+-                    },
+                     {
+                       "key": {
+                         "vec": [
+@@ -172,18 +159,6 @@
+                         "u64": "3600"
+                       }
+                     },
+-                    {
+-                      "key": {
+-                        "vec": [
+-                          {
+-                            "symbol": "Price"
+-                          }
+-                        ]
+-                      },
+-                      "val": {
+-                        "i128": "15000000"
+-                      }
+-                    },
+                     {
+                       "key": {
+                         "vec": [
+@@ -195,18 +170,6 @@
+                       "val": {
+                         "bytes": "0100000000000000000000000000000000000000000000000000000000000000"
+                       }
+-                    },
+-                    {
+-                      "key": {
+-                        "vec": [
+-                          {
+-                            "symbol": "Timestamp"
+-                          }
+-                        ]
+-                      },
+-                      "val": {
+-                        "u64": "100"
+-                      }
+                     }
+                   ]
+                 }
+@@ -338,5 +301,36 @@
+       }
+     ]
+   },
+-  "events": []
++  "events": [
++    {
++      "event": {
++        "ext": "v0",
++        "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
++        "type_": "contract",
++        "body": {
++          "v0": {
++            "topics": [
++              {
++                "symbol": "ref_rej"
++              }
++            ],
++            "data": {
++              "vec": [
++                {
++                  "i128": "15000000"
++                },
++                {
++                  "u64": "100"
++                },
++                {
++                  "symbol": "throttle"
++                }
++              ]
++            }
++          }
++        }
++      },
++      "failed_call": false
++    }
++  ]
+ }
+\ No newline at end of file

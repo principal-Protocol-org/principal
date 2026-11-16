@@ -410,6 +410,16 @@ impl SYWrapperContract {
         min_underlying_out: i128,
     ) -> i128 {
         from.require_auth();
+        // `baseline` is the caller's own claim about a balance `from` held in the past, not a
+        // value this contract can verify against history -- a negative baseline would otherwise
+        // inflate `shares` to more than `from` ever held, which `do_withdraw`'s own
+        // defense-in-depth balance check below would catch anyway, but rejecting it here keeps
+        // the error specific (`SlippageExceeded`-shaped confusion vs. a clear bad-input panic)
+        // and documents the real precondition: `baseline` is a snapshot, never negative. Found
+        // during a follow-up review after this file's first audit pass.
+        if baseline < 0 {
+            panic_with_error!(&env, Error::InsufficientShares);
+        }
         let shares = Self::get_balance(&env, &from) - baseline;
         // Tolerate a zero gain (no surplus to unwrap -- e.g. a flash-mint whose budget was spent
         // exactly, or zero) rather than reverting `ZeroAmount` the way `do_withdraw` would: found
@@ -447,6 +457,17 @@ impl SYWrapperContract {
         Self::assert_permitted(env, to);
         if shares <= 0 {
             panic_with_error!(env, Error::ZeroAmount);
+        }
+        // Defense-in-depth, independent of what each public entry point already checks: no
+        // withdrawal path may ever burn more shares than `from` actually holds. `withdraw`/
+        // `withdraw_crediting`/`withdraw_all` already guarantee this by construction, but
+        // `withdraw_gained` derives `shares` from a caller-supplied `baseline` it does not bound
+        // (see that function's own guard) -- found during a follow-up review after this file's
+        // first audit pass. Checking it once here, in the one function every withdrawal path
+        // funnels through, protects every current and future caller rather than relying on each
+        // call site getting its own guard right.
+        if shares > Self::get_balance(env, from) {
+            panic_with_error!(env, Error::InsufficientShares);
         }
 
         let underlying_out = Self::shares_to_underlying(env, shares);

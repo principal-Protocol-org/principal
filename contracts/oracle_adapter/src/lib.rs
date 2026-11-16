@@ -139,7 +139,15 @@ pub enum DataKey {
     FeedSource,
     FeedAsset,
     LastUpdateWasFeed,
+    FeedMinIntervalSeconds,
+    LastFeedAcceptLedgerTs,
 }
+
+/// Default minimum real-time gap between two *accepted* `sync_from_feed` updates, applied when
+/// `set_feed_min_interval` has never been called. Five minutes: comfortably slower than any
+/// SEP-40 feed's real heartbeat, so legitimate tracking is unaffected, while bounding how fast a
+/// permissionless caller can compound the per-call deviation cap (see `sync_from_feed`).
+pub const DEFAULT_FEED_MIN_INTERVAL_SECONDS: u64 = 300;
 
 /// SEP-40's own asset discriminant (ecosystem/sep-0040.md) -- a feed may quote several assets
 /// against one `base()`, so a pull must say which one.
@@ -169,7 +177,8 @@ pub trait Sep40Interface {
 
 /// The most recent `set_reference_value` call this contract refused, if any. `reason` is one of
 /// a small fixed set of short symbols (`decrease`, `stale_ts`, `deviate`, `fb_value`, and, from
-/// `sync_from_feed`, `oob` and `feed_err` -- the latter covering both a feed returning an error
+/// `sync_from_feed`, `oob`, `throttle` -- too soon after the last accepted feed update, see
+/// `set_feed_min_interval` -- and `feed_err`, the latter covering both a feed returning an error
 /// and a feed panicking internally, since `try_decimals`/`try_lastprice` surface both the same
 /// way) rather than a free-form string, so a dashboard can map it to display text without
 /// parsing.
@@ -198,6 +207,10 @@ impl OracleAdapterContract {
         if env.storage().instance().has(&DataKey::Admin) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
+        // Binds initialization to the nominated admin's own signature -- see Permissioning's
+        // identical fix for the full rationale. Found during a follow-up review after this
+        // contract's first audit pass.
+        admin.require_auth();
         Self::validate_safety_params(&env, max_stale_seconds, max_deviation_bps);
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
@@ -294,6 +307,31 @@ impl OracleAdapterContract {
         env.storage()
             .instance()
             .set(&DataKey::MaxDeviationBps, &max_deviation_bps);
+    }
+
+    /// Minimum real-time gap, in seconds, between two *accepted* `sync_from_feed` updates.
+    /// `0` disables the throttle entirely (intended for tests and tightly-controlled ops, not
+    /// for a live market). Admin-only. Does not apply to the admin-only push path
+    /// (`set_reference_value`): the throttle exists specifically because `sync_from_feed` is
+    /// callable by anyone, for free, at every ledger -- see that function's doc for the bound.
+    pub fn set_feed_min_interval(env: Env, caller: Address, seconds: u64) {
+        caller.require_auth();
+        let admin = Self::require_admin(&env);
+        if caller != admin {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::FeedMinIntervalSeconds, &seconds);
+    }
+
+    /// Effective throttle, i.e. the configured value or
+    /// `DEFAULT_FEED_MIN_INTERVAL_SECONDS` if `set_feed_min_interval` was never called.
+    pub fn feed_min_interval_seconds(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::FeedMinIntervalSeconds)
+            .unwrap_or(DEFAULT_FEED_MIN_INTERVAL_SECONDS)
     }
 
     /// Configure an optional sane absolute range checked against *every* accepted value,
@@ -540,6 +578,44 @@ impl OracleAdapterContract {
                 false,
             );
         }
+        // Rate limit (audit finding H-3). The deviation guard below only bounds one *step*; with
+        // this function callable by anyone at every ~5s ledger, a misbehaving or compromised
+        // feed could compound `max_deviation_bps` hundreds of times an hour and walk the stored
+        // price arbitrarily far. Require a minimum real-time gap since the last *accepted*
+        // update, measured on *this contract's own* ledger clock at the moment it accepted that
+        // prior update -- `LastFeedAcceptLedgerTs`, set below only on a genuine
+        // acceptance. The first implementation of this guard measured the gap against the
+        // stored `Timestamp` instead, which is the *feed's own reported* observation time, not
+        // when this contract accepted it: a compromised feed could present several
+        // monotonically-increasing but real-time-stale timestamps within one ledger, each still
+        // far enough behind the (unmoving, real) ledger clock to clear the check, and compound
+        // the deviation cap with no real time elapsed between calls at all -- caught during a
+        // follow-up review after this fix's own first pass and corrected here. Together with the
+        // per-asset deviation cap this bounds worst-case drift to (1 + max_deviation_bps/10_000)
+        // raised to (3600 / interval) per hour. Checked before `decrease`/`deviate` so a
+        // throttled call is a routine, non-significant rejection and cannot be used to spam the
+        // significant `last_rejection()` slot. The very first update is explicitly exempt
+        // (`last_accept_ts == 0` means there is no prior accepted update to throttle against) --
+        // explicit rather than relying on the ledger clock being large, which it is on a real
+        // network but not in tests.
+        let min_interval = Self::feed_min_interval_seconds(env.clone());
+        let last_accept_ts: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LastFeedAcceptLedgerTs)
+            .unwrap_or(0u64);
+        if min_interval > 0
+            && last_accept_ts > 0
+            && env.ledger().timestamp().saturating_sub(last_accept_ts) < min_interval
+        {
+            return Self::reject(
+                &env,
+                value,
+                data.timestamp,
+                symbol_short!("throttle"),
+                false,
+            );
+        }
         if value < current_price {
             return Self::reject(&env, value, data.timestamp, symbol_short!("decrease"), true);
         } else if current_price > 0 {
@@ -560,6 +636,9 @@ impl OracleAdapterContract {
         env.storage()
             .instance()
             .set(&DataKey::LastUpdateWasFeed, &true);
+        env.storage()
+            .instance()
+            .set(&DataKey::LastFeedAcceptLedgerTs, &env.ledger().timestamp());
         env.events()
             .publish((symbol_short!("ref_set"),), (value, data.timestamp));
         true

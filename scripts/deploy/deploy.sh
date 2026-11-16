@@ -341,9 +341,24 @@ if [ -n "${ORACLE_FEED_ADDRESS:-}" ]; then
   invoke "$ORACLE_ID" "$ADMIN_KEY" -- set_feed_source \
     --caller "$ADMIN_ADDR" --feed "$ORACLE_FEED_ADDRESS" --asset "$ASSET_JSON" >/dev/null
   manifest_log_tx "oracle_adapter:set_feed_source" "$LAST_TX"
+  # sync_from_feed's own rate limit (audit finding H-3) measures real time since the last
+  # *accepted* update -- on a fresh deployment that's the manual genesis push a few lines above,
+  # seconds ago, so this bootstrap call would otherwise be throttled. That throttle exists to
+  # stop a permissionless caller from compounding it repeatedly; it is not meant to block this
+  # one deliberate, admin-controlled upgrade from the manual push to the real feed, done once,
+  # immediately after deployment. Zero it only for this call, then lock it to the real configured
+  # value right after, so every future call -- including this script's own, on a later re-run --
+  # is fully throttled again.
+  ORACLE_FEED_MIN_INTERVAL_SECONDS="${ORACLE_FEED_MIN_INTERVAL_SECONDS:-300}"
+  invoke "$ORACLE_ID" "$ADMIN_KEY" -- set_feed_min_interval \
+    --caller "$ADMIN_ADDR" --seconds 0 >/dev/null
+  manifest_log_tx "oracle_adapter:set_feed_min_interval:bootstrap" "$LAST_TX"
   SYNC_RESULT="$(raw "$(invoke "$ORACLE_ID" "$ADMIN_KEY" -- sync_from_feed)")"
   manifest_log_tx "oracle_adapter:sync_from_feed" "$LAST_TX"
   [ "$SYNC_RESULT" != "true" ] && echo "WARNING: oracle_adapter.sync_from_feed returned '$SYNC_RESULT', not true -- the feed's current value was gracefully rejected (check last_rejection()); the manual push above is still in effect." >&2
+  invoke "$ORACLE_ID" "$ADMIN_KEY" -- set_feed_min_interval \
+    --caller "$ADMIN_ADDR" --seconds "$ORACLE_FEED_MIN_INTERVAL_SECONDS" >/dev/null
+  manifest_log_tx "oracle_adapter:set_feed_min_interval" "$LAST_TX"
 fi
 
 echo

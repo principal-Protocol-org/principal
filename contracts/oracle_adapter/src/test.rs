@@ -1,12 +1,41 @@
 use soroban_sdk::{
     contract, contractimpl, panic_with_error,
-    testutils::{Address as _, Ledger as _},
-    Address, BytesN, Env, Symbol,
+    testutils::{Address as _, Ledger as _, MockAuth, MockAuthInvoke},
+    Address, BytesN, Env, IntoVal, Symbol,
 };
 
 use super::{
     Error, OracleAdapterContract, OracleAdapterContractClient, Sep40Asset, Sep40PriceData,
+    DEFAULT_FEED_MIN_INTERVAL_SECONDS,
 };
+
+/// Regression for a follow-up finding (PRINCIPAL-004): `initialize` must bind to the nominated
+/// admin's own signature -- see `permissioning`'s identical regression test for the full
+/// rationale on why `setup()`'s blanket `mock_all_auths()` cannot catch a missing
+/// `require_auth()` call on its own.
+#[test]
+fn initialize_requires_the_admins_own_signature() {
+    let env = Env::default();
+    let contract_id = env.register_contract(None, OracleAdapterContract);
+    let client = OracleAdapterContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    assert!(client
+        .try_initialize(&admin, &MAX_STALE, &MAX_DEVIATION_BPS)
+        .is_err());
+
+    client
+        .mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "initialize",
+                args: (&admin, MAX_STALE, MAX_DEVIATION_BPS).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .initialize(&admin, &MAX_STALE, &MAX_DEVIATION_BPS);
+}
 
 /// Minimal SEP-40 feed, for `sync_from_feed` tests only: `set_price`/`clear_price` let a test
 /// drive exactly what `lastprice()` returns, including `None` (no data for that asset).
@@ -818,7 +847,7 @@ fn sync_from_feed_rejects_a_decrease() {
     });
     client.set_reference_value(&admin, &primary, &10_000_000_i128, &100_u64);
     feed.set_price(&asset, &9_000_000_i128, &200_u64);
-    env.ledger().with_mut(|li| li.timestamp = 300);
+    env.ledger().with_mut(|li| li.timestamp = 400); // >= 300s past the push: clears the throttle
 
     assert!(!client.sync_from_feed());
     assert_eq!(
@@ -842,7 +871,7 @@ fn sync_from_feed_rejects_excess_deviation() {
     client.set_reference_value(&admin, &primary, &10_000_000_i128, &100_u64);
     // MAX_DEVIATION_BPS is 1_000 (10%); +50% is well over it.
     feed.set_price(&asset, &15_000_000_i128, &200_u64);
-    env.ledger().with_mut(|li| li.timestamp = 300);
+    env.ledger().with_mut(|li| li.timestamp = 400); // >= 300s past the push: clears the throttle
 
     assert!(!client.sync_from_feed());
     assert_eq!(
@@ -868,7 +897,7 @@ fn a_routine_rejection_cannot_mask_a_prior_significant_one() {
     client.set_reference_value(&admin, &primary, &10_000_000_i128, &100_u64);
     // A genuine deviation attempt: +50%, well over the 10% bound.
     feed.set_price(&asset, &15_000_000_i128, &200_u64);
-    env.ledger().with_mut(|li| li.timestamp = 300);
+    env.ledger().with_mut(|li| li.timestamp = 400); // >= 300s past the push: clears the throttle
     assert!(!client.sync_from_feed());
     assert_eq!(
         client.last_rejection().unwrap().reason,
@@ -900,6 +929,102 @@ fn sync_from_feed_respects_value_bounds() {
         client.last_rejection().unwrap().reason,
         Symbol::new(&env, "oob")
     );
+}
+
+#[test]
+fn sync_from_feed_throttles_repeated_accepted_updates_closing_audit_finding_h3() {
+    // Regression for H-3: sync_from_feed is callable by anyone, for free, at every ledger, with
+    // only a per-call deviation cap -- before this fix, nothing stopped a misbehaving feed (or
+    // anyone relaying its ticks) from compounding that cap hundreds of times an hour. The first
+    // accepted update is never throttled; a second one offered too soon afterward is rejected
+    // gracefully as "throttle" even though it is itself within the per-call deviation bound; the
+    // same update finally succeeds once the configured interval has genuinely elapsed.
+    let (env, client, _admin, asset, feed_id) = setup_with_feed(7);
+    let feed = MockSep40FeedClient::new(&env, &feed_id);
+    assert_eq!(
+        client.feed_min_interval_seconds(),
+        DEFAULT_FEED_MIN_INTERVAL_SECONDS
+    );
+
+    feed.set_price(&asset, &10_000_000_i128, &100_u64);
+    env.ledger().with_mut(|li| li.timestamp = 200);
+    assert!(client.sync_from_feed()); // first-ever update: never throttled
+    assert_eq!(client.get_reference_value(), 10_000_000);
+
+    // A genuine, in-bound +5% move, offered only 100s later -- well inside the 300s default.
+    feed.set_price(&asset, &10_500_000_i128, &150_u64);
+    env.ledger().with_mut(|li| li.timestamp = 300);
+    assert!(!client.sync_from_feed());
+    // "throttle" is routine, not a policy violation on the submitted value itself -- it does not
+    // touch `last_rejection()` (see `reject`'s own doc), same convention as `stale_ts`/`no_data`.
+    assert!(client.last_rejection().is_none());
+    assert_eq!(client.get_reference_value(), 10_000_000); // unchanged
+
+    // The exact same update, offered once the interval has genuinely elapsed since the first
+    // update's *acceptance* (ledger timestamp 200) -- not since its feed-reported timestamp
+    // (100), which a compromised feed controls and must not be able to use as the throttle's
+    // clock (closes a follow-up review finding on this fix's own first pass).
+    env.ledger()
+        .with_mut(|li| li.timestamp = 200 + DEFAULT_FEED_MIN_INTERVAL_SECONDS + 1);
+    assert!(client.sync_from_feed());
+    assert_eq!(client.get_reference_value(), 10_500_000);
+}
+
+#[test]
+fn throttle_clock_is_ledger_acceptance_time_not_the_feeds_own_reported_timestamp() {
+    // Regression for a follow-up finding on H-3's own first pass: the throttle must measure real
+    // elapsed time since this contract *accepted* the prior update, on its own ledger clock --
+    // never against the feed's self-reported observation timestamp, which a compromised or
+    // malicious configured feed fully controls. The original implementation compared
+    // `ledger().timestamp()` against the stored feed timestamp instead of a dedicated
+    // acceptance-time field, so a feed presenting several monotonically increasing but
+    // real-time-stale timestamps (all comfortably behind the ledger clock) could pass the
+    // throttle repeatedly with zero real time elapsed between calls, defeating its entire point.
+    let (env, client, _admin, asset, feed_id) = setup_with_feed(7);
+    let feed = MockSep40FeedClient::new(&env, &feed_id);
+
+    // Ledger clock starts far ahead of the feed's own reported time -- as it would on a real
+    // network reading a feed with a slow or lagging observation timestamp.
+    env.ledger().with_mut(|li| li.timestamp = 100_000);
+    feed.set_price(&asset, &10_000_000_i128, &1_000_u64);
+    assert!(client.sync_from_feed()); // first-ever update: never throttled
+
+    // No real (ledger) time has passed at all. The feed now presents a new, in-bound,
+    // monotonically increasing observation timestamp -- still far behind the ledger clock, so it
+    // would have cleared the old, buggy "gap vs. feed timestamp" check (100_000 - 1_000 >> 300).
+    // It must still be throttled, because essentially no real time has elapsed since acceptance.
+    feed.set_price(&asset, &10_100_000_i128, &1_301_u64);
+    assert!(!client.sync_from_feed());
+    assert_eq!(client.get_reference_value(), 10_000_000); // unchanged
+
+    // Once real ledger time has genuinely advanced past the configured interval, the same update
+    // is accepted.
+    env.ledger()
+        .with_mut(|li| li.timestamp = 100_000 + DEFAULT_FEED_MIN_INTERVAL_SECONDS + 1);
+    assert!(client.sync_from_feed());
+    assert_eq!(client.get_reference_value(), 10_100_000);
+}
+
+#[test]
+fn set_feed_min_interval_is_admin_only_and_zero_disables_the_throttle() {
+    let (env, client, admin, asset, feed_id) = setup_with_feed(7);
+    let feed = MockSep40FeedClient::new(&env, &feed_id);
+    let stranger = Address::generate(&env);
+    assert_eq!(
+        client.try_set_feed_min_interval(&stranger, &60).err(),
+        err(Error::Unauthorized)
+    );
+
+    client.set_feed_min_interval(&admin, &0);
+    assert_eq!(client.feed_min_interval_seconds(), 0);
+
+    feed.set_price(&asset, &10_000_000_i128, &100_u64);
+    env.ledger().with_mut(|li| li.timestamp = 200);
+    assert!(client.sync_from_feed());
+    // With the throttle disabled, a second update one second later is accepted too.
+    feed.set_price(&asset, &10_100_000_i128, &201_u64);
+    env.ledger().with_mut(|li| li.timestamp = 201);
+    assert!(client.sync_from_feed());
 }
 
 #[test]
@@ -967,7 +1092,7 @@ fn sync_from_feed_does_not_touch_active_source() {
     assert_eq!(client.get_active_source(), Some(primary.clone()));
 
     feed.set_price(&asset, &10_200_000_i128, &200_u64);
-    env.ledger().with_mut(|li| li.timestamp = 300);
+    env.ledger().with_mut(|li| li.timestamp = 401); // >= 300s past the push: clears the throttle
     assert!(client.sync_from_feed());
     assert!(client.last_update_was_feed());
     // Still the push-path source, unchanged by the successful feed sync above.
@@ -989,7 +1114,7 @@ fn last_update_was_feed_toggles_correctly_between_push_and_pull() {
     assert!(!client.last_update_was_feed());
 
     feed.set_price(&asset, &10_200_000_i128, &200_u64);
-    env.ledger().with_mut(|li| li.timestamp = 300);
+    env.ledger().with_mut(|li| li.timestamp = 401); // >= 300s past the push: clears the throttle
     assert!(client.sync_from_feed());
     assert!(client.last_update_was_feed());
 

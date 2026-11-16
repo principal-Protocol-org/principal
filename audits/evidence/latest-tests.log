@@ -1,0 +1,437 @@
+   Compiling principal_oracle_adapter v0.1.0 (/home/mohamed/principal/audits/.workspace/contracts/oracle_adapter)
+   Compiling principal_integration_tests v0.1.0 (/home/mohamed/principal/audits/.workspace/contracts/integration_tests)
+   Compiling principal_manager v0.1.0 (/home/mohamed/principal/audits/.workspace/contracts/principal_manager)
+   Compiling principal_market_pool v0.1.0 (/home/mohamed/principal/audits/.workspace/contracts/market_pool)
+   Compiling principal_market_factory v0.1.0 (/home/mohamed/principal/audits/.workspace/contracts/market_factory)
+   Compiling principal_yt_token v0.1.0 (/home/mohamed/principal/audits/.workspace/contracts/yt_token)
+   Compiling principal_recovery_escrow v0.1.0 (/home/mohamed/principal/audits/.workspace/contracts/recovery_escrow)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3m 36s
+     Running unittests src/lib.rs (/home/mohamed/principal/target/debug/deps/principal_compliance-688f5a904178c48d)
+
+running 9 tests
+test test::a_contract_that_is_neither_a_sac_nor_a_sep57_token_is_never_authorized_and_never_an_authority ... ok
+test test::kind_defaults_to_sac_before_init ... ok
+test test::detects_sac_and_reads_authorization_live ... ok
+test test::detects_rwa_when_underlying_has_no_admin ... ok
+test test::rwa_authority_is_proved_by_the_operator_capability_probe ... ok
+test test::rwa_is_frozen_trap_is_treated_as_unauthorized_not_a_panic ... ok
+test test::rwa_without_a_verifier_is_unauthorized ... ok
+test test::sac_authority_is_the_live_admin ... ok
+test test::rwa_requires_identity_and_no_freeze ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running unittests src/lib.rs (/home/mohamed/principal/target/debug/deps/principal_integration_tests-06eb3067c021e7be)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/amm.rs (/home/mohamed/principal/target/debug/deps/amm-005356720d3b8457)
+
+running 31 tests
+test an_unseeded_pool_refuses_to_trade_and_quote ... ok
+test first_deposit_must_not_price_pt_above_par ... ok
+test creator_fee_share_follows_a_sac_admin_rotation ... ok
+test first_deposit_sets_the_opening_price_and_locks_minimum_liquidity ... ok
+test buying_pt_moves_the_price_up_and_pays_the_quoted_amount ... ok
+test flash_mint_buys_yt_by_minting_and_selling_the_pt_in_one_transaction ... ok
+test flash_mint_then_flash_redeem_round_trip_returns_the_capital_minus_impact ... ok
+test flash_mint_enforces_min_yt_out_and_the_deadline ... ok
+test flash_redeem_reverts_when_the_yt_cannot_cover_the_pt_it_consumes ... ok
+test flash_redeem_min_out_is_a_hard_floor_at_the_exact_payout ... ok
+test pool_token_balances_always_match_internal_reserves_plus_fees ... ok
+test pt_converges_to_par_at_maturity ... ok
+test flash_redeem_sells_yt_for_sy_by_recombining_with_pool_pt ... ok
+test quote_yt_for_sy_reverts_the_same_way_the_real_swap_does ... ok
+test quote_sy_for_yt_matches_the_real_flash_mint_outcome_exactly ... ok
+test quote_yt_for_sy_matches_the_real_flash_redeem_payout_exactly ... ok
+test selling_pt_moves_the_price_down_and_pays_the_quoted_amount ... ok
+test round_trip_never_profits_and_costs_only_price_impact_when_fee_free ... ok
+test slippage_guards_revert_and_exact_minimum_passes ... ok
+test swap_fee_follows_fee_tier_times_days_to_maturity_over_365 ... ok
+test swap_fees_split_twenty_eighty_and_are_claimable_by_treasury_and_creator ... ok
+test swap_input_validation_and_liquidity_bounds ... ok
+test invariant_never_decreases_across_a_pseudo_random_swap_sequence ... ok
+test time_decay_curve_pt_price_rises_monotonically_toward_par_with_no_trades ... ok
+test true_flash_mint_enforces_min_yt_out_and_max_net_cost ... ok
+test true_flash_mint_only_requires_the_net_cost_not_the_full_notional ... ok
+test true_flash_mint_preserves_the_reserves_plus_fees_invariant ... ok
+test true_flash_mint_rejects_zero_amount_and_a_non_compliant_caller ... ok
+test sweeping_the_oracle_rate_keeps_the_curve_in_value_units ... ok
+test true_flash_mint_matches_the_capital_up_front_route_economically ... ok
+test true_flash_mint_stays_correct_across_a_rate_sweep ... ok
+
+test result: ok. 31 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 19.58s
+
+     Running tests/audit_regressions.rs (/home/mohamed/principal/target/debug/deps/audit_regressions-f766e5c2e174c02a)
+
+running 11 tests
+test a_future_dated_oracle_update_is_rejected_and_the_market_keeps_working ... ok
+test a_plain_yt_transfer_does_not_hand_unsynced_yield_to_the_receiver ... ok
+test a_paused_pool_blocks_lp_exit_while_live_but_never_after_maturity ... ok
+test batch_bound_is_three_and_is_checked_before_any_balance_is_read ... ok
+test a_very_large_position_can_always_be_fully_redeemed ... ok
+test router_markets_can_be_unregistered_and_contracts_can_be_bumped ... ok
+test a_full_batch_at_the_bound_of_every_position_type_succeeds ... ok
+test flash_mint_reverts_when_the_pt_sells_for_less_than_the_callers_max_net_cost ... ok
+test flash_redeem_leaves_the_sellers_accrued_yield_with_the_seller ... ok
+test settlement_needs_no_oracle_once_the_yt_index_is_frozen ... ok
+test seizing_yt_moves_its_accrued_yield_to_the_escrow_and_records_it ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.15s
+
+     Running tests/budget.rs (/home/mohamed/principal/target/debug/deps/budget-8fe221766994245b)
+
+running 1 test
+test amm_operations_fit_the_per_transaction_cpu_budget ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/doc_examples.rs (/home/mohamed/principal/target/debug/deps/doc_examples-cfdd0bf80464f035)
+
+running 6 tests
+test example_3_claiming_yield_mid_life_with_the_yt_fee ... ok
+test example_4_the_amm_curve_and_its_time_decay ... ok
+test example_2_pt_plus_yt_always_add_back_to_the_deposit ... ok
+test example_5_the_swap_fee_schedule ... ok
+test example_1_tokenizing_100_sy_at_rate_1_05 ... ok
+test example_6_flash_mint_and_flash_redeem_yt ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.99s
+
+     Running tests/edge_cases.rs (/home/mohamed/principal/target/debug/deps/edge_cases-f4bebc6dae805e67)
+
+running 24 tests
+test a_gross_up_and_a_yt_fee_that_swallows_a_dust_claim_pay_nothing_and_never_underflow ... ok
+test deadline_boundary_now_equals_deadline_passes ... ok
+test allowance_expiry_boundary ... ok
+test deposit_cap_boundary_exactly_at_the_cap_passes_and_one_unit_over_reverts ... ok
+test every_admin_only_function_rejects_a_caller_that_is_not_the_admin ... ok
+test escrow_only_seize_functions_reject_everyone_else_including_the_admin ... ok
+test maturity_boundary_mint_allowed_until_the_last_second_redeem_from_the_first ... ok
+test only_the_manager_can_mint_and_burn_pt_and_yt_and_only_it_can_claim_yield ... ok
+test compliance_matrix_deauthorized_accounts_are_blocked_on_every_position_type ... ok
+test maximum_amounts_revert_cleanly_and_leave_state_untouched ... ok
+test oracle_fallback_keeps_the_market_working_when_the_primary_goes_stale_and_blocks_when_both_do ... ok
+test oracle_deviation_guard_rejects_an_excessive_jump_and_the_market_keeps_working ... ok
+test oracle_freshness_boundary_exactly_at_the_window_is_fresh_one_second_later_is_stale ... ok
+test per_asset_permissioning_lets_pt_and_yt_have_different_eligibility ... ok
+test sep8_style_asset_needs_persistent_authorization_at_rest ... ok
+test permissionless_functions_need_no_signature_and_cannot_redirect_value ... ok
+test remaining_slippage_and_dust_guards_on_the_pool_and_manager ... ok
+test slippage_boundary_min_equals_exact_output_passes_and_one_more_reverts ... ok
+test state_changing_calls_need_the_callers_own_signature ... ok
+test views_on_uninitialised_contracts_revert_instead_of_returning_garbage ... ok
+test sy_wrapper_pause_and_escrow_exemption_and_views ... ok
+test the_largest_sane_position_round_trips_without_overflow ... ok
+test zero_and_negative_amounts_are_rejected_by_every_entry_point ... ok
+test fee_free_round_trips_never_profit_at_any_pool_size ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.02s
+
+     Running tests/full_lifecycle.rs (/home/mohamed/principal/target/debug/deps/full_lifecycle-6068917581ac4131)
+
+running 13 tests
+test issuer_can_retune_fees_and_principal_can_retune_its_share ... ok
+test allowance_transfer_and_mid_life_claim_then_redeem ... ok
+test multi_user_late_mint_does_not_dilute_early_holder_yield ... ok
+test recombine_validates_amounts_maturity_and_balances ... ok
+test paused_market_blocks_mint_and_unpausing_restores_it ... ok
+test recombine_returns_sy_at_the_current_rate_and_keeps_accrued_yield_claimable ... ok
+test shares_at_helper_is_consistent ... ok
+test redeem_settles_implicitly_and_a_stale_oracle_after_settlement_does_not_block_holders ... ok
+test settle_all_requires_maturity_and_a_fresh_oracle ... ok
+test deposit_tokenize_trade_claim_settle_redeem_with_fees_stays_solvent ... ok
+test tokenization_fee_is_withheld_accrued_and_claimable_by_treasury_and_creator ... ok
+test yt_stops_accruing_at_maturity_and_pt_uses_the_frozen_rate ... ok
+test zero_fee_market_takes_nothing ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.64s
+
+     Running tests/liquidity_and_router.rs (/home/mohamed/principal/target/debug/deps/liquidity_and_router-36f5655a694b119c)
+
+running 32 tests
+test a_stale_oracle_blocks_swaps_but_never_blocks_an_lp_exit ... ok
+test add_liquidity_input_validation_and_min_lp_out ... ok
+test a_donation_to_the_pool_cannot_skew_lp_pricing ... ok
+test gained_sweeps_still_enforce_slippage_on_a_zero_gain ... ok
+test deauthorized_holders_cannot_trade_or_provide_liquidity ... ok
+test flash_mint_yt_from_underlying_tolerates_a_budget_with_no_surplus ... ok
+test permissioning_narrows_who_may_trade_and_provide_liquidity ... ok
+test paused_pool_blocks_trading_and_liquidity_but_not_the_escrow ... ok
+test pool_initialization_is_gated_validated_and_one_time ... ok
+test pool_recovery_escrow_is_set_once_and_lp_seizure_is_escrow_only ... ok
+test pool_views_expose_the_market_wiring ... ok
+test lp_transfers_check_both_sides_and_move_the_position ... ok
+test proportional_add_takes_the_current_ratio_and_leaves_the_surplus_with_the_caller ... ok
+test remove_liquidity_returns_the_pro_rata_share_and_respects_min_out ... ok
+test router_admin_and_initialization ... ok
+test redeem_and_claim_through_the_router_after_maturity ... ok
+test router_flash_mint_yt_from_underlying_reverts_cleanly_when_the_budget_is_below_the_net_cost ... ok
+test router_deadline_and_min_out_guards_apply_to_every_flow ... ok
+test router_acts_as_the_user_so_a_deauthorized_user_gains_nothing_by_using_it ... ok
+test router_flash_mint_yt_from_underlying_wraps_only_the_budget ... ok
+test router_registry_is_admin_only_validated_and_required_by_every_flow ... ok
+test router_resolves_market_info_directly_from_the_pool_so_it_cannot_disagree_with_it ... ok
+test router_flash_mint_yt_only_requires_the_net_cost ... ok
+test single_sided_deposit_leaves_no_residual_sy_stranded_in_the_pool ... ok
+test single_sided_deposit_on_an_empty_pool_is_refused ... ok
+test router_wrap_unwrap_recombine_and_liquidity_flows_work_end_to_end ... ok
+test router_underlying_denominated_flows_and_keep_yt_work_end_to_end ... ok
+test single_sided_deposit_succeeds_for_a_caller_with_no_pt_asset_grant ... ok
+test router_quotes_for_underlying_denominated_flows_match_the_real_outcome_exactly ... ok
+test single_sided_deposit_swaps_just_enough_and_mints_lp_for_nearly_all_of_the_sy ... ok
+test the_first_deposit_must_exceed_the_locked_minimum_liquidity ... ok
+test underlying_denominated_router_flows_tolerate_pre_existing_pt_and_sy ... ok
+
+test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.28s
+
+     Running tests/market_pool_guards.rs (/home/mohamed/principal/target/debug/deps/market_pool_guards-089f090ebe7386eb)
+
+running 2 tests
+test pool_state_rejects_a_fresh_but_non_positive_oracle_rate ... ok
+test pool_state_rejects_an_out_of_range_fee_rate_independent_of_market_config ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+     Running tests/recovery.rs (/home/mohamed/principal/target/debug/deps/recovery-25c5bd070d7e5584)
+
+running 19 tests
+test escrow_initialization_is_one_time_and_validates_the_wiring ... ok
+test escrow_initialization_rejects_a_genuinely_different_underlying ... ok
+test finalizing_a_pure_sy_record_reverts_because_there_is_nothing_left_to_settle ... ok
+test a_batch_is_all_or_nothing_and_size_bounded ... ok
+test pool_set_recovery_escrow_accepts_an_escrow_configured_for_the_same_underlying ... ok
+test a_record_can_only_be_finalized_once_and_only_by_the_issuer ... ok
+test pool_set_recovery_escrow_rejects_an_escrow_configured_for_a_different_underlying ... ok
+test only_the_live_issuer_authority_may_seize_and_the_target_must_be_deauthorized ... ok
+test sac_admin_rotation_moves_recovery_authority_immediately_with_nothing_to_update ... ok
+test recovered_underlying_can_be_clawed_back_natively_by_the_issuer ... ok
+test batch_seizure_recovers_several_accounts_in_one_transaction_with_a_record_each ... ok
+test seize_pt_and_yt_hold_until_maturity_then_finalize_onto_the_same_record ... ok
+test seize_lp_burns_it_unwraps_the_sy_leg_and_holds_the_pt_leg ... ok
+test seize_sy_unwraps_at_once_writes_a_record_and_touches_nobody_else ... ok
+test seizure_works_while_the_market_is_paused ... ok
+test several_recovery_events_for_one_account_each_get_their_own_record ... ok
+test seize_all_positions_sweeps_every_position_type_and_skips_empty_accounts ... ok
+test seize_then_redeem_through_the_manager_settles_consistently_with_a_direct_redeemer ... ok
+test transferring_lp_to_a_deauthorized_account_is_refused_and_seizure_stays_possible ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 7.38s
+
+     Running tests/risk_control.rs (/home/mohamed/principal/target/debug/deps/risk_control-66fb190c43958008)
+
+running 11 tests
+test an_over_limit_deposit_reverts_automatically_with_no_manual_call ... ok
+test a_wrap_and_mint_through_the_router_is_counted_at_both_entry_points ... ok
+test admin_rotation_across_every_contract_and_the_market_still_functions ... ok
+test an_over_limit_mint_reverts_automatically ... ok
+test deregistering_a_consumer_fails_closed ... ok
+test an_unregistered_caller_cannot_burn_the_budget_directly ... ok
+test global_pause_blocks_deposits_and_mints_until_the_admin_unpauses ... ok
+test pauser_lifecycle_and_admin_only_unpause ... ok
+test window_is_ledger_sequence_based_and_ignores_wall_clock ... ok
+test per_asset_limit_is_enforced_on_chain_alongside_the_protocol_limit ... ok
+test flash_mint_yt_is_gated_by_the_circuit_breaker_through_principal_managers_own_mint ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.94s
+
+     Running unittests src/lib.rs (/home/mohamed/principal/target/debug/deps/principal_manager-e9762cce96a46878)
+
+running 44 tests
+test test::admin_transfer ... ok
+test test::claiming_protocol_fees_with_nothing_accrued_panics - should panic ... ok
+test test::claim_yield_cannot_be_called_directly_on_yt_token - should panic ... ok
+test test::claim_protocol_and_creator_fees_pay_the_configured_payees_and_zero_the_bucket ... ok
+test test::claim_yield_reverts_while_paused ... ok
+test test::deauthorized_on_sac_cannot_mint - should panic ... ok
+test test::initialize_rejects_admin_not_matching_sac_admin ... ok
+test test::initialize_rejects_mismatched_maturity ... ok
+test test::double_initialize_panics - should panic ... ok
+test test::deauthorized_on_sac_cannot_redeem - should panic ... ok
+test test::initialize_rejects_mismatched_oracle ... ok
+test test::initialize_rejects_mismatched_underlying ... ok
+test test::initialize_rejects_mismatched_permissioning ... ok
+test test::full_deposit_mint_redeem_cycle_fully_releases_the_users_deposit_cap ... ok
+test test::mint_and_recombine_reject_a_fresh_but_non_positive_oracle_rate ... ok
+test test::mint_at_an_overflowing_notional_raises_the_contracts_own_typed_error_not_a_bare_panic ... ok
+test test::mint_after_maturity_panics - should panic ... ok
+test test::mint_zero_shares_panics - should panic ... ok
+test test::non_admin_cannot_transfer_admin - should panic ... ok
+test test::late_minter_does_not_receive_prior_yield ... ok
+test test::mint_before_maturity ... ok
+test test::oracle_stale_blocks_mint - should panic ... ok
+test test::recombine_after_maturity_panics - should panic ... ok
+test test::oracle_stale_blocks_redeem - should panic ... ok
+test test::recombine_at_an_overflowing_amount_raises_the_contracts_own_typed_error ... ok
+test test::recombine_after_a_rate_increase_returns_fewer_shares_matching_the_claimable_shortfall ... ok
+test test::recombine_more_than_the_callers_pt_balance_panics - should panic ... ok
+test test::redeem_before_maturity_panics - should panic ... ok
+test test::recombine_reverts_while_paused ... ok
+test test::recombine_round_trip_immediately_returns_the_full_shares ... ok
+test test::redeem_reverts_while_paused ... ok
+test test::redeem_yt_correct_formula_with_yield ... ok
+test test::redeem_pt_correct_formula ... ok
+test test::redeem_combined_pt_and_yt_in_one_call ... ok
+test test::redeem_yt_does_not_double_pay_yield_already_claimed_via_claim_yield ... ok
+test test::revoked_user_cannot_redeem - should panic ... ok
+test test::set_risk_control_accepts_a_real_risk_control_contract ... ok
+test test::redeem_zero_amounts_panics - should panic ... ok
+test test::redeem_yt_zero_when_no_yield ... ok
+test test::set_risk_control_rejects_an_address_that_is_not_a_risk_control_contract - should panic ... ok
+test test::unpermissioned_user_cannot_mint - should panic ... ok
+test test::total_supply_decrements_after_redeem ... ok
+test test::settle_all_is_idempotent_and_returns_the_same_frozen_rate_on_a_second_call ... ok
+test test::total_supply_tracks_mints ... ok
+
+test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.71s
+
+     Running unittests src/lib.rs (/home/mohamed/principal/target/debug/deps/principal_market_config-369793369f2d4690)
+
+running 13 tests
+test test::initialize_requires_the_real_issuer_and_runs_once ... ok
+test test::fee_split_is_twenty_eighty_and_conserves_the_total ... ok
+test test::initialize_stores_the_documented_example_parameters ... ok
+test test::initialize_enforces_fee_caps_and_share_bound ... ok
+test test::issuer_reconfigures_fees_within_caps ... ok
+test test::only_the_live_sac_admin_may_set_fees ... ok
+test test::protocol_share_is_protocol_admin_only_and_bounded ... ok
+test test::rwa::a_sac_market_has_no_settable_creator_payee ... ok
+test test::swap_fee_decays_linearly_to_zero_at_maturity ... ok
+test test::uninitialized_views_revert ... ok
+test test::swap_fee_is_capped ... ok
+test test::treasury_and_protocol_admin_rotation ... ok
+test test::rwa::rwa_market_config_uses_the_operator_as_authority_and_an_explicit_creator_payee ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running unittests src/lib.rs (/home/mohamed/principal/target/debug/deps/principal_market_factory-afb200c1769885d7)
+
+running 5 tests
+test test::predict_market_is_deterministic_and_salt_sensitive ... ok
+test test::create_engine_accepts_a_tokens_value_that_matches_the_salt ... ok
+test test::create_engine_rejects_a_tokens_value_that_does_not_match_the_salt ... ok
+test test::sub_salts_are_pairwise_distinct_for_one_base_salt ... ok
+test test::create_tokens_requires_issuer_auth - should panic ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running tests/create_market.rs (/home/mohamed/principal/target/debug/deps/create_market-27bc2f1987599aa4)
+
+running 4 tests
+test create_engine_rejects_an_issuer_different_from_the_one_who_ran_create_tokens ... ok
+test create_pool_and_escrow_reverts_when_create_engine_was_never_run_for_this_salt ... ok
+test create_tokens_twice_with_the_same_salt_reverts_on_the_second_call ... ok
+test factory_creates_a_fully_functional_second_market_atomically ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/home/mohamed/principal/target/debug/deps/principal_market_pool-e10d671288dd7b5b)
+
+running 15 tests
+test math::test::exp_and_ln_are_inverse ... ok
+test math::test::exp_bounds ... ok
+test math::test::exp_matches_std_across_the_range ... ok
+test math::test::exponent_shrinks_to_one_at_maturity ... ok
+test math::test::isqrt_is_floor_sqrt ... ok
+test math::test::ln_exact_at_one_and_domain_errors ... ok
+test math::test::ln_matches_std_across_the_range ... ok
+test math::test::solve_at_a_equal_one_is_constant_sum ... ok
+test math::test::pow_matches_std ... ok
+test math::test::solve_handles_the_smallest_possible_trade_size ... ok
+test math::test::solve_handles_extreme_reserve_skew ... ok
+test math::test::solve_overflows_gracefully_rather_than_panicking_near_i128_magnitude ... ok
+test math::test::solve_preserves_the_invariant ... ok
+test math::test::solve_rejects_bad_inputs_and_drained_reserves ... ok
+test math::test::solve_succeeds_at_exactly_the_minimum_exponent ... ok
+
+test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (/home/mohamed/principal/target/debug/deps/principal_oracle_adapter-b74d8c6324f1559c)
+
+running 60 tests
+test test::admin_transfer ... ok
+test test::assert_available_panics_oracle_unavailable_when_stale ... ok
+test test::assert_available_is_silent_when_fresh ... ok
+test test::a_routine_rejection_cannot_mask_a_prior_significant_one ... ok
+test test::deviation_guard_does_not_apply_to_the_first_ever_value ... ok
+test test::deviation_over_bound_is_rejected_gracefully ... ok
+test test::deviation_overflow_is_rejected_gracefully_not_panicked ... ok
+test test::double_initialize_panics ... ok
+test test::deviation_within_bound_is_accepted ... ok
+test test::fallback_cannot_move_the_value_even_within_the_deviation_bound ... ok
+test test::fallback_may_refresh_timestamp_only ... ok
+test test::initialize_and_set_price ... ok
+test test::initialize_rejects_zero_or_excessive_deviation ... ok
+test test::fallback_never_hides_a_stale_timestamp ... ok
+test test::future_timestamp_rejected_so_the_feed_cannot_be_bricked ... ok
+test test::initialize_rejects_zero_staleness ... ok
+test test::invalid_price_rejected ... ok
+test test::is_fresh_at_exact_boundary ... ok
+test test::is_fresh_false_before_any_price_set ... ok
+test test::is_available_follows_the_contract_s_own_configured_staleness ... ok
+test test::is_fresh_false_when_stale ... ok
+test test::last_rejection_is_none_before_any_rejection ... ok
+test test::is_fresh_within_staleness_window ... ok
+test test::is_fresh_false_when_stored_timestamp_is_ahead_of_ledger_clock ... ok
+test test::set_feed_source_requires_admin ... ok
+test test::set_sources_and_views ... ok
+test test::set_safety_params_by_non_admin_panics ... ok
+test test::last_update_was_feed_toggles_correctly_between_push_and_pull ... FAILED
+test test::set_safety_params_updates_thresholds_and_validates_them ... ok
+test test::set_sources_by_non_admin_panics ... ok
+test test::set_value_bounds_rejects_a_range_excluding_the_current_price ... ok
+test test::stale_timestamp_is_rejected_gracefully ... ok
+test test::set_value_bounds_by_non_admin_panics ... ok
+test test::set_value_bounds_validates_the_range ... ok
+test test::sync_from_feed_panics_when_no_feed_is_configured ... ok
+test test::sync_from_feed_accepts_a_price_already_at_protocol_scale ... ok
+test test::sync_from_feed_rejects_a_decrease ... ok
+test test::sync_from_feed_does_not_touch_active_source ... FAILED
+test test::sync_from_feed_rejects_a_future_timestamp_gracefully_unlike_set_reference_value ... ok
+test test::sync_from_feed_rejects_a_stale_or_repeated_timestamp ... ok
+test test::sync_from_feed_rejects_a_non_positive_price_gracefully ... ok
+test test::sync_from_feed_rejects_gracefully_when_the_feed_has_no_data ... ok
+test test::sync_from_feed_rejects_excess_deviation ... ok
+test test::sync_from_feed_rejects_gracefully_when_the_feed_panics_in_lastprice ... ok
+test test::sync_from_feed_rescales_up_from_a_feed_with_fewer_decimals ... ok
+test test::sync_from_feed_rejects_gracefully_when_the_feed_panics_in_decimals ... ok
+test test::sync_from_feed_rescales_down_from_a_feed_with_more_decimals ... ok
+test test::unauthorized_price_update_panics ... ok
+test test::unauthorized_transfer_admin_panics ... ok
+test test::unrecognized_source_panics_fallback_not_configured_when_no_fallback_exists ... ok
+test test::unrecognized_source_panics_invalid_source_when_nothing_is_configured_at_all ... ok
+test test::value_bounds_default_unset ... ok
+test test::unrecognized_source_panics_invalid_source_when_fallback_is_configured ... ok
+test test::sync_from_feed_respects_value_bounds ... ok
+test test::value_may_stay_equal ... ok
+test test::value_bounds_reject_an_out_of_range_subsequent_value ... ok
+test test::value_decrease_is_rejected_gracefully_not_panicked ... ok
+test test::value_bounds_reject_an_out_of_range_first_ever_value ... ok
+test test::views_before_any_price_revert ... ok
+test test::value_within_bounds_is_still_accepted ... ok
+
+failures:
+
+---- test::last_update_was_feed_toggles_correctly_between_push_and_pull stdout ----
+
+thread 'test::last_update_was_feed_toggles_correctly_between_push_and_pull' (1482) panicked at contracts/oracle_adapter/src/test.rs:993:5:
+assertion failed: client.sync_from_feed()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+Writing test snapshot file for test "test::last_update_was_feed_toggles_correctly_between_push_and_pull" to "test_snapshots/test/last_update_was_feed_toggles_correctly_between_push_and_pull.1.json".
+
+---- test::sync_from_feed_does_not_touch_active_source stdout ----
+
+thread 'test::sync_from_feed_does_not_touch_active_source' (1493) panicked at contracts/oracle_adapter/src/test.rs:971:5:
+assertion failed: client.sync_from_feed()
+Writing test snapshot file for test "test::sync_from_feed_does_not_touch_active_source" to "test_snapshots/test/sync_from_feed_does_not_touch_active_source.1.json".
+
+
+failures:
+    test::last_update_was_feed_toggles_correctly_between_push_and_pull
+    test::sync_from_feed_does_not_touch_active_source
+
+test result: FAILED. 58 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.42s
+
+error: test failed, to rerun pass `-p principal_oracle_adapter --lib`

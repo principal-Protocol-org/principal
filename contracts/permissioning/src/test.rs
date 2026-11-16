@@ -1,6 +1,37 @@
-use soroban_sdk::{testutils::Address as _, vec, Address, Env};
+use soroban_sdk::{
+    testutils::{Address as _, MockAuth, MockAuthInvoke},
+    vec, Address, Env, IntoVal,
+};
 
 use super::{PermissioningContract, PermissioningContractClient};
+
+/// Regression for a follow-up finding (PRINCIPAL-004): `initialize` must bind to the nominated
+/// admin's own signature, not just record whatever address is passed in. `setup()`'s blanket
+/// `env.mock_all_auths()` cannot distinguish "checks `require_auth()`" from "never calls it at
+/// all", so this test deliberately mocks no auths for the failing call and only the admin's own
+/// signature, for exactly one invocation, for the succeeding call -- mirroring
+/// `router`'s identical `initialize_requires_the_admins_own_signature` regression test.
+#[test]
+fn initialize_requires_the_admins_own_signature() {
+    let env = Env::default();
+    let id = env.register_contract(None, PermissioningContract);
+    let client = PermissioningContractClient::new(&env, &id);
+    let admin = Address::generate(&env);
+
+    assert!(client.try_initialize(&admin).is_err());
+
+    client
+        .mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &client.address,
+                fn_name: "initialize",
+                args: (&admin,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .initialize(&admin);
+}
 
 fn setup() -> (Env, PermissioningContractClient<'static>, Address) {
     let env = Env::default();

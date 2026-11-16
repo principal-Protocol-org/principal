@@ -42,6 +42,13 @@ impl PermissioningContract {
         if env.storage().instance().has(&DataKey::Admin) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
+        // Binds initialization to the nominated admin's own signature, matching every other
+        // `initialize` in this codebase (Router, SYWrapper, MarketConfig, PTToken, YTToken,
+        // PrincipalManager, MarketPool). Without it, this one-time call could be claimed by the
+        // first caller against a directly deployed, not-yet-initialized instance, nominating any
+        // admin address of their choosing. Found during a follow-up review after this contract's
+        // first audit pass.
+        admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
     }
 

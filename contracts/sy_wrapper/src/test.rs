@@ -215,6 +215,120 @@ fn withdraw_more_than_balance_panics() {
     f.client.withdraw(&user, &200_000_000_i128, &user, &0);
 }
 
+/// Regression: a negative `baseline` previously inflated `shares = balance_of(from) - baseline`
+/// to more than `from` ever held, with no check anywhere on the path rejecting it -- an eligible
+/// account with *zero* SY of its own could withdraw other depositors' pooled underlying (bounded
+/// only by the wrapper's real token balance), corrupt `TotalShares`/`TotalUnderlying`, and drive
+/// its own stored balance negative. Found during a follow-up review after this contract's own
+/// first audit pass; `withdraw_gained` must reject `baseline < 0` outright.
+#[test]
+#[should_panic]
+fn withdraw_gained_rejects_a_negative_baseline() {
+    let f = setup();
+    // A victim deposits first, so there is real pooled underlying for an exploit to target.
+    let victim = Address::generate(&f.env);
+    grant(&f, &victim);
+    mint(&f.env, &f.underlying, &f.admin, &victim, 1_000_000_000);
+    f.client.deposit(&victim, &1_000_000_000_i128, &0);
+
+    // The attacker holds no SY of their own at all.
+    let attacker = Address::generate(&f.env);
+    grant(&f, &attacker);
+    f.client
+        .withdraw_gained(&attacker, &-500_000_000_i128, &attacker, &0);
+}
+
+/// Same as above at `i128::MIN`, the most adversarial input: the fix must reject it outright
+/// before any arithmetic on it is attempted (computing `balance - baseline` at this value would
+/// itself overflow `i128`, since `i128` cannot represent `-i128::MIN`).
+#[test]
+#[should_panic]
+fn withdraw_gained_rejects_i128_min_baseline_without_overflow() {
+    let f = setup();
+    let victim = Address::generate(&f.env);
+    grant(&f, &victim);
+    mint(&f.env, &f.underlying, &f.admin, &victim, 1_000_000_000);
+    f.client.deposit(&victim, &1_000_000_000_i128, &0);
+
+    let attacker = Address::generate(&f.env);
+    grant(&f, &attacker);
+    f.client
+        .withdraw_gained(&attacker, &i128::MIN, &attacker, &0);
+}
+
+/// A negative-baseline call must leave every piece of state untouched, not merely panic --
+/// otherwise a partial-effects bug could still leak value even while the call itself reverts.
+/// Soroban rolls back all storage writes on a panicking invocation, but this pins that guarantee
+/// specifically for this path rather than relying on the runtime's rollback semantics alone.
+#[test]
+fn withdraw_gained_negative_baseline_leaves_state_unchanged() {
+    let f = setup();
+    let victim = Address::generate(&f.env);
+    grant(&f, &victim);
+    mint(&f.env, &f.underlying, &f.admin, &victim, 1_000_000_000);
+    f.client.deposit(&victim, &1_000_000_000_i128, &0);
+
+    let attacker = Address::generate(&f.env);
+    grant(&f, &attacker);
+    assert_eq!(
+        f.client
+            .try_withdraw_gained(&attacker, &-500_000_000_i128, &attacker, &0)
+            .err(),
+        Some(Ok(soroban_sdk::Error::from_contract_error(
+            Error::InsufficientShares as u32
+        )))
+    );
+
+    assert_eq!(f.client.total_shares(), 1_000_000_000);
+    assert_eq!(f.client.total_underlying(), 1_000_000_000);
+    assert_eq!(f.client.balance_of(&victim), 1_000_000_000);
+    assert_eq!(f.client.balance_of(&attacker), 0);
+    assert_eq!(
+        token::Client::new(&f.env, &f.underlying).balance(&attacker),
+        0
+    );
+}
+
+/// Defense-in-depth: even granting the attacker a small real SY balance of their own, a baseline
+/// negative enough to claim more than that balance must still be rejected -- the bug was not
+/// merely "zero-balance attacker", it was "`shares` can exceed balance at all".
+#[test]
+#[should_panic]
+fn withdraw_gained_rejects_negative_baseline_even_with_a_real_balance() {
+    let f = setup();
+    let victim = Address::generate(&f.env);
+    grant(&f, &victim);
+    mint(&f.env, &f.underlying, &f.admin, &victim, 1_000_000_000);
+    f.client.deposit(&victim, &1_000_000_000_i128, &0);
+
+    let attacker = Address::generate(&f.env);
+    grant(&f, &attacker);
+    mint(&f.env, &f.underlying, &f.admin, &attacker, 10_000_000);
+    f.client.deposit(&attacker, &10_000_000_i128, &0);
+
+    // shares = 10_000_000 - (-500_000_000) = 510_000_000, far above the attacker's real balance.
+    f.client
+        .withdraw_gained(&attacker, &-500_000_000_i128, &attacker, &0);
+}
+
+/// The legitimate case must keep working: a genuine positive gain above a real prior baseline is
+/// still withdrawable.
+#[test]
+fn withdraw_gained_accepts_a_legitimate_positive_gain() {
+    let f = setup();
+    let user = Address::generate(&f.env);
+    grant(&f, &user);
+    mint(&f.env, &f.underlying, &f.admin, &user, 1_000_000_000);
+    let baseline = f.client.deposit(&user, &1_000_000_000_i128, &0);
+
+    mint(&f.env, &f.underlying, &f.admin, &user, 200_000_000);
+    f.client.deposit(&user, &200_000_000_i128, &0);
+
+    let out = f.client.withdraw_gained(&user, &baseline, &user, &0);
+    assert_eq!(out, 200_000_000);
+    assert_eq!(f.client.balance_of(&user), baseline);
+}
+
 /// `withdraw_all` exists so a caller (in practice, a Router function chaining a curve-derived
 /// swap payout straight into a withdrawal) never needs to pass an exact `shares` amount that
 /// could drift between simulation and execution -- see its own doc comment for why. This pins
