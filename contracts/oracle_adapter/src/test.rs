@@ -1,5 +1,5 @@
 use soroban_sdk::{
-    contract, contractimpl,
+    contract, contractimpl, panic_with_error,
     testutils::{Address as _, Ledger as _},
     Address, BytesN, Env, Symbol,
 };
@@ -17,6 +17,17 @@ pub struct MockSep40Feed;
 enum MockKey {
     Decimals,
     Price(Sep40Asset),
+    /// Test-only: when set, `lastprice`/`decimals` panic instead of answering -- simulates a
+    /// feed contract with a bug of its own, to prove `sync_from_feed` catches it via `try_*`
+    /// rather than aborting.
+    ShouldPanic,
+}
+
+#[soroban_sdk::contracterror]
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[repr(u32)]
+enum MockFeedError {
+    Boom = 1,
 }
 
 #[contractimpl]
@@ -35,11 +46,32 @@ impl MockSep40Feed {
         env.storage().instance().remove(&MockKey::Price(asset));
     }
 
+    /// Test-only: make every subsequent `decimals()`/`lastprice()` call panic instead of
+    /// answering, until called again with `false`.
+    pub fn set_should_panic(env: Env, should_panic: bool) {
+        env.storage()
+            .instance()
+            .set(&MockKey::ShouldPanic, &should_panic);
+    }
+
+    fn panics_now(env: &Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&MockKey::ShouldPanic)
+            .unwrap_or(false)
+    }
+
     pub fn decimals(env: Env) -> u32 {
+        if Self::panics_now(&env) {
+            panic_with_error!(&env, MockFeedError::Boom);
+        }
         env.storage().instance().get(&MockKey::Decimals).unwrap()
     }
 
     pub fn lastprice(env: Env, asset: Sep40Asset) -> Option<Sep40PriceData> {
+        if Self::panics_now(&env) {
+            panic_with_error!(&env, MockFeedError::Boom);
+        }
         env.storage()
             .instance()
             .get::<_, (i128, u64)>(&MockKey::Price(asset))
@@ -885,6 +917,61 @@ fn set_feed_source_requires_admin() {
     let asset = feed_asset(&env);
     let r = client.try_set_feed_source(&not_admin, &feed_id, &asset);
     assert_eq!(r.err(), err(Error::Unauthorized));
+}
+
+#[test]
+fn sync_from_feed_rejects_gracefully_when_the_feed_panics_in_lastprice() {
+    // The fix this pins: a panicking feed must not abort `sync_from_feed` itself (it must not
+    // propagate and revert the whole call) -- it is caught via `try_lastprice` and turned into a
+    // graceful `feed_err` rejection, same as any other feed misbehavior.
+    let (env, client, _admin, asset, feed_id) = setup_with_feed(7);
+    let feed = MockSep40FeedClient::new(&env, &feed_id);
+    feed.set_price(&asset, &10_500_000_i128, &100_u64);
+    feed.set_should_panic(&true);
+    env.ledger().with_mut(|li| li.timestamp = 200);
+
+    let accepted = client.sync_from_feed(); // must not panic
+    assert!(!accepted);
+    // `feed_err` carries no actual submitted value (the call to the feed itself failed), so like
+    // `no_data`/`bad_price` it is routine feed noise, not a policy violation against a real
+    // value -- it does not touch the single-slot `last_rejection()` (see `reject`'s own doc).
+    assert!(client.last_rejection().is_none());
+}
+
+#[test]
+fn sync_from_feed_rejects_gracefully_when_the_feed_panics_in_decimals() {
+    let (env, client, _admin, asset, feed_id) = setup_with_feed(7);
+    let feed = MockSep40FeedClient::new(&env, &feed_id);
+    feed.set_price(&asset, &10_500_000_i128, &100_u64);
+    env.ledger().with_mut(|li| li.timestamp = 200);
+    // Only `decimals()` panics; `lastprice()` would answer fine, but `decimals()` is read first.
+    feed.set_should_panic(&true);
+
+    let accepted = client.sync_from_feed(); // must not panic
+    assert!(!accepted);
+    assert!(client.last_rejection().is_none());
+}
+
+#[test]
+fn sync_from_feed_does_not_touch_active_source() {
+    // Pins the documented gap: `get_active_source()` is only meaningful for the push path.
+    // `sync_from_feed` updates `Price`/`Timestamp` but never `ActiveSource`.
+    let (env, client, admin, asset, feed_id) = setup_with_feed(7);
+    let feed = MockSep40FeedClient::new(&env, &feed_id);
+    let primary = BytesN::from_array(&env, &{
+        let mut b = [0u8; 32];
+        b[0] = 1;
+        b
+    });
+    client.set_reference_value(&admin, &primary, &10_000_000_i128, &100_u64);
+    assert_eq!(client.get_active_source(), Some(primary.clone()));
+
+    feed.set_price(&asset, &10_200_000_i128, &200_u64);
+    env.ledger().with_mut(|li| li.timestamp = 300);
+    assert!(client.sync_from_feed());
+    assert!(client.last_update_was_feed());
+    // Still the push-path source, unchanged by the successful feed sync above.
+    assert_eq!(client.get_active_source(), Some(primary));
 }
 
 #[test]

@@ -24,6 +24,10 @@ enum Key {
     Balance(Address),
     Frozen(Address),
     Verified(Address),
+    /// Test-only: when set, `is_frozen` panics instead of answering -- simulates a trap inside
+    /// the RWA token, to prove `is_authorized` catches it via `try_is_frozen` rather than
+    /// aborting.
+    ShouldPanicOnIsFrozen,
 }
 
 #[contract]
@@ -108,10 +112,26 @@ impl MockRwa {
     }
 
     pub fn is_frozen(env: Env, user_address: Address) -> bool {
+        if env
+            .storage()
+            .instance()
+            .get(&Key::ShouldPanicOnIsFrozen)
+            .unwrap_or(false)
+        {
+            panic_with_error!(&env, MockError::Frozen);
+        }
         env.storage()
             .persistent()
             .get(&Key::Frozen(user_address))
             .unwrap_or(false)
+    }
+
+    /// Test-only: make every subsequent `is_frozen` call panic instead of answering, until
+    /// called again with `false`.
+    pub fn set_should_panic_on_is_frozen(env: Env, should_panic: bool) {
+        env.storage()
+            .instance()
+            .set(&Key::ShouldPanicOnIsFrozen, &should_panic);
     }
 
     pub fn identity_verifier(env: Env) -> Address {

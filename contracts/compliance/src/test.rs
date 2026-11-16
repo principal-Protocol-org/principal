@@ -134,6 +134,23 @@ fn rwa_requires_identity_and_no_freeze() {
 }
 
 #[test]
+fn rwa_is_frozen_trap_is_treated_as_unauthorized_not_a_panic() {
+    // The fix this pins: `is_authorized`'s RWA branch now wraps `is_frozen` in `try_is_frozen`,
+    // matching the defensive pattern already used elsewhere in this module (e.g.
+    // `is_authority`'s own RWA branch for the identical call). A trap inside the token must read
+    // as "not authorized", not abort the calling contract.
+    let r = rwa_setup();
+    let user = Address::generate(&r.env);
+    r.host.init(&r.token.address);
+    r.verifier.register(&user);
+    assert!(r.host.authorized(&r.token.address, &user));
+
+    r.token.set_should_panic_on_is_frozen(&true);
+    let authorized = r.host.authorized(&r.token.address, &user); // must not panic
+    assert!(!authorized);
+}
+
+#[test]
 fn rwa_without_a_verifier_is_unauthorized() {
     let r = rwa_setup();
     let user = Address::generate(&r.env);

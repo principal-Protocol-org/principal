@@ -40,6 +40,18 @@
 //! `seize_batch` handles up to `MAX_BATCH` accounts in one transaction, authenticating the issuer
 //! once and still verifying each target's deauthorization individually. `seize_all_positions`
 //! builds the batch from each account's full balances. Both write one record per account.
+//!
+//! # At most one unfinalized YT record at a time
+//! `YTToken`'s yield accounting is pooled by this escrow's own holding *address*, not per
+//! `RecoveryRecord` (see `yt_yield_at_seize`/`underlying_from_yt` below). If this escrow held
+//! seized YT from two different accounts at once, both unfinalized, further yield accrual on the
+//! combined balance would be credited to one shared pending-claim bucket, so whichever record is
+//! `finalize_record`'d first would drain yield that was actually accruing against the *other*
+//! record too -- correct in total, wrong per record, which matters for a compliance/legal
+//! recovery trail. Rather than a full per-record proportional-yield redesign, `seize_yt` (and any
+//! batch request with a non-zero `yt_amount`) refuses outright while an unfinalized YT record
+//! already exists, reverting `UnfinalizedYtRecordExists`; finalize it first. SY, PT and LP
+//! seizures are unaffected -- only YT has pooled yield accounting.
 
 #![no_std]
 #![allow(deprecated)] // `env.events().publish` / `register_contract`: migration to `#[contractevent]` is tracked separately; event topics are kept stable for indexers.
@@ -129,6 +141,16 @@ pub enum Error {
     AlreadyFinalized = 9,
     NothingToSeize = 10,
     NothingToFinalize = 11,
+    /// A new YT seizure was attempted while this escrow instance already holds an unfinalized YT
+    /// record. YT's yield accounting is pooled by this escrow's own holding *address*, not per
+    /// `RecoveryRecord` -- so two unfinalized YT records held at once would both accrue against
+    /// the same shared pending-claim bucket, and whichever is `finalize_record`'d first would
+    /// drain yield that was actually accruing against the *other* record too. Total funds stay
+    /// conserved, but per-record attribution would be wrong, which matters for a compliance/legal
+    /// recovery trail. Rather than a full per-record proportional-yield redesign, this prevents
+    /// the unsafe state from ever occurring: finalize the outstanding YT record first. Found
+    /// during audit review. PT-only seizures are unaffected -- PT has no pooled yield accounting.
+    UnfinalizedYtRecordExists = 12,
 }
 
 #[contracttype]
@@ -142,6 +164,9 @@ pub enum DataKey {
     RecordCount,
     Record(u64),
     AccountRecords(Address),
+    /// Present (holding that record's id) whenever this escrow currently holds an unfinalized YT
+    /// record; absent otherwise. At most one at a time -- see `Error::UnfinalizedYtRecordExists`.
+    UnfinalizedYtRecord,
 }
 
 /// One account's positions to seize in a batch. A zero field means "leave that position alone".
@@ -176,9 +201,12 @@ pub struct RecoveryRecord {
     pub yt_amount: i128,
     /// Yield the seized YT had already accrued (underlying units, before the YT fee). It moves to
     /// the escrow's pending claim with the position, so it is recovered rather than stranded on a
-    /// deauthorized account. Exact per record. Yield accruing *after* the seizure is pooled across
-    /// every YT position the escrow holds, and is paid out by whichever `finalize_record` runs
-    /// first -- see `underlying_from_yt`.
+    /// deauthorized account. Exact per record. Yield accruing *after* the seizure is pooled by
+    /// the escrow's own holding address, not per record -- which is exactly why only one
+    /// unfinalized YT record is ever allowed to exist at a time (see the module doc's "At most
+    /// one unfinalized YT record at a time" section): with that guard in place, this record is
+    /// always the sole contributor to the pool between seizure and `finalize_record`, so
+    /// `underlying_from_yt` is exact too, not just `yt_yield_at_seize`.
     pub yt_yield_at_seize: i128,
     /// Set by `finalize_record`: the underlying the held PT and YT settled into.
     pub finalized: bool,
@@ -334,6 +362,13 @@ impl RecoveryEscrowContract {
         rec.finalized = true;
         rec.underlying_from_pt = result.underlying_from_pt;
         rec.underlying_from_yt = result.underlying_from_yt;
+        if rec.yt_amount > 0 {
+            // This was the one outstanding YT record (see `seize_one`'s guard) -- clear it so a
+            // new YT seizure can proceed.
+            env.storage()
+                .instance()
+                .remove(&DataKey::UnfinalizedYtRecord);
+        }
         Self::store_record(&env, &rec);
         env.events().publish(
             (symbol_short!("finalize"),),
@@ -422,6 +457,12 @@ impl RecoveryEscrowContract {
         if sy_shares == 0 && pt_amount == 0 && yt_amount == 0 && lp_amount == 0 {
             panic_with_error!(env, Error::ZeroAmount);
         }
+        // Guard against pooling two accounts' YT yield together (see the module doc's "At most
+        // one unfinalized YT record at a time" section): PT/SY/LP have no pooled yield
+        // accounting, so only a non-zero `yt_amount` is checked.
+        if yt_amount > 0 && env.storage().instance().has(&DataKey::UnfinalizedYtRecord) {
+            panic_with_error!(env, Error::UnfinalizedYtRecordExists);
+        }
 
         let this = env.current_contract_address();
         let sy = SYWrapperClient::new(env, &Self::get(env, &DataKey::SYWrapper));
@@ -482,6 +523,11 @@ impl RecoveryEscrowContract {
         env.storage()
             .instance()
             .set(&DataKey::RecordCount, &(id + 1));
+        if rec.yt_amount > 0 {
+            env.storage()
+                .instance()
+                .set(&DataKey::UnfinalizedYtRecord, &id);
+        }
         Self::store_record(env, &rec);
         let key = DataKey::AccountRecords(account.clone());
         let mut list: Vec<u64> = env
@@ -540,3 +586,6 @@ impl RecoveryEscrowContract {
         }
     }
 }
+
+#[cfg(test)]
+mod test;

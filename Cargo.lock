@@ -1112,6 +1112,7 @@ version = "0.1.0"
 dependencies = [
  "principal_integration_tests",
  "principal_manager",
+ "principal_market_config",
  "principal_market_pool",
  "principal_pt_token",
  "principal_sy_wrapper",
@@ -1163,6 +1164,14 @@ name = "principal_recovery_escrow"
 version = "0.1.0"
 dependencies = [
  "principal_compliance",
+ "principal_manager",
+ "principal_market_config",
+ "principal_market_pool",
+ "principal_oracle_adapter",
+ "principal_permissioning",
+ "principal_pt_token",
+ "principal_sy_wrapper",
+ "principal_yt_token",
  "soroban-sdk",
 ]
 

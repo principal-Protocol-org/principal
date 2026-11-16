@@ -99,6 +99,43 @@ fn grant(f: &Fixture, user: &Address) {
     token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(user, &true);
 }
 
+/// A minimal RecoveryEscrow-*shaped* contract exposing only `underlying_address()` -- enough to
+/// exercise `set_recovery_escrow`'s self-referential cross-check without standing up a full
+/// RecoveryEscrow (which itself requires SY/PT/PrincipalManager/MarketPool all deployed and
+/// wired together). Used in place of a bare `Address::generate` wherever a test needs a
+/// plausible escrow address that the new cross-check will actually call into.
+mod mock_escrow {
+    use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
+
+    #[contracttype]
+    enum DataKey {
+        Underlying,
+    }
+
+    #[contract]
+    pub struct MockEscrow;
+
+    #[contractimpl]
+    impl MockEscrow {
+        pub fn init(env: Env, underlying: Address) {
+            env.storage()
+                .instance()
+                .set(&DataKey::Underlying, &underlying);
+        }
+
+        pub fn underlying_address(env: Env) -> Address {
+            env.storage().instance().get(&DataKey::Underlying).unwrap()
+        }
+    }
+}
+
+/// Deploy a `mock_escrow` reporting `underlying` as its own underlying address.
+fn deploy_escrow_mock(env: &Env, underlying: &Address) -> Address {
+    let id = env.register_contract(None, mock_escrow::MockEscrow);
+    mock_escrow::MockEscrowClient::new(env, &id).init(underlying);
+    id
+}
+
 #[test]
 #[should_panic]
 fn initialize_rejects_admin_not_matching_sac_admin() {
@@ -463,7 +500,7 @@ fn seize_moves_balance_and_settles_both_sides() {
     let f = setup();
     let minter = Address::generate(&f.env);
     f.client.set_minter(&f.admin, &minter);
-    let escrow = Address::generate(&f.env);
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
     f.client.set_recovery_escrow(&f.admin, &escrow);
 
     let bad_actor = Address::generate(&f.env);
@@ -524,7 +561,7 @@ fn seize_requires_configured_escrow_caller() {
     let f = setup();
     let minter = Address::generate(&f.env);
     f.client.set_minter(&f.admin, &minter);
-    let escrow = Address::generate(&f.env);
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
     let impostor = Address::generate(&f.env);
     f.client.set_recovery_escrow(&f.admin, &escrow);
 
@@ -580,9 +617,31 @@ fn set_minter_twice_panics() {
 #[should_panic]
 fn set_recovery_escrow_twice_panics() {
     let f = setup();
-    let escrow = Address::generate(&f.env);
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
     f.client.set_recovery_escrow(&f.admin, &escrow);
     f.client.set_recovery_escrow(&f.admin, &escrow);
+}
+
+#[test]
+#[should_panic]
+fn set_recovery_escrow_rejects_an_escrow_configured_for_a_different_underlying() {
+    // Found during audit review: this wiring is one-shot and irreversible, so an admin mistake
+    // (a stale escrow address copied from a different market) previously had no cross-check at
+    // all. This mock reports a *different* underlying than this token's own -- mirroring
+    // `RecoveryEscrow::initialize`'s own cross-check of each position's `underlying_address()`,
+    // the token must now reject it.
+    let f = setup();
+    let other_underlying = Address::generate(&f.env);
+    let wrong_escrow = deploy_escrow_mock(&f.env, &other_underlying);
+    f.client.set_recovery_escrow(&f.admin, &wrong_escrow);
+}
+
+#[test]
+fn set_recovery_escrow_accepts_an_escrow_configured_for_this_same_underlying() {
+    let f = setup();
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
+    f.client.set_recovery_escrow(&f.admin, &escrow);
+    assert_eq!(f.client.recovery_escrow(), escrow);
 }
 
 #[test]
@@ -691,7 +750,7 @@ fn views_and_getters() {
     let f = setup();
     let minter = Address::generate(&f.env);
     f.client.set_minter(&f.admin, &minter);
-    let escrow = Address::generate(&f.env);
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
     f.client.set_recovery_escrow(&f.admin, &escrow);
 
     assert_eq!(f.client.decimals(), 7);
@@ -779,7 +838,7 @@ fn seize_rejects_zero_amount() {
     let f = setup();
     let minter = Address::generate(&f.env);
     f.client.set_minter(&f.admin, &minter);
-    let escrow = Address::generate(&f.env);
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
     f.client.set_recovery_escrow(&f.admin, &escrow);
     let bad_actor = Address::generate(&f.env);
     grant(&f, &bad_actor);
@@ -793,7 +852,7 @@ fn seize_cannot_exceed_target_balance() {
     let f = setup();
     let minter = Address::generate(&f.env);
     f.client.set_minter(&f.admin, &minter);
-    let escrow = Address::generate(&f.env);
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
     f.client.set_recovery_escrow(&f.admin, &escrow);
     let bad_actor = Address::generate(&f.env);
     grant(&f, &bad_actor);
@@ -905,6 +964,66 @@ fn pt_plus_yt_claims_never_exceed_the_deposited_shares_at_any_mint_rate() {
     }
 }
 
+#[test]
+fn pt_plus_yt_claims_never_exceed_the_net_shares_after_a_tokenization_fee() {
+    // The test above always uses the full `shares` as the tokenized notional (an implicit
+    // zero-fee assumption) -- found during a test-coverage review. `PrincipalManager.mint`
+    // actually withholds a tokenization fee first (`fee_shares = ceil(shares * fee_bps /
+    // BPS)`), and PT/YT are only ever minted against the *net* shares that remain, so the real
+    // conserved quantity is `net_shares`, not `shares`. This mirrors that formula directly
+    // (YTToken itself has no fee concept of its own -- fees live in PrincipalManager/
+    // MarketConfig) to confirm the conservation property still holds once a fee is withheld
+    // before minting, across the same mint-rate/step-count matrix as above plus a swept
+    // fee-bps axis.
+    const BPS: i128 = 10_000;
+    for &(r0, steps, fee_bps) in &[
+        (10_000_000_i128, 1_i128, 0_i128),
+        (10_000_000, 1, 5),
+        (10_500_000, 1, 5),
+        (10_500_000, 7, 50),
+        (12_000_000, 30, 100),
+        (12_000_000, 30, 500),
+    ] {
+        let f = setup();
+        let minter = Address::generate(&f.env);
+        f.client.set_minter(&f.admin, &minter);
+        f.env.ledger().with_mut(|li| li.timestamp = T0 + 1);
+        f.oracle
+            .set_reference_value(&f.oracle_admin, &f.oracle_source, &r0, &(T0 + 1));
+        let user = Address::generate(&f.env);
+        grant(&f, &user);
+        let shares = 100 * SCALE;
+        // Same ceil-rounded withholding `PrincipalManager.mint` applies before sizing notional.
+        let fee_shares = (shares * fee_bps + BPS - 1) / BPS;
+        let net_shares = shares - fee_shares;
+        let notional = net_shares * r0 / SCALE;
+        f.client.update_yield_index();
+        f.client.mint(&user, &notional);
+
+        let r_final = r0 * 13 / 10;
+        for i in 1..=steps {
+            let r = r0 + (r_final - r0) * i / steps;
+            let ts = T0 + 1 + i as u64 * 10;
+            f.env.ledger().with_mut(|li| li.timestamp = ts);
+            f.oracle
+                .set_reference_value(&f.oracle_admin, &f.oracle_source, &r, &ts);
+            f.client.update_yield_index();
+        }
+        let yield_underlying = f.client.claim_yield(&minter, &user);
+        let pt_underlying = notional * SCALE / r_final;
+        let total = pt_underlying + yield_underlying;
+        assert!(
+            total <= net_shares,
+            "r0={r0} steps={steps} fee_bps={fee_bps}: claims {total} exceed net_shares {net_shares}"
+        );
+        assert!(
+            net_shares - total < 4_000,
+            "r0={r0} steps={steps} fee_bps={fee_bps}: too much dust {}",
+            net_shares - total
+        );
+    }
+}
+
 // ======================================================================== checked-arithmetic gap
 // `settle`'s `pending = bal * (last - index - 1) / INDEX_SCALE` used raw `i128` operators with
 // no typed overflow error anywhere in this contract -- found during an audit review. On a
@@ -934,5 +1053,148 @@ fn settle_at_an_overflowing_pending_yield_raises_the_contracts_own_typed_error()
     assert_eq!(
         f.client.try_claim_yield(&minter, &user).err(),
         expect_err(Error::ArithmeticOverflow)
+    );
+}
+
+#[test]
+fn mint_balance_overflow_raises_the_contracts_own_typed_error() {
+    let f = setup();
+    let minter = Address::generate(&f.env);
+    f.client.set_minter(&f.admin, &minter);
+    let user = Address::generate(&f.env);
+    grant(&f, &user);
+
+    // First mint takes the balance (and total supply) to i128::MAX -- itself not an overflow,
+    // since it starts from zero.
+    f.client.mint(&user, &i128::MAX);
+    assert_eq!(f.client.balance(&user), i128::MAX);
+
+    // A second, minimal mint now overflows `bal.checked_add(amount)` before total supply is
+    // ever touched.
+    assert_eq!(
+        f.client.try_mint(&user, &1).err(),
+        expect_err(Error::ArithmeticOverflow)
+    );
+}
+
+// ======================================================================== oracle positivity gap
+// `is_available()` only attests freshness, not positivity -- found during an audit review: a
+// fresh timestamp says nothing about the value's sign. These use a minimal mock oracle (the real
+// `OracleAdapter` itself refuses to ever store a non-positive value, so it cannot exercise this
+// path) to confirm a non-positive reading is rejected with this contract's own clear error
+// instead of being divided/multiplied into the yield index silently or by divide-by-zero.
+
+mod mock_oracle {
+    use soroban_sdk::{contract, contractimpl, contracttype, Env};
+
+    #[contracttype]
+    enum DataKey {
+        Rate,
+        Available,
+    }
+
+    /// A settable oracle double, for exercising a non-positive-but-fresh reading -- a state the
+    /// real `OracleAdapter` can never reach, since it rejects non-positive values at submission.
+    #[contract]
+    pub struct MockOracle;
+
+    #[contractimpl]
+    impl MockOracle {
+        pub fn init(env: Env, rate: i128, available: bool) {
+            env.storage().instance().set(&DataKey::Rate, &rate);
+            env.storage()
+                .instance()
+                .set(&DataKey::Available, &available);
+        }
+
+        pub fn set_rate(env: Env, rate: i128) {
+            env.storage().instance().set(&DataKey::Rate, &rate);
+        }
+
+        pub fn get_reference_value(env: Env) -> i128 {
+            env.storage().instance().get(&DataKey::Rate).unwrap()
+        }
+
+        pub fn is_available(env: Env) -> bool {
+            env.storage().instance().get(&DataKey::Available).unwrap()
+        }
+    }
+}
+
+#[test]
+fn initialize_rejects_a_fresh_but_non_positive_genesis_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|li| li.timestamp = T0);
+
+    let perm_id = env.register_contract(None, PermissioningContract);
+    let perm_admin = Address::generate(&env);
+    PermissioningContractClient::new(&env, &perm_id).initialize(&perm_admin);
+
+    let mock_oracle_id = env.register_contract(None, mock_oracle::MockOracle);
+    mock_oracle::MockOracleClient::new(&env, &mock_oracle_id).init(&0_i128, &true);
+
+    let admin = Address::generate(&env);
+    let underlying_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    underlying_sac.issuer().set_flag(IssuerFlags::RevocableFlag);
+    let underlying = underlying_sac.address();
+
+    let yt_id = env.register_contract(None, YTTokenContract);
+    let client = YTTokenContractClient::new(&env, &yt_id);
+    assert_eq!(
+        client
+            .try_initialize(
+                &admin,
+                &perm_id,
+                &underlying,
+                &mock_oracle_id,
+                &u64::MAX,
+                &String::from_str(&env, "Yield Token USDY"),
+                &String::from_str(&env, "YT-USDY"),
+                &7,
+            )
+            .err(),
+        expect_err(Error::OracleStale)
+    );
+}
+
+#[test]
+fn update_yield_index_rejects_a_fresh_but_non_positive_live_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|li| li.timestamp = T0);
+
+    let perm_id = env.register_contract(None, PermissioningContract);
+    let perm_admin = Address::generate(&env);
+    PermissioningContractClient::new(&env, &perm_id).initialize(&perm_admin);
+
+    let mock_oracle_id = env.register_contract(None, mock_oracle::MockOracle);
+    let mock_oracle = mock_oracle::MockOracleClient::new(&env, &mock_oracle_id);
+    mock_oracle.init(&SCALE, &true);
+
+    let admin = Address::generate(&env);
+    let underlying_sac = env.register_stellar_asset_contract_v2(admin.clone());
+    underlying_sac.issuer().set_flag(IssuerFlags::RevocableFlag);
+    let underlying = underlying_sac.address();
+
+    let yt_id = env.register_contract(None, YTTokenContract);
+    let client = YTTokenContractClient::new(&env, &yt_id);
+    client.initialize(
+        &admin,
+        &perm_id,
+        &underlying,
+        &mock_oracle_id,
+        &u64::MAX,
+        &String::from_str(&env, "Yield Token USDY"),
+        &String::from_str(&env, "YT-USDY"),
+        &7,
+    );
+
+    // The live rate goes non-positive while the mock still reports itself available -- a fresh
+    // timestamp alone says nothing about the value's sign.
+    mock_oracle.set_rate(&-1);
+    assert_eq!(
+        client.try_update_yield_index().err(),
+        expect_err(Error::OracleStale)
     );
 }

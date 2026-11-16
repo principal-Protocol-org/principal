@@ -7,6 +7,7 @@ use principal_market_config::{MarketConfigContract, MarketConfigContractClient};
 use principal_oracle_adapter::{OracleAdapterContract, OracleAdapterContractClient};
 use principal_permissioning::{PermissioningContract, PermissioningContractClient};
 use principal_pt_token::{PTTokenContract, PTTokenContractClient};
+use principal_risk_control::{RiskControlContract, RiskControlContractClient};
 use principal_sy_wrapper::{SYWrapperContract, SYWrapperContractClient};
 use principal_yt_token::{YTTokenContract, YTTokenContractClient};
 
@@ -1103,5 +1104,321 @@ fn recombine_at_an_overflowing_amount_raises_the_contracts_own_typed_error() {
     assert_eq!(
         f.client.try_recombine(&user, &huge_amount).err(),
         expect_err(Error::ArithmeticOverflow)
+    );
+}
+
+// ======================================================================== set_risk_control
+// Found during audit review: `set_risk_control` wired in the admin-supplied address with no
+// cross-check at all, unlike `initialize`'s own `assert_topology_matches`. It now calls back
+// into the given address's `is_consumer` -- the one read-only view every real RiskControl
+// exposes -- so a non-RiskControl address fails this call instead of being silently wired in.
+
+#[test]
+fn set_risk_control_accepts_a_real_risk_control_contract() {
+    let f = setup(u64::MAX);
+    let rc_id = f.env.register_contract(None, RiskControlContract);
+    let rc = RiskControlContractClient::new(&f.env, &rc_id);
+    rc.initialize(&f.pm_admin, &0_i128);
+
+    f.client.set_risk_control(&f.pm_admin, &rc.address);
+    assert_eq!(f.client.risk_control(), Some(rc.address));
+}
+
+#[test]
+#[should_panic]
+fn set_risk_control_rejects_an_address_that_is_not_a_risk_control_contract() {
+    let f = setup(u64::MAX);
+    // `f.perm.address` is a real deployed contract, but not RiskControl-shaped: it has no
+    // `is_consumer` entry point, so the cross-check call traps instead of silently wiring in a
+    // copy-pasted address of the wrong contract type -- e.g. a stale address from a different
+    // market or a different contract entirely.
+    f.client.set_risk_control(&f.pm_admin, &f.perm.address);
+}
+
+// ======================================================================== combined redemption
+// No existing test called `redeem` with both `pt_amount > 0` and `yt_amount > 0` in the same
+// call -- found during a test-coverage review. This confirms the combined branch settles both
+// legs correctly in one call, matching the independent per-leg formulas each already covered
+// separately.
+
+#[test]
+fn redeem_combined_pt_and_yt_in_one_call() {
+    let maturity = T0 + 500;
+    let f = setup(maturity);
+    let user = Address::generate(&f.env);
+    grant_user(&f, &user);
+    let shares = deposit_sy(&f, &user, 100_i128 * SCALE);
+
+    let result = f.client.mint(&user, &shares);
+    let pt = result.pt_minted;
+    let yt = result.yt_minted;
+
+    // Advance to maturity; oracle -> 1.03, so the YT leg has real yield to pay out too.
+    f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
+    let final_rate: i128 = 10_300_000;
+    f.oracle.set_reference_value(
+        &f.oracle_admin,
+        &f.oracle_source,
+        &final_rate,
+        &(maturity + 1),
+    );
+
+    let r = f.client.redeem(&user, &pt, &yt);
+    let expected_pt = pt * SCALE / final_rate;
+    let expected_yt = yt * (final_rate - SCALE) / final_rate;
+    assert_eq!(r.underlying_from_pt, expected_pt);
+    assert_eq!(r.underlying_from_yt, expected_yt);
+    // Both legs actually burned down to zero in the one call.
+    assert_eq!(f.client.total_pt(), 0);
+    assert_eq!(f.client.total_yt(), 0);
+    // Both payouts actually landed in the same real transfer-receiving balance.
+    assert_eq!(
+        token::Client::new(&f.env, &f.underlying).balance(&user),
+        expected_pt + expected_yt
+    );
+}
+
+// ======================================================================== paused guards
+// No existing test exercised `redeem`, `claim_yield` or `recombine` while `set_paused(true)` is
+// active -- found during a test-coverage review. `mint` already has no paused test either, but
+// is out of scope here; these three are the ones the audit flagged.
+
+#[test]
+fn redeem_reverts_while_paused() {
+    let maturity = T0 + 500;
+    let f = setup(maturity);
+    let user = Address::generate(&f.env);
+    grant_user(&f, &user);
+    let shares = deposit_sy(&f, &user, 10_i128 * SCALE);
+    f.client.mint(&user, &shares);
+
+    f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
+    f.client.set_paused(&f.pm_admin, &true);
+    assert_eq!(
+        f.client
+            .try_redeem(&user, &(10_i128 * SCALE), &0_i128)
+            .err(),
+        expect_err(Error::Paused)
+    );
+}
+
+#[test]
+fn claim_yield_reverts_while_paused() {
+    let f = setup(u64::MAX);
+    let user = Address::generate(&f.env);
+    grant_user(&f, &user);
+    let shares = deposit_sy(&f, &user, 10_i128 * SCALE);
+    f.client.mint(&user, &shares);
+
+    f.client.set_paused(&f.pm_admin, &true);
+    assert_eq!(
+        f.client.try_claim_yield(&user).err(),
+        expect_err(Error::Paused)
+    );
+}
+
+#[test]
+fn recombine_reverts_while_paused() {
+    let f = setup(u64::MAX);
+    let user = Address::generate(&f.env);
+    grant_user(&f, &user);
+    let shares = deposit_sy(&f, &user, 10_i128 * SCALE);
+    f.client.mint(&user, &shares);
+
+    f.client.set_paused(&f.pm_admin, &true);
+    assert_eq!(
+        f.client.try_recombine(&user, &(5_i128 * SCALE)).err(),
+        expect_err(Error::Paused)
+    );
+}
+
+// ======================================================================== oracle positivity gap
+// `assert_oracle_fresh` only attests freshness, not positivity -- found during an audit review:
+// a fresh timestamp says nothing about the value's sign. This uses a minimal mock oracle (the
+// real `OracleAdapter` itself refuses to ever store a non-positive value, so it cannot exercise
+// this path) to confirm a non-positive reading is rejected with this contract's own clear error
+// instead of being divided/multiplied into `mint`'s/`recombine`'s notional math silently.
+
+mod mock_oracle {
+    use soroban_sdk::{contract, contractimpl, contracttype, Env};
+
+    #[contracttype]
+    enum DataKey {
+        Rate,
+        Available,
+    }
+
+    /// A settable oracle double, for exercising a non-positive-but-fresh reading -- a state the
+    /// real `OracleAdapter` can never reach, since it rejects non-positive values at submission.
+    #[contract]
+    pub struct MockOracle;
+
+    #[contractimpl]
+    impl MockOracle {
+        pub fn init(env: Env, rate: i128, available: bool) {
+            env.storage().instance().set(&DataKey::Rate, &rate);
+            env.storage()
+                .instance()
+                .set(&DataKey::Available, &available);
+        }
+
+        pub fn set_rate(env: Env, rate: i128) {
+            env.storage().instance().set(&DataKey::Rate, &rate);
+        }
+
+        pub fn get_reference_value(env: Env) -> i128 {
+            env.storage().instance().get(&DataKey::Rate).unwrap()
+        }
+
+        pub fn is_available(env: Env) -> bool {
+            env.storage().instance().get(&DataKey::Available).unwrap()
+        }
+    }
+}
+
+#[test]
+fn mint_and_recombine_reject_a_fresh_but_non_positive_oracle_rate() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|li| li.timestamp = T0);
+
+    let perm_id = env.register_contract(None, PermissioningContract);
+    let perm = PermissioningContractClient::new(&env, &perm_id);
+    let perm_admin = Address::generate(&env);
+    perm.initialize(&perm_admin);
+
+    let mock_oracle_id = env.register_contract(None, mock_oracle::MockOracle);
+    let mock_oracle = mock_oracle::MockOracleClient::new(&env, &mock_oracle_id);
+    mock_oracle.init(&SCALE, &true);
+
+    let pm_admin = Address::generate(&env);
+    let underlying_sac = env.register_stellar_asset_contract_v2(pm_admin.clone());
+    underlying_sac.issuer().set_flag(IssuerFlags::RevocableFlag);
+    let underlying = underlying_sac.address();
+
+    let sy_id = env.register_contract(None, SYWrapperContract);
+    let sy = SYWrapperContractClient::new(&env, &sy_id);
+    sy.initialize(&pm_admin, &underlying, &perm_id);
+
+    let pt_id = env.register_contract(None, PTTokenContract);
+    let pt = PTTokenContractClient::new(&env, &pt_id);
+    pt.initialize(
+        &pm_admin,
+        &perm_id,
+        &underlying,
+        &u64::MAX,
+        &String::from_str(&env, "Principal Token USDY"),
+        &String::from_str(&env, "PT-USDY"),
+        &7,
+    );
+
+    let yt_id = env.register_contract(None, YTTokenContract);
+    let yt = YTTokenContractClient::new(&env, &yt_id);
+    yt.initialize(
+        &pm_admin,
+        &perm_id,
+        &underlying,
+        &mock_oracle_id,
+        &u64::MAX,
+        &String::from_str(&env, "Yield Token USDY"),
+        &String::from_str(&env, "YT-USDY"),
+        &7,
+    );
+
+    let protocol_admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+    let config_id = env.register(MarketConfigContract, ());
+    let config = MarketConfigContractClient::new(&env, &config_id);
+    config.initialize(
+        &pm_admin,
+        &underlying,
+        &u64::MAX,
+        &protocol_admin,
+        &treasury,
+        &0,
+        &0,
+        &10,
+        &2_000,
+    );
+
+    let pm_id = env.register_contract(None, PrincipalManagerContract);
+    let client = PrincipalManagerContractClient::new(&env, &pm_id);
+    client.initialize(
+        &pm_admin,
+        &sy_id,
+        &pt_id,
+        &yt_id,
+        &mock_oracle_id,
+        &perm_id,
+        &underlying,
+        &u64::MAX,
+        &config_id,
+    );
+
+    pt.set_minter(&pm_admin, &pm_id);
+    yt.set_minter(&pm_admin, &pm_id);
+    perm.grant_account(&perm_admin, &pm_id);
+    token::StellarAssetClient::new(&env, &underlying).set_authorized(&pm_id, &true);
+
+    let user = Address::generate(&env);
+    perm.grant_account(&perm_admin, &user);
+    perm.grant_asset(&perm_admin, &user, &pt_id);
+    perm.grant_asset(&perm_admin, &user, &yt_id);
+    token::StellarAssetClient::new(&env, &underlying).set_authorized(&user, &true);
+    token::StellarAssetClient::new(&env, &underlying).mint(&user, &(100_i128 * SCALE));
+    let shares = sy.deposit(&user, &(100_i128 * SCALE), &0);
+
+    // Oracle goes non-positive while still reporting fresh -- `mint` must reject it instead of
+    // dividing/multiplying it in blindly.
+    mock_oracle.set_rate(&0_i128);
+    assert_eq!(
+        client.try_mint(&user, &shares).err(),
+        expect_err(Error::OracleStale)
+    );
+
+    // Same guard protects `recombine`: mint normally first (rate restored), then flip it again.
+    mock_oracle.set_rate(&SCALE);
+    client.mint(&user, &shares);
+    mock_oracle.set_rate(&-1_i128);
+    assert_eq!(
+        client.try_recombine(&user, &(50_i128 * SCALE)).err(),
+        expect_err(Error::OracleStale)
+    );
+}
+
+// ======================================================================== deposit-cap release
+// Found during audit review: `mint` moves a user's SY into this contract's own custody with a
+// plain `SYWrapper.transfer` (which never touches the per-address deposit cap), and `redeem`/
+// `claim_yield` used to unwind it with a plain `SYWrapper.withdraw`, which credits the cap
+// release to `from` -- this contract's own address, never charged -- instead of the real
+// depositor. A user doing the core normal usage pattern (deposit -> split -> redeem) would stay
+// capped out forever even after fully exiting. Fixed by routing through
+// `SYWrapper.withdraw_crediting` instead; this confirms the fix end to end.
+
+#[test]
+fn full_deposit_mint_redeem_cycle_fully_releases_the_users_deposit_cap() {
+    let maturity = T0 + 500;
+    let f = setup(maturity);
+    f.sy.set_deposit_cap(&f.pm_admin, &(100_i128 * SCALE));
+
+    let user = Address::generate(&f.env);
+    grant_user(&f, &user);
+    let shares = deposit_sy(&f, &user, 100_i128 * SCALE);
+    assert_eq!(f.sy.net_deposited(&user), 100_i128 * SCALE);
+
+    // Capped out: a further deposit is refused while the split position is still open.
+    assert!(f.sy.try_deposit(&user, &1_i128, &0).is_err());
+
+    let result = f.client.mint(&user, &shares);
+    f.env.ledger().with_mut(|li| li.timestamp = maturity + 1);
+    f.oracle
+        .set_reference_value(&f.oracle_admin, &f.oracle_source, &SCALE, &(maturity + 1));
+    f.client.redeem(&user, &result.pt_minted, &result.yt_minted);
+
+    // Fully exited -- the cap must be released, not stuck at the original deposit.
+    assert_eq!(f.sy.net_deposited(&user), 0);
+    assert_eq!(
+        f.sy.deposit(&user, &(100_i128 * SCALE), &0),
+        100_i128 * SCALE
     );
 }

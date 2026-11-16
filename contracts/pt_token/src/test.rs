@@ -5,7 +5,12 @@ use soroban_sdk::{
 
 use principal_permissioning::{PermissioningContract, PermissioningContractClient};
 
-use super::{PTTokenContract, PTTokenContractClient};
+use super::{Error, PTTokenContract, PTTokenContractClient};
+
+/// The value `try_*` returns for a contract-defined error `e`.
+fn expect_err(e: Error) -> Option<Result<soroban_sdk::Error, soroban_sdk::InvokeError>> {
+    Some(Ok(soroban_sdk::Error::from_contract_error(e as u32)))
+}
 
 struct Fixture {
     env: Env,
@@ -60,6 +65,43 @@ fn grant(f: &Fixture, user: &Address) {
     f.perm.grant_account(&f.perm_admin, user);
     f.perm.grant_asset(&f.perm_admin, user, &f.pt_id);
     token::StellarAssetClient::new(&f.env, &f.underlying).set_authorized(user, &true);
+}
+
+/// A minimal RecoveryEscrow-*shaped* contract exposing only `underlying_address()` -- enough to
+/// exercise `set_recovery_escrow`'s self-referential cross-check without standing up a full
+/// RecoveryEscrow (which itself requires SY/YT/PrincipalManager/MarketPool all deployed and
+/// wired together). Used in place of a bare `Address::generate` wherever a test needs a
+/// plausible escrow address that the new cross-check will actually call into.
+mod mock_escrow {
+    use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
+
+    #[contracttype]
+    enum DataKey {
+        Underlying,
+    }
+
+    #[contract]
+    pub struct MockEscrow;
+
+    #[contractimpl]
+    impl MockEscrow {
+        pub fn init(env: Env, underlying: Address) {
+            env.storage()
+                .instance()
+                .set(&DataKey::Underlying, &underlying);
+        }
+
+        pub fn underlying_address(env: Env) -> Address {
+            env.storage().instance().get(&DataKey::Underlying).unwrap()
+        }
+    }
+}
+
+/// Deploy a `mock_escrow` reporting `underlying` as its own underlying address.
+fn deploy_escrow_mock(env: &Env, underlying: &Address) -> Address {
+    let id = env.register_contract(None, mock_escrow::MockEscrow);
+    mock_escrow::MockEscrowClient::new(env, &id).init(underlying);
+    id
 }
 
 #[test]
@@ -272,7 +314,7 @@ fn seize_moves_balance_to_escrow_without_holder_auth() {
     let f = setup();
     let minter = Address::generate(&f.env);
     f.client.set_minter(&f.admin, &minter);
-    let escrow = Address::generate(&f.env);
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
     f.client.set_recovery_escrow(&f.admin, &escrow);
 
     let bad_actor = Address::generate(&f.env);
@@ -291,7 +333,7 @@ fn seize_requires_configured_escrow_caller() {
     let f = setup();
     let minter = Address::generate(&f.env);
     f.client.set_minter(&f.admin, &minter);
-    let escrow = Address::generate(&f.env);
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
     let impostor = Address::generate(&f.env);
     f.client.set_recovery_escrow(&f.admin, &escrow);
 
@@ -306,10 +348,34 @@ fn seize_requires_configured_escrow_caller() {
 #[should_panic]
 fn set_recovery_escrow_twice_panics() {
     let f = setup();
-    let escrow1 = Address::generate(&f.env);
+    let escrow1 = deploy_escrow_mock(&f.env, &f.underlying);
     let escrow2 = Address::generate(&f.env);
     f.client.set_recovery_escrow(&f.admin, &escrow1);
+    // The second call panics on `RecoveryEscrowAlreadySet` before it ever calls back into
+    // `escrow2`, so `escrow2` can stay a bare, non-contract address here.
     f.client.set_recovery_escrow(&f.admin, &escrow2);
+}
+
+#[test]
+#[should_panic]
+fn set_recovery_escrow_rejects_an_escrow_configured_for_a_different_underlying() {
+    // Found during audit review: this wiring is one-shot and irreversible, so an admin mistake
+    // (a stale escrow address copied from a different market) previously had no cross-check at
+    // all. This mock reports a *different* underlying than this token's own -- mirroring
+    // `RecoveryEscrow::initialize`'s own cross-check of each position's `underlying_address()`,
+    // the token must now reject it.
+    let f = setup();
+    let other_underlying = Address::generate(&f.env);
+    let wrong_escrow = deploy_escrow_mock(&f.env, &other_underlying);
+    f.client.set_recovery_escrow(&f.admin, &wrong_escrow);
+}
+
+#[test]
+fn set_recovery_escrow_accepts_an_escrow_configured_for_this_same_underlying() {
+    let f = setup();
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
+    f.client.set_recovery_escrow(&f.admin, &escrow);
+    assert_eq!(f.client.recovery_escrow(), escrow);
 }
 
 #[test]
@@ -385,7 +451,7 @@ fn views_and_getters() {
     let f = setup();
     let minter = Address::generate(&f.env);
     f.client.set_minter(&f.admin, &minter);
-    let escrow = Address::generate(&f.env);
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
     f.client.set_recovery_escrow(&f.admin, &escrow);
 
     assert_eq!(f.client.decimals(), 7);
@@ -481,7 +547,7 @@ fn seize_rejects_zero_amount() {
     let f = setup();
     let minter = Address::generate(&f.env);
     f.client.set_minter(&f.admin, &minter);
-    let escrow = Address::generate(&f.env);
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
     f.client.set_recovery_escrow(&f.admin, &escrow);
     let bad_actor = Address::generate(&f.env);
     grant(&f, &bad_actor);
@@ -495,7 +561,7 @@ fn seize_cannot_exceed_target_balance() {
     let f = setup();
     let minter = Address::generate(&f.env);
     f.client.set_minter(&f.admin, &minter);
-    let escrow = Address::generate(&f.env);
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
     f.client.set_recovery_escrow(&f.admin, &escrow);
     let bad_actor = Address::generate(&f.env);
     grant(&f, &bad_actor);
@@ -520,3 +586,40 @@ fn transfer_from_insufficient_balance_panics() {
         .approve(&alice, &spender, &500, &(f.env.ledger().sequence() + 100));
     f.client.transfer_from(&spender, &alice, &bob, &200);
 }
+
+// ======================================================================== checked-arithmetic gap
+// Balance/total-supply/allowance bookkeeping here used raw `+`/`-` with no typed overflow error
+// -- found during an audit review. These confirm `Error::ArithmeticOverflow` now surfaces at the
+// one place a real caller could plausibly reach it (minting on top of an already-maximal
+// balance), rather than a bare, un-typed Rust arithmetic-overflow panic from the workspace's
+// `overflow-checks = true` profile setting -- the same fail-closed outcome, but now an
+// observable, documented contract error, consistent with `YTToken`/`PrincipalManager`.
+
+#[test]
+fn mint_balance_overflow_raises_the_contracts_own_typed_error() {
+    let f = setup();
+    let minter = Address::generate(&f.env);
+    f.client.set_minter(&f.admin, &minter);
+    let user = Address::generate(&f.env);
+    grant(&f, &user);
+
+    // First mint takes the balance (and total supply) to i128::MAX -- itself not an overflow,
+    // since it starts from zero.
+    f.client.mint(&user, &i128::MAX);
+    assert_eq!(f.client.balance(&user), i128::MAX);
+
+    // A second, minimal mint now overflows `bal.checked_add(amount)` before total supply is
+    // ever touched.
+    assert_eq!(
+        f.client.try_mint(&user, &1).err(),
+        expect_err(Error::ArithmeticOverflow)
+    );
+}
+
+// Note: a transfer-induced receiver-balance overflow cannot actually be constructed as a
+// separate test from the mint-overflow one above -- `TotalSupply` is itself bound by `i128`, so
+// no account can ever hold a balance that total supply didn't already cover, and a transfer only
+// moves existing supply between two accounts. The only way to reach `i128::MAX` on a balance at
+// all is via `mint`, already covered above; the receiving side of `transfer`/`transfer_from`/
+// `seize` shares the exact same `checked_add` helper, so the same typed error is proven to fire
+// there too.

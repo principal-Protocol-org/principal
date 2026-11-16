@@ -62,6 +62,35 @@ fn unauthorized_grant_panics() {
 }
 
 #[test]
+#[should_panic]
+fn unauthorized_revoke_asset_panics() {
+    let (env, client, admin) = setup();
+    let attacker = Address::generate(&env);
+    let user = Address::generate(&env);
+    let asset = Address::generate(&env);
+    client.grant_asset(&admin, &user, &asset);
+    client.revoke_asset(&attacker, &user, &asset);
+}
+
+#[test]
+#[should_panic]
+fn unauthorized_grant_accounts_panics() {
+    let (env, client, _admin) = setup();
+    let attacker = Address::generate(&env);
+    let u1 = Address::generate(&env);
+    client.grant_accounts(&attacker, &vec![&env, u1]);
+}
+
+#[test]
+#[should_panic]
+fn unauthorized_transfer_admin_panics() {
+    let (env, client, _admin) = setup();
+    let attacker = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    client.transfer_admin(&attacker, &new_admin);
+}
+
+#[test]
 fn admin_transfer() {
     let (env, client, admin) = setup();
     let new_admin = Address::generate(&env);

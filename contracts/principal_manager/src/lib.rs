@@ -58,7 +58,8 @@
 //! `YTToken.claim_yield` is minter-gated (only `PrincipalManager` can call it), so this contract
 //! is the sole place that turns a settled claim into a real payment. Its own `claim_yield` lets a
 //! holder collect accrued yield without burning YT or waiting for maturity, paying via
-//! `SYWrapper.withdraw` in the same call. Found during audit review (H-03).
+//! `SYWrapper.withdraw_crediting` in the same call (crediting the holder's own deposit cap, not
+//! this contract's -- see that function's doc comment). Found during audit review (H-03).
 //!
 //! # Circuit breaker
 //! Once `set_risk_control` is called, `mint` reports the underlying value it tokenizes to
@@ -74,7 +75,9 @@
 //! # Integration scope
 //! `mint` takes real custody of the caller's SY shares via `SYWrapper.transfer` and mints real
 //! `PTToken`/`YTToken` balances. `redeem` burns those real balances and releases real underlying
-//! via `SYWrapper.withdraw`, self-authorizing as this contract's own address. This contract's own
+//! via `SYWrapper.withdraw_crediting`, self-authorizing as this contract's own address but
+//! crediting the per-address deposit cap release to the real redeemer, not this contract's own
+//! (never-charged) address. This contract's own
 //! address must itself be authorized on the underlying and Permissioning-granted before deployment
 //! is usable, since it is a genuine SY-share holder between mint and redemption.
 //!
@@ -127,6 +130,20 @@ pub trait SYWrapperInterface {
         to: Address,
         min_underlying_out: i128,
     ) -> i128;
+    /// Same as `withdraw`, but releases the per-address deposit cap against `beneficiary`
+    /// instead of `from`. This contract custodies users' SY in its own name between `mint` and
+    /// `redeem`/`claim_yield`, so it uses this instead of plain `withdraw` whenever it unwinds
+    /// that custodied SY back to the real depositor -- otherwise the cap release would be a
+    /// no-op against this contract's own (never-charged) address. Found during audit review; see
+    /// `SYWrapper`'s own doc comment on `net_deposited`.
+    fn withdraw_crediting(
+        env: Env,
+        from: Address,
+        shares: i128,
+        to: Address,
+        min_underlying_out: i128,
+        beneficiary: Address,
+    ) -> i128;
     fn exchange_rate(env: Env) -> i128;
     fn underlying_address(env: Env) -> Address;
     fn permissioning_address(env: Env) -> Address;
@@ -177,6 +194,7 @@ pub trait MarketConfigInterface {
 #[contractclient(name = "RiskControlClient")]
 pub trait RiskControlInterface {
     fn check_deposit(env: Env, caller: Address, asset: Address, amount: i128);
+    fn is_consumer(env: Env, account: Address) -> bool;
 }
 
 // ---------------------------------------------------------------------------
@@ -196,6 +214,10 @@ pub enum Error {
     ZeroAmount = 4,
     NotMature = 5,
     AlreadyMature = 6,
+    /// Also raised when the oracle *is* fresh but returns a non-positive reference value --
+    /// freshness and positivity are independent properties, and this contract must not trust
+    /// the latter blindly (defense-in-depth against a buggy/compromised oracle; found during
+    /// an audit review).
     OracleStale = 7,
     Paused = 9,
     PermissionDenied = 10,
@@ -497,7 +519,11 @@ impl PrincipalManagerContract {
             let shares =
                 Self::underlying_to_shares(&env, sy_client.exchange_rate(), desired_underlying);
             if shares > 0 {
-                from_pt = sy_client.withdraw(&this_contract, &shares, &from, &0);
+                // `withdraw_crediting`, not plain `withdraw`: this contract holds the SY being
+                // unwound in its own name (`this_contract`), but `from` is the real depositor
+                // whose per-address cap should actually come back down. Found during audit
+                // review -- see `SYWrapper`'s own doc comment on `net_deposited`.
+                from_pt = sy_client.withdraw_crediting(&this_contract, &shares, &from, &0, &from);
             }
         }
 
@@ -674,8 +700,20 @@ impl PrincipalManagerContract {
 
     /// Wire the RiskControl this market reports mints to. This contract must also be registered
     /// as a consumer on that RiskControl or every mint reverts.
+    ///
+    /// Unlike `set_recovery_escrow`-style setters elsewhere, this is updatable (no "already set"
+    /// guard), so a wrong address here is not irreversible the same way -- but an admin mistake
+    /// (e.g. a copy-pasted address of some other contract entirely) would otherwise only surface
+    /// the next time a user mints. This calls back into the given address's own `is_consumer` --
+    /// the one read-only view every real RiskControl exposes -- so a non-RiskControl address
+    /// (wrong contract type, unrelated address) fails this call instead of silently being wired
+    /// in. Deliberately does not require the *result* to be `true`: every deployment path in
+    /// this repo (see `scripts/create_market.sh`, `MarketFactory`) calls `set_risk_control`
+    /// before the matching `RiskControl.add_consumer`, so this contract is not registered yet at
+    /// this point.
     pub fn set_risk_control(env: Env, admin: Address, risk_control: Address) {
         Self::assert_admin(&env, &admin);
+        RiskControlClient::new(&env, &risk_control).is_consumer(&env.current_contract_address());
         env.storage()
             .instance()
             .set(&DataKey::RiskControl, &risk_control);
@@ -772,6 +810,11 @@ impl PrincipalManagerContract {
 
     /// Turn a gross yield entitlement (underlying units) into a payment to `to`: withhold the YT
     /// fee in SY shares, withdraw the rest. Returns the underlying actually paid.
+    ///
+    /// Uses `withdraw_crediting` rather than plain `withdraw`: the SY being unwound here is held
+    /// in this contract's own name, but `to` is the real holder whose per-address deposit cap
+    /// should come back down. Found during audit review -- see `SYWrapper`'s own doc comment on
+    /// `net_deposited`.
     fn pay_yield(env: &Env, to: &Address, gross_underlying: i128) -> i128 {
         if gross_underlying <= 0 {
             return 0;
@@ -786,7 +829,7 @@ impl PrincipalManagerContract {
         if net_shares <= 0 {
             return 0;
         }
-        sy_client.withdraw(&env.current_contract_address(), &net_shares, to, &0)
+        sy_client.withdraw_crediting(&env.current_contract_address(), &net_shares, to, &0, to)
     }
 
     /// Split `fee_shares` by the market's protocol share and add to the two accrual buckets.
@@ -855,7 +898,17 @@ impl PrincipalManagerContract {
             .instance()
             .get(&DataKey::Oracle)
             .unwrap_or_else(|| panic_with_error!(env, Error::NotInitialized));
-        OracleClient::new(env, &oracle_addr).get_reference_value()
+        let rate = OracleClient::new(env, &oracle_addr).get_reference_value();
+        // Defense-in-depth: `assert_oracle_fresh` (called by every caller of this helper) only
+        // attests freshness, not positivity. A non-positive rate here would otherwise flow
+        // straight into `mint`'s/`recombine`'s `mul_div` as a divisor or multiplicand -- fail
+        // closed with this contract's own clear error instead of trusting the oracle's value
+        // blindly. Found during an audit review; fixed once here since both callers share this
+        // helper.
+        if rate <= 0 {
+            panic_with_error!(env, Error::OracleStale);
+        }
+        rate
     }
 
     fn assert_oracle_fresh(env: &Env) {

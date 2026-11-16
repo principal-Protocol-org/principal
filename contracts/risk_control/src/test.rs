@@ -169,26 +169,88 @@ fn window_is_measured_in_ledgers_and_ignores_wall_clock_time() {
 }
 
 #[test]
-fn window_resets_after_exactly_window_ledgers() {
+fn window_lapsing_decays_the_previous_volume_instead_of_hard_resetting_to_zero() {
+    // Replaces the old `window_resets_after_exactly_window_ledgers`, which asserted a hard
+    // tumbling reset (volume jumps straight to 0 the instant the window lapses). That is exactly
+    // the bug this fix closes -- see `sliding_window_bounds_the_original_tumbling_reset_bypass_*`
+    // below for the direct regression test. This test instead pins the new, correct mechanics.
     let (env, client, _admin, consumer, asset) = setup(1_000_000);
     let start = env.ledger().sequence();
     client.check_deposit(&consumer, &asset, &900_000_i128);
     assert_eq!(client.get_window_start(), start);
     assert_eq!(client.get_window_ledgers(), DEFAULT_WINDOW_LEDGERS);
 
-    // One ledger before the boundary the window is still open...
+    // One ledger before the boundary the window is still open -- unchanged from before.
     advance_ledgers(&env, DEFAULT_WINDOW_LEDGERS - 1);
     assert_eq!(client.get_cb_volume(), 900_000);
     assert!(client
         .try_check_deposit(&consumer, &asset, &200_000_i128)
         .is_err());
 
-    // ...and exactly `window_ledgers` after the start it lapses.
+    // Exactly `window_ledgers` after the start, the window lapses -- but the 900k does not
+    // vanish. It rolls into the "previous window", and at this very instant
+    // (elapsed-in-new-window == 0) it still counts in full: the sliding window counter correctly
+    // reports that the trailing `window`-ledger lookback still contains all of it.
     advance_ledgers(&env, 1);
-    assert_eq!(client.get_cb_volume(), 0);
-    client.check_deposit(&consumer, &asset, &900_000_i128);
-    assert_eq!(client.get_cb_volume(), 900_000); // restarted at 900k, not 1_800_000
+    assert_eq!(client.get_cb_volume(), 900_000); // NOT 0 -- this is the fix
     assert_eq!(client.get_window_start(), env.ledger().sequence());
+    // A fresh 900k deposit right here would have sailed through under the old tumbling reset
+    // (the original 2x-bypass bug). It is correctly throttled now.
+    assert!(client
+        .try_check_deposit(&consumer, &asset, &900_000_i128)
+        .is_err());
+    // Only the remaining headroom (limit minus the still-fully-weighted previous window) is
+    // available.
+    client.check_deposit(&consumer, &asset, &100_000_i128);
+    assert_eq!(client.get_cb_volume(), 1_000_000);
+
+    // As the new current window advances, the previous window's weight decays linearly. Halfway
+    // through it, roughly half of the original 900k has "slid out" of the trailing lookback.
+    advance_ledgers(&env, DEFAULT_WINDOW_LEDGERS / 2);
+    let half_decayed = client.get_cb_volume();
+    assert!(half_decayed < 1_000_000 && half_decayed > 100_000);
+}
+
+#[test]
+fn window_fully_lapses_after_two_full_windows_of_inactivity() {
+    // Once the current *and* the preceding window are both entirely outside the trailing
+    // `window`-ledger lookback (nothing happened for two full windows), the effective volume is
+    // genuinely 0 again -- the sliding-window counter does not remember forever.
+    let (env, client, _admin, consumer, asset) = setup(1_000_000);
+    client.check_deposit(&consumer, &asset, &900_000_i128);
+    advance_ledgers(&env, DEFAULT_WINDOW_LEDGERS * 2);
+    assert_eq!(client.get_cb_volume(), 0);
+    client.check_deposit(&consumer, &asset, &1_000_000_i128);
+    assert_eq!(client.get_cb_volume(), 1_000_000);
+}
+
+#[test]
+fn sliding_window_bounds_the_original_tumbling_reset_bypass_to_roughly_one_times_the_limit() {
+    // Regression for the audit finding: a hard tumbling reset let an attacker clear close to 2x
+    // the configured limit within a span just over one window, by depositing near the limit
+    // right before the boundary and again right after it (the instant the old code reset the
+    // counter straight to zero). The sliding-window counter must throttle the second deposit
+    // instead.
+    let (env, client, _admin, consumer, asset) = setup(1_000_000);
+
+    // Deposit A: right up against the limit, one ledger before the window would have closed.
+    advance_ledgers(&env, DEFAULT_WINDOW_LEDGERS - 1);
+    client.check_deposit(&consumer, &asset, &1_000_000_i128);
+    assert_eq!(client.get_cb_volume(), 1_000_000);
+
+    // One ledger later: exactly the instant the old tumbling design reset the counter to 0,
+    // reopening the full limit for a second deposit within a span of just over `window` ledgers.
+    advance_ledgers(&env, 1);
+    // Fixed: Deposit A's volume rolls into the "previous window" and, right at this instant, is
+    // still weighted in full (none of it has slid out of the trailing lookback yet) -- so a
+    // second near-limit deposit here is correctly rejected, not sailed through.
+    assert_eq!(client.get_cb_volume(), 1_000_000);
+    assert!(client
+        .try_check_deposit(&consumer, &asset, &1_000_000_i128)
+        .is_err());
+    // Across this whole span -- just over one window -- total throughput stays bounded at the
+    // configured limit, not ~2x it.
+    assert_eq!(client.get_cb_volume(), 1_000_000);
 }
 
 #[test]
@@ -197,7 +259,10 @@ fn admin_can_change_the_window_length() {
     client.set_window_ledgers(&admin, &10);
     assert_eq!(client.get_window_ledgers(), 10);
     client.check_deposit(&consumer, &asset, &1_000_i128);
-    advance_ledgers(&env, 10);
+    // Two full window-lengths later, both the deposited window and its (nonexistent)
+    // predecessor are entirely outside the trailing lookback -- a full reset, so the limit
+    // reopens fully (see `window_fully_lapses_after_two_full_windows_of_inactivity`).
+    advance_ledgers(&env, 20);
     client.check_deposit(&consumer, &asset, &1_000_i128);
 }
 
@@ -257,7 +322,7 @@ fn per_asset_limit_works_with_protocol_limit_disabled() {
 }
 
 #[test]
-fn per_asset_window_resets_on_the_ledger_boundary() {
+fn per_asset_window_lapsing_decays_instead_of_hard_resetting_to_zero() {
     let (env, client, admin, consumer, asset) = setup(0);
     client.set_asset_limit(&admin, &asset, &100);
     client.set_window_ledgers(&admin, &50);
@@ -266,18 +331,42 @@ fn per_asset_window_resets_on_the_ledger_boundary() {
     assert!(client
         .try_check_deposit(&consumer, &asset, &1_i128)
         .is_err());
+
+    // Exactly at the boundary: lapses, but decays rather than hard-resetting to 0 (the fix).
     advance_ledgers(&env, 1);
-    assert_eq!(client.get_asset_volume(&asset), 0);
-    client.check_deposit(&consumer, &asset, &100_i128);
+    assert_eq!(client.get_asset_volume(&asset), 100); // NOT 0
+    assert!(client
+        .try_check_deposit(&consumer, &asset, &1_i128)
+        .is_err());
+
+    // Halfway through the new window, roughly half of the old 100 has decayed out, opening up
+    // some (but not the full) headroom again.
+    advance_ledgers(&env, 25);
+    let decayed = client.get_asset_volume(&asset);
+    assert!(decayed < 100 && decayed > 0);
+    client.check_deposit(&consumer, &asset, &1_i128);
 }
 
 #[test]
 fn removing_a_per_asset_limit_reopens_the_asset() {
+    // Found during audit review: this test previously asserted nothing beyond "doesn't panic",
+    // so it could not have caught a regression in the disable path (e.g. volume bookkeeping
+    // drifting from reality once the limit is lifted, or the limit silently not actually
+    // reopening the asset). Now demonstrates the full claim: closed while a limit is set
+    // (a deposit *over* the limit is rejected, not just one exactly at it), reopened once
+    // lifted, and volume accounting continues to be tracked correctly either way.
     let (_env, client, admin, consumer, asset) = setup(0);
     client.set_asset_limit(&admin, &asset, &10);
     client.check_deposit(&consumer, &asset, &10_i128);
+    assert_eq!(client.get_asset_volume(&asset), 10);
+    assert!(client
+        .try_check_deposit(&consumer, &asset, &1_i128)
+        .is_err());
     client.set_asset_limit(&admin, &asset, &0);
     client.check_deposit(&consumer, &asset, &1_000_000_i128);
+    // A disabled (limit == 0) asset isn't tracked at all -- the volume counter stays at
+    // whatever it last was while a limit was in force, it does not keep accumulating.
+    assert_eq!(client.get_asset_volume(&asset), 10);
 }
 
 #[test]

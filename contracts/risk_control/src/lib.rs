@@ -26,8 +26,35 @@
 //! be nudged by a validator's close-time choice the way a timestamp can, so a window cannot be
 //! stretched or shrunk to squeeze an extra allowance through. The default window is
 //! `DEFAULT_WINDOW_LEDGERS` (17,280 ledgers, about 24 hours at the ~5 s ledger close time); the
-//! admin can change it with `set_window_ledgers`. A window starts at the first counted deposit
-//! after the previous one lapsed and resets once `window_ledgers` ledgers have elapsed.
+//! admin can change it with `set_window_ledgers`.
+//!
+//! # Sliding window counter, not a hard tumbling reset
+//! A window is *not* a hard tumbling reset (jumping straight to a volume of zero the instant
+//! `window_ledgers` have elapsed since it started). That design let roughly 2x the configured
+//! limit clear within a span just over one window: deposit near the limit right before the
+//! boundary, then again right after it, since the counter the second deposit was checked against
+//! had just been zeroed. Instead, this implements the standard "sliding window counter"
+//! approximation used by many production rate limiters: alongside the current window's raw
+//! volume, the *immediately preceding* window's raw volume is also kept, and an "effective"
+//! (weighted) volume is computed on every read as
+//!
+//! ```text
+//! effective_volume = current_window_volume
+//!                   + previous_window_volume * (window - elapsed_in_current_window) / window
+//! ```
+//!
+//! i.e. the previous window's volume decays linearly to zero as `now` advances through the
+//! current window, approximating a true sliding lookback of exactly `window` ledgers without
+//! needing a fully bucketed accumulator (many fixed-size sub-windows). This bounds the worst case
+//! close to 1x the configured limit instead of 2x. A new deposit only ever adds to the *current*
+//! window's raw counter (never to the weighted estimate itself, which is recomputed fresh on
+//! every call from the two raw counters). See `WindowState` for the exact boundary arithmetic.
+//!
+//! `get_cb_volume`/`get_asset_volume` return this weighted *effective* volume (not the raw
+//! current-window counter) -- deliberately, since that is what is actually compared against the
+//! limit on the next `check_deposit`, and returning the raw counter alone would reproduce the
+//! same misleading "it reads as low/zero right at the boundary" impression that masked the
+//! original bypass.
 //!
 //! External contracts (SYWrapper, PrincipalManager) call `check_deposit` from inside their own
 //! `deposit`/`mint`, so the breaker is wired directly into the protocol operations. This contract
@@ -76,15 +103,21 @@ pub enum DataKey {
     Consumer(Address),
     /// Circuit breaker: max cumulative deposit in one window (underlying units, 0 = disabled).
     CbLimit,
-    /// Cumulative deposit volume, across all assets, in the current window.
+    /// Raw cumulative deposit volume, across all assets, counted in the *current* protocol-wide
+    /// window so far (see the module doc's sliding-window-counter section).
     CbVolume,
     /// Ledger sequence at which the current protocol-wide window started.
     CbWindowStart,
+    /// Raw cumulative deposit volume counted in the protocol-wide window immediately preceding
+    /// the current one. 0 if there was no such window, or it is old enough that it no longer
+    /// overlaps the trailing lookback at all (see `WindowState::at`).
+    CbPrevVolume,
     /// Window length in ledgers.
     WindowLedgers,
     /// Per-asset limit (underlying units, 0 = none).
     AssetLimit(Address),
-    /// Per-asset window: (start ledger, cumulative volume).
+    /// Per-asset window: (start ledger of the *current* window, its raw volume so far, the raw
+    /// volume of the immediately preceding window). See `WindowState`.
     AssetWindow(Address),
 }
 
@@ -101,6 +134,9 @@ impl RiskControlContract {
         env.storage().instance().set(&DataKey::Paused, &false);
         env.storage().instance().set(&DataKey::CbLimit, &cb_limit);
         env.storage().instance().set(&DataKey::CbVolume, &0_i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::CbPrevVolume, &0_i128);
         env.storage()
             .instance()
             .set(&DataKey::CbWindowStart, &env.ledger().sequence());
@@ -260,14 +296,22 @@ impl RiskControlContract {
         // Evaluate both limits before writing either, so a trip leaves no partial state.
         let limit: i128 = env.storage().instance().get(&DataKey::CbLimit).unwrap_or(0);
         let global = if limit > 0 {
-            let (volume, start) = Self::current_global_window(&env, now, window);
-            let total = volume
+            let state = Self::global_window_state(&env, now, window);
+            let effective = state.effective_volume(now, window);
+            let total_effective = effective
                 .checked_add(amount)
                 .unwrap_or_else(|| panic_with_error!(&env, Error::CircuitBreakerTripped));
-            if total > limit {
+            if total_effective > limit {
                 panic_with_error!(&env, Error::CircuitBreakerTripped);
             }
-            Some((total, start))
+            // The new deposit only ever adds to the *current* window's raw counter -- the
+            // weighted estimate above is derived fresh from the two raw counters on every call,
+            // never stored itself.
+            let new_volume = state
+                .volume
+                .checked_add(amount)
+                .unwrap_or_else(|| panic_with_error!(&env, Error::CircuitBreakerTripped));
+            Some((state.start, new_volume, state.prev_volume))
         } else {
             None
         };
@@ -278,23 +322,31 @@ impl RiskControlContract {
             .get(&DataKey::AssetLimit(asset.clone()))
             .unwrap_or(0);
         let per_asset = if asset_limit > 0 {
-            let (start, volume) = Self::current_asset_window(&env, &asset, now, window);
-            let total = volume
+            let state = Self::asset_window_state(&env, &asset, now, window);
+            let effective = state.effective_volume(now, window);
+            let total_effective = effective
                 .checked_add(amount)
                 .unwrap_or_else(|| panic_with_error!(&env, Error::AssetLimitTripped));
-            if total > asset_limit {
+            if total_effective > asset_limit {
                 panic_with_error!(&env, Error::AssetLimitTripped);
             }
-            Some((start, total))
+            let new_volume = state
+                .volume
+                .checked_add(amount)
+                .unwrap_or_else(|| panic_with_error!(&env, Error::AssetLimitTripped));
+            Some((state.start, new_volume, state.prev_volume))
         } else {
             None
         };
 
-        if let Some((total, start)) = global {
-            env.storage().instance().set(&DataKey::CbVolume, &total);
+        if let Some((start, volume, prev_volume)) = global {
             env.storage()
                 .instance()
                 .set(&DataKey::CbWindowStart, &start);
+            env.storage().instance().set(&DataKey::CbVolume, &volume);
+            env.storage()
+                .instance()
+                .set(&DataKey::CbPrevVolume, &prev_volume);
         }
         if let Some(w) = per_asset {
             env.storage()
@@ -344,10 +396,14 @@ impl RiskControlContract {
         env.storage().instance().get(&DataKey::CbLimit).unwrap_or(0)
     }
 
-    /// Volume counted in the current protocol-wide window (`0` once that window has lapsed).
+    /// The *effective* (weighted) volume against which the protocol-wide limit is currently
+    /// checked -- see the module doc's sliding-window-counter section for why this, not the raw
+    /// current-window counter, is what this getter returns. Decays smoothly rather than jumping
+    /// to `0` the instant a window boundary is crossed.
     pub fn get_cb_volume(env: Env) -> i128 {
         let now = env.ledger().sequence();
-        Self::current_global_window(&env, now, Self::window_ledgers(&env)).0
+        let window = Self::window_ledgers(&env);
+        Self::global_window_state(&env, now, window).effective_volume(now, window)
     }
 
     pub fn get_asset_limit(env: Env, asset: Address) -> i128 {
@@ -357,22 +413,26 @@ impl RiskControlContract {
             .unwrap_or(0)
     }
 
-    /// Volume counted in `asset`'s current window (`0` once that window has lapsed).
+    /// The *effective* (weighted) volume against which `asset`'s limit is currently checked --
+    /// see `get_cb_volume`.
     pub fn get_asset_volume(env: Env, asset: Address) -> i128 {
         let now = env.ledger().sequence();
-        Self::current_asset_window(&env, &asset, now, Self::window_ledgers(&env)).1
+        let window = Self::window_ledgers(&env);
+        Self::asset_window_state(&env, &asset, now, window).effective_volume(now, window)
     }
 
     pub fn get_window_ledgers(env: Env) -> u32 {
         Self::window_ledgers(&env)
     }
 
-    /// Ledger sequence at which the current protocol-wide window started.
+    /// Ledger sequence at which the current protocol-wide window started, normalized to `now`
+    /// the same way `get_cb_volume` is -- so this reflects the window `now` actually falls in
+    /// even if no `check_deposit` has landed since a boundary was crossed, rather than a stale
+    /// raw value left over from before the roll-over.
     pub fn get_window_start(env: Env) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::CbWindowStart)
-            .unwrap_or(0)
+        let now = env.ledger().sequence();
+        let window = Self::window_ledgers(&env);
+        Self::global_window_state(&env, now, window).start
     }
 
     // --- admin ---
@@ -397,38 +457,34 @@ impl RiskControlContract {
             .unwrap_or(DEFAULT_WINDOW_LEDGERS)
     }
 
-    /// (volume, start) of the protocol-wide window as of ledger `now`: a lapsed window reads as
-    /// empty and restarts at `now`.
-    fn current_global_window(env: &Env, now: u32, window: u32) -> (i128, u32) {
+    /// The protocol-wide window's state as of ledger `now`.
+    fn global_window_state(env: &Env, now: u32, window: u32) -> WindowState {
         let start: u32 = env
             .storage()
             .instance()
             .get(&DataKey::CbWindowStart)
             .unwrap_or(now);
-        if now.saturating_sub(start) >= window {
-            (0, now)
-        } else {
-            let v: i128 = env
-                .storage()
-                .instance()
-                .get(&DataKey::CbVolume)
-                .unwrap_or(0);
-            (v, start)
-        }
+        let volume: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CbVolume)
+            .unwrap_or(0);
+        let prev_volume: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CbPrevVolume)
+            .unwrap_or(0);
+        WindowState::at(start, volume, prev_volume, now, window)
     }
 
-    /// (start, volume) of `asset`'s window as of ledger `now`.
-    fn current_asset_window(env: &Env, asset: &Address, now: u32, window: u32) -> (u32, i128) {
-        let (start, volume): (u32, i128) = env
+    /// `asset`'s window state as of ledger `now`.
+    fn asset_window_state(env: &Env, asset: &Address, now: u32, window: u32) -> WindowState {
+        let (start, volume, prev_volume): (u32, i128, i128) = env
             .storage()
             .instance()
             .get(&DataKey::AssetWindow(asset.clone()))
-            .unwrap_or((now, 0));
-        if now.saturating_sub(start) >= window {
-            (now, 0)
-        } else {
-            (start, volume)
-        }
+            .unwrap_or((now, 0, 0));
+        WindowState::at(start, volume, prev_volume, now, window)
     }
 
     fn require_admin(env: &Env) -> Address {
@@ -443,6 +499,99 @@ impl RiskControlContract {
         if *caller != Self::require_admin(env) {
             panic_with_error!(env, Error::Unauthorized);
         }
+    }
+}
+
+/// A protocol-wide or per-asset circuit-breaker window, normalized to ledger `now`: `start` is
+/// the ledger sequence the *current* window began, `volume` the raw amount counted in it so far,
+/// and `prev_volume` the raw amount counted in the immediately preceding, now-closed window (`0`
+/// if there was none, or it is too old to matter). See the module doc for why this replaces a
+/// hard tumbling reset.
+struct WindowState {
+    start: u32,
+    volume: i128,
+    prev_volume: i128,
+}
+
+impl WindowState {
+    /// Normalizes raw stored `(start, volume, prev_volume)` to ledger `now`, rolling over any
+    /// window boundary that has elapsed since it was last written. After this returns,
+    /// `now.saturating_sub(result.start) < window` always holds -- the window returned is always
+    /// the one `now` currently falls in.
+    fn at(
+        stored_start: u32,
+        stored_volume: i128,
+        stored_prev: i128,
+        now: u32,
+        window: u32,
+    ) -> Self {
+        let elapsed = now.saturating_sub(stored_start);
+        if elapsed < window {
+            // Still inside the window that was last written -- no transition.
+            Self {
+                start: stored_start,
+                volume: stored_volume,
+                prev_volume: stored_prev,
+            }
+        } else if elapsed < window.saturating_mul(2) {
+            // Exactly one window boundary has fully elapsed. The window that just closed becomes
+            // the new "previous" window -- rolled over, not discarded to zero -- and a fresh
+            // current window starts immediately after it, contiguous with the old one
+            // (`stored_start + window`, not `now`) so `effective_volume` below is weighting the
+            // true adjacent predecessor, not an arbitrarily-gapped one. The old `stored_prev`
+            // (now two windows stale) is dropped: it no longer overlaps any trailing
+            // `window`-sized lookback from `now` at all.
+            Self {
+                start: stored_start.saturating_add(window),
+                volume: 0,
+                prev_volume: stored_volume,
+            }
+        } else {
+            // Two or more whole windows have elapsed with nothing recorded in between: both the
+            // old current and old previous window are entirely outside any trailing
+            // `window`-sized lookback from `now`, so neither contributes anything. A full reset,
+            // anchored at `now` itself -- there is nothing left to slide.
+            Self {
+                start: now,
+                volume: 0,
+                prev_volume: 0,
+            }
+        }
+    }
+
+    /// The weighted estimate of "volume in the trailing `window`-ledger lookback ending at
+    /// `now`", compared against a limit. The current window's raw volume counts in full; the
+    /// previous window's raw volume is scaled down by how much of it has already slid out of
+    /// the lookback as `now` advances through the current window:
+    ///
+    /// `effective = volume + prev_volume * (window - elapsed) / window`
+    ///
+    /// where `elapsed = now - start` (always `< window` here, since `at` always normalizes
+    /// first).
+    ///
+    /// Boundary values, reasoned through explicitly:
+    /// * `elapsed == 0` (the instant the current window starts, e.g. right after a boundary
+    ///   roll-over): weight is `window / window == 1` -- the previous window counts in full,
+    ///   correctly, since at that exact instant the entire previous window is still inside the
+    ///   trailing lookback. This is precisely the case the original tumbling reset got wrong
+    ///   (it read as `0` here instead).
+    /// * `elapsed == window - 1` (one ledger before the *next* transition): weight is
+    ///   `1 / window` -- vanishingly small but still nonzero, correctly reflecting that almost
+    ///   none of the previous window remains in the lookback.
+    fn effective_volume(&self, now: u32, window: u32) -> i128 {
+        let elapsed = now.saturating_sub(self.start);
+        let remaining = window.saturating_sub(elapsed); // > 0: elapsed < window post-`at`
+        let weighted_prev = self
+            .prev_volume
+            .checked_mul(remaining as i128)
+            .and_then(|v| v.checked_div(window as i128))
+            // An overflowing multiplication only happens for an astronomically large
+            // `prev_volume`; fall back to the unscaled (i.e. maximal, never-decayed) value rather
+            // than `0` -- consistent with this codebase's convention elsewhere (`OracleAdapter`'s
+            // deviation guard) of treating an overflow as "assume the worst, reject" rather than
+            // silently under-counting.
+            .unwrap_or(self.prev_volume);
+        self.volume.saturating_add(weighted_prev)
     }
 }
 

@@ -16,7 +16,7 @@ use soroban_sdk::{
 
 use principal_integration_tests::stack::{self, Config, Stack, DAY, SCALE, T0};
 use principal_market_factory::{
-    EngineParams, EngineWasmHashes, MarketContracts, MarketFactoryContract,
+    EngineParams, EngineWasmHashes, MarketContracts, MarketEngine, MarketFactoryContract,
     MarketFactoryContractClient, PoolEscrowParams, PoolEscrowWasmHashes, TokenParams,
     TokenWasmHashes,
 };
@@ -299,4 +299,214 @@ fn factory_creates_a_fully_functional_second_market_atomically() {
         shares1 > 0,
         "market #1 must be unaffected by market #2's creation"
     );
+}
+
+// ------------------------------------------------------------------- negative-path coverage
+// `create_market.rs` previously had only the one fully-happy-path test above -- found during an
+// audit review. These three cover what happens when a caller gets the issuer, the phase order,
+// or salt reuse wrong, and confirm *which* layer actually catches each one (a child contract's
+// own admin check, a genuine failed cross-contract call, or Soroban's own address-occupied
+// guarantee -- never a bespoke `MarketFactory`-level check, since this contract holds no admin
+// key and no storage of its own; see the module's own "What this contract deliberately does not
+// do" doc section).
+
+#[test]
+fn create_engine_rejects_an_issuer_different_from_the_one_who_ran_create_tokens() {
+    let Some(w) = load() else {
+        eprintln!("skipping: workspace Wasm not built -- run `cargo build --workspace --release --target wasm32v1-none` first");
+        return;
+    };
+
+    let s = stack::deploy(Config::with_example_fees(T0 + 180 * DAY));
+    s.env.cost_estimate().budget().reset_unlimited();
+    let wasm = upload(&s.env, &w);
+    let factory_id = s.env.register(MarketFactoryContract, ());
+    let factory = MarketFactoryContractClient::new(&s.env, &factory_id);
+
+    let maturity = T0 + 365 * DAY;
+    let s1 = salt(&s.env, 7);
+
+    let tokens = factory.create_tokens(
+        &s.admin,
+        &s1,
+        &TokenWasmHashes {
+            sy_wrapper: wasm.sy.clone(),
+            pt_token: wasm.pt.clone(),
+            yt_token: wasm.yt.clone(),
+        },
+        &TokenParams {
+            underlying: s.underlying.clone(),
+            maturity,
+            permissioning: s.perm.address.clone(),
+            oracle: s.oracle.address.clone(),
+            pt_name: String::from_str(&s.env, "Principal Token USDY (Jul)"),
+            pt_symbol: String::from_str(&s.env, "PT-USDY-JUL"),
+            yt_name: String::from_str(&s.env, "Yield Token USDY (Jul)"),
+            yt_symbol: String::from_str(&s.env, "YT-USDY-JUL"),
+            decimals: 7,
+        },
+    );
+
+    // A different, non-issuer address attempts phase 2 for the *same* salt and the real tokens
+    // phase 1 actually deployed.
+    let impostor = Address::generate(&s.env);
+    let err = factory
+        .try_create_engine(
+            &impostor,
+            &s1,
+            &EngineWasmHashes {
+                market_config: wasm.config,
+                principal_manager: wasm.manager,
+            },
+            &tokens,
+            &EngineParams {
+                underlying: s.underlying.clone(),
+                maturity,
+                permissioning: s.perm.address.clone(),
+                oracle: s.oracle.address.clone(),
+                risk_control: s.risk.address.clone(),
+                protocol_admin: s.protocol_admin.clone(),
+                treasury: s.treasury.clone(),
+                tokenization_fee_bps: 5,
+                yt_fee_bps: 1_000,
+                swap_fee_tier_bps: 10,
+                protocol_share_bps: 2_000,
+            },
+        )
+        .err();
+    // Caught by `MarketConfig::initialize` -- the first child `initialize` this phase calls --
+    // re-checking the underlying's live issuer authority against `impostor`, exactly as it
+    // would if invoked by hand. `MarketFactory` itself has no notion of "the issuer who ran
+    // phase 1"; it never stores one.
+    assert_eq!(
+        err,
+        Some(Ok(soroban_sdk::Error::from_contract_error(
+            principal_market_config::Error::IssuerMismatch as u32
+        )))
+    );
+}
+
+#[test]
+fn create_pool_and_escrow_reverts_when_create_engine_was_never_run_for_this_salt() {
+    let Some(w) = load() else {
+        eprintln!("skipping: workspace Wasm not built -- run `cargo build --workspace --release --target wasm32v1-none` first");
+        return;
+    };
+
+    let s = stack::deploy(Config::with_example_fees(T0 + 180 * DAY));
+    s.env.cost_estimate().budget().reset_unlimited();
+    let wasm = upload(&s.env, &w);
+    let factory_id = s.env.register(MarketFactoryContract, ());
+    let factory = MarketFactoryContractClient::new(&s.env, &factory_id);
+
+    let maturity = T0 + 365 * DAY;
+    let s1 = salt(&s.env, 11);
+
+    let tokens = factory.create_tokens(
+        &s.admin,
+        &s1,
+        &TokenWasmHashes {
+            sy_wrapper: wasm.sy.clone(),
+            pt_token: wasm.pt.clone(),
+            yt_token: wasm.yt.clone(),
+        },
+        &TokenParams {
+            underlying: s.underlying.clone(),
+            maturity,
+            permissioning: s.perm.address.clone(),
+            oracle: s.oracle.address.clone(),
+            pt_name: String::from_str(&s.env, "Principal Token USDY (Aug)"),
+            pt_symbol: String::from_str(&s.env, "PT-USDY-AUG"),
+            yt_name: String::from_str(&s.env, "Yield Token USDY (Aug)"),
+            yt_symbol: String::from_str(&s.env, "YT-USDY-AUG"),
+            decimals: 7,
+        },
+    );
+    // Phase 2 (`create_engine`) is deliberately never run for this salt.
+
+    // `engine` is exactly the salt-derived value `predict_market` computes -- passing
+    // `assert_engine_matches`, the factory's own "wrong salt / stale struct" check, which only
+    // proves salt-arithmetic consistency, never that anything was actually deployed there (see
+    // `Error::TopologyMismatch`'s own doc comment, which calls this out explicitly).
+    let predicted = factory.predict_market(&s1);
+    let engine = MarketEngine {
+        market_config: predicted.market_config,
+        principal_manager: predicted.principal_manager,
+    };
+
+    let result = factory.try_create_pool_and_escrow(
+        &s.admin,
+        &s1,
+        &PoolEscrowWasmHashes {
+            market_pool: wasm.pool,
+            recovery_escrow: wasm.escrow,
+        },
+        &tokens,
+        &engine,
+        &PoolEscrowParams {
+            underlying: s.underlying.clone(),
+            time_stretch_years: 4,
+        },
+    );
+    // Reverts anyway: `MarketPoolClient::initialize` calls straight into
+    // `engine.principal_manager`, a real cross-contract invocation, which Soroban fails closed
+    // because nothing is actually deployed at that address -- not a factory-level check.
+    assert!(
+        result.is_err(),
+        "create_pool_and_escrow must revert when create_engine was skipped for this salt"
+    );
+}
+
+#[test]
+fn create_tokens_twice_with_the_same_salt_reverts_on_the_second_call() {
+    let Some(w) = load() else {
+        eprintln!("skipping: workspace Wasm not built -- run `cargo build --workspace --release --target wasm32v1-none` first");
+        return;
+    };
+
+    let s = stack::deploy(Config::with_example_fees(T0 + 180 * DAY));
+    s.env.cost_estimate().budget().reset_unlimited();
+    let wasm = upload(&s.env, &w);
+    let factory_id = s.env.register(MarketFactoryContract, ());
+    let factory = MarketFactoryContractClient::new(&s.env, &factory_id);
+
+    let maturity = T0 + 365 * DAY;
+    let s1 = salt(&s.env, 13);
+    let params = TokenParams {
+        underlying: s.underlying.clone(),
+        maturity,
+        permissioning: s.perm.address.clone(),
+        oracle: s.oracle.address.clone(),
+        pt_name: String::from_str(&s.env, "Principal Token USDY (Nov)"),
+        pt_symbol: String::from_str(&s.env, "PT-USDY-NOV"),
+        yt_name: String::from_str(&s.env, "Yield Token USDY (Nov)"),
+        yt_symbol: String::from_str(&s.env, "YT-USDY-NOV"),
+        decimals: 7,
+    };
+
+    factory.create_tokens(
+        &s.admin,
+        &s1,
+        &TokenWasmHashes {
+            sy_wrapper: wasm.sy.clone(),
+            pt_token: wasm.pt.clone(),
+            yt_token: wasm.yt.clone(),
+        },
+        &params,
+    );
+
+    // Same salt again: Soroban's own deployer refuses to put a second contract at an address
+    // that already has code (the module doc's own "Note on salt reuse"), so this reverts
+    // without `MarketFactory` needing any explicit occupied-salt guard of its own.
+    let result = factory.try_create_tokens(
+        &s.admin,
+        &s1,
+        &TokenWasmHashes {
+            sy_wrapper: wasm.sy,
+            pt_token: wasm.pt,
+            yt_token: wasm.yt,
+        },
+        &params,
+    );
+    assert!(result.is_err());
 }

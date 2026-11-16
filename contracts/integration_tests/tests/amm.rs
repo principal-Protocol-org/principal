@@ -461,10 +461,15 @@ fn flash_mint_buys_yt_by_minting_and_selling_the_pt_in_one_transaction() {
 
     let pt_supply_before = s.pm.total_pt();
     let quote = s.pool.quote_pt_for_sy(&(100 * SCALE)); // what the minted PT will fetch
+                                                        // `pt_in` is quoted off-chain first, via the same tokenization-fee-and-oracle-rate formula
+                                                        // `PrincipalManager.mint` uses -- `MarketPool.quote_sy_for_yt` replicates it exactly -- rather
+                                                        // than derived mid-execution from `mint`'s return value.
+    let pt_in = s.pool.quote_sy_for_yt(&(100 * SCALE)).yt_out;
     let (yt_out, sy_back) = s.router.swap_sy_for_yt(
         &buyer,
         &s.pool.address,
         &(100 * SCALE),
+        &pt_in,
         &(100 * SCALE),
         &(100 * SCALE),
         &u64::MAX,
@@ -492,12 +497,16 @@ fn flash_mint_enforces_min_yt_out_and_the_deadline() {
     let buyer = s.new_user();
     deposit_sy(&s, &buyer, 100 * SCALE);
     let pool = s.pool.address.clone();
+    // Quoted once, off-chain, before any of the three calls below -- the first two fail without
+    // moving the pool's state, so the quote stays valid for the third, successful call too.
+    let pt_in = s.pool.quote_sy_for_yt(&(10 * SCALE)).yt_out;
     assert!(s
         .router
         .try_swap_sy_for_yt(
             &buyer,
             &pool,
             &(10 * SCALE),
+            &pt_in,
             &(10 * SCALE + 1),
             &(10 * SCALE),
             &u64::MAX
@@ -506,13 +515,22 @@ fn flash_mint_enforces_min_yt_out_and_the_deadline() {
     // Deadline in the past.
     assert!(s
         .router
-        .try_swap_sy_for_yt(&buyer, &pool, &(10 * SCALE), &0, &(10 * SCALE), &(T0 - 1))
+        .try_swap_sy_for_yt(
+            &buyer,
+            &pool,
+            &(10 * SCALE),
+            &pt_in,
+            &0,
+            &(10 * SCALE),
+            &(T0 - 1)
+        )
         .is_err());
     // Exactly at the deadline is still valid.
     s.router.swap_sy_for_yt(
         &buyer,
         &pool,
         &(10 * SCALE),
+        &pt_in,
         &(10 * SCALE),
         &(10 * SCALE),
         &T0,
@@ -534,10 +552,12 @@ fn true_flash_mint_matches_the_capital_up_front_route_economically() {
     let (ref_s, _) = seeded(Config::with_example_fees(T0 + 180 * DAY));
     let reference_buyer = ref_s.new_user();
     deposit_sy(&ref_s, &reference_buyer, sy_in);
+    let ref_pt_in = ref_s.pool.quote_sy_for_yt(&sy_in).yt_out;
     let (ref_yt_out, ref_sy_back) = ref_s.router.swap_sy_for_yt(
         &reference_buyer,
         &ref_s.pool.address,
         &sy_in,
+        &ref_pt_in,
         &0,
         &sy_in,
         &u64::MAX,
@@ -734,10 +754,12 @@ fn flash_redeem_sells_yt_for_sy_by_recombining_with_pool_pt() {
     let holder = s.new_user();
     deposit_sy(&s, &holder, 100 * SCALE);
     let pool = s.pool.address.clone();
+    let pt_in = s.pool.quote_sy_for_yt(&(100 * SCALE)).yt_out;
     let (yt, sy_after_buy) = s.router.swap_sy_for_yt(
         &holder,
         &pool,
         &(100 * SCALE),
+        &pt_in,
         &0,
         &(100 * SCALE),
         &u64::MAX,
@@ -770,8 +792,16 @@ fn flash_mint_then_flash_redeem_round_trip_returns_the_capital_minus_impact() {
     let user = s.new_user();
     deposit_sy(&s, &user, 100 * SCALE);
     let pool = s.pool.address.clone();
-    s.router
-        .swap_sy_for_yt(&user, &pool, &(100 * SCALE), &0, &(100 * SCALE), &u64::MAX);
+    let pt_in = s.pool.quote_sy_for_yt(&(100 * SCALE)).yt_out;
+    s.router.swap_sy_for_yt(
+        &user,
+        &pool,
+        &(100 * SCALE),
+        &pt_in,
+        &0,
+        &(100 * SCALE),
+        &u64::MAX,
+    );
     let yt = s.yt.balance(&user);
     s.router.swap_yt_for_sy(&user, &pool, &yt, &0, &u64::MAX);
     let end = s.sy.balance_of(&user);
@@ -821,10 +851,12 @@ fn flash_redeem_min_out_is_a_hard_floor_at_the_exact_payout() {
     let holder = s.new_user();
     deposit_sy(&s, &holder, 100 * SCALE);
     let pool = s.pool.address.clone();
+    let pt_in = s.pool.quote_sy_for_yt(&(100 * SCALE)).yt_out;
     s.router.swap_sy_for_yt(
         &holder,
         &pool,
         &(100 * SCALE),
+        &pt_in,
         &0,
         &(100 * SCALE),
         &u64::MAX,
@@ -852,10 +884,12 @@ fn quote_yt_for_sy_matches_the_real_flash_redeem_payout_exactly() {
     let holder = s.new_user();
     deposit_sy(&s, &holder, 100 * SCALE);
     let pool = s.pool.address.clone();
+    let pt_in = s.pool.quote_sy_for_yt(&(100 * SCALE)).yt_out;
     s.router.swap_sy_for_yt(
         &holder,
         &pool,
         &(100 * SCALE),
+        &pt_in,
         &0,
         &(100 * SCALE),
         &u64::MAX,
@@ -901,9 +935,18 @@ fn quote_sy_for_yt_matches_the_real_flash_mint_outcome_exactly() {
     let pool = s.pool.address.clone();
 
     let quote = s.pool.quote_sy_for_yt(&(100 * SCALE));
-    let (yt_out, sy_back) =
-        s.router
-            .swap_sy_for_yt(&buyer, &pool, &(100 * SCALE), &0, &(100 * SCALE), &u64::MAX);
+    // `quote.yt_out` previews exactly the `pt_minted` the real mint leg will produce, so it
+    // doubles as the caller-quoted `pt_in` literal -- exactly how a real integrator would use
+    // this quote.
+    let (yt_out, sy_back) = s.router.swap_sy_for_yt(
+        &buyer,
+        &pool,
+        &(100 * SCALE),
+        &quote.yt_out,
+        &0,
+        &(100 * SCALE),
+        &u64::MAX,
+    );
 
     assert_eq!(quote.yt_out, yt_out, "quoted YT must match the real mint");
     assert_eq!(

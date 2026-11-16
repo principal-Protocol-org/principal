@@ -43,8 +43,16 @@
 //! `r_0` (USDY trades well above 1.0). An earlier version scaled yield by the running ratio
 //! `r_s / r_now` instead, which is only equivalent when `r_0 == 1.0`: at `r_0 = 1.05` and
 //! `r_final = 1.10` it paid 100.23 shares of claims against 100 shares of custody. The index is a
-//! closed form of the *current* rate, so it also has no path dependence and accumulates no rounding
-//! error across oracle updates (the additive variant before that was a Riemann-sum overstatement).
+//! closed form of the *current* rate, so it has no path dependence in the *ideal*, real-valued
+//! formula, and accumulates no systematic rounding error across oracle updates (the additive
+//! variant before that was a Riemann-sum overstatement). The actual integer implementation floors
+//! one whole index unit on every `settle` call as a rounding-safety margin (see `settle`'s own doc)
+//! -- a holder settled many times over a position's life therefore loses a little more floor-rounding
+//! dust than one settled once over the same net index movement. This bias is strictly
+//! protocol-favoring (it can only ever underpay, never overpay) and immaterial at realistic
+//! balances, so it does not reopen the overpayment this design otherwise closes -- found during an
+//! audit review, worth stating plainly since "no path dependence" is not quite true of the integer
+//! version.
 //!
 //! # Yield stops at maturity
 //! The first `update_yield_index` call made at or after maturity advances the factor one last
@@ -101,6 +109,13 @@ pub trait PermissioningInterface {
     fn is_allowed_for_asset(env: Env, account: Address, asset: Address) -> bool;
 }
 
+/// Minimum interface required from RecoveryEscrow, used only to cross-check `set_recovery_escrow`
+/// at wiring time (see that function's doc comment).
+#[contractclient(name = "RecoveryEscrowClient")]
+pub trait RecoveryEscrowInterface {
+    fn underlying_address(env: Env) -> Address;
+}
+
 #[contractclient(name = "OracleClient")]
 pub trait OracleInterface {
     fn get_reference_value(env: Env) -> i128;
@@ -127,6 +142,10 @@ pub enum Error {
     PermissionDenied = 7,
     MinterAlreadySet = 8,
     MinterNotSet = 9,
+    /// Also raised when the oracle *is* fresh but returns a non-positive reference value --
+    /// `is_available()` only attests freshness, not positivity, and this contract must not
+    /// trust the latter blindly (defense-in-depth against a buggy/compromised oracle; found
+    /// during an audit review).
     OracleStale = 10,
     NotAuthorizedOnSac = 11,
     IssuerMismatch = 12,
@@ -138,6 +157,11 @@ pub enum Error {
     /// `overflow-checks = true` release-profile setting to fail closed, as a generic Rust panic
     /// rather than this contract's own observable error code.
     ArithmeticOverflow = 15,
+    /// `set_recovery_escrow` was given an address that does not point back at a RecoveryEscrow
+    /// configured for this same underlying -- most likely a stale address copied from a
+    /// different market. Found during audit review: this wiring is one-shot and irreversible,
+    /// so an admin mistake here previously had no cross-check at all, unlike `initialize`.
+    RecoveryEscrowMismatch = 16,
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +249,14 @@ impl YTTokenContract {
             panic_with_error!(&env, Error::OracleStale);
         }
         let genesis_rate = oracle_client.get_reference_value();
+        // Defense-in-depth: `is_available()` only attests freshness, not positivity. A
+        // non-positive genesis rate would be divided/multiplied against below (`index_for`),
+        // corrupting the index silently or panicking on division by zero -- fail with this
+        // contract's own clear error instead of trusting the oracle's value blindly. Found
+        // during an audit review.
+        if genesis_rate <= 0 {
+            panic_with_error!(&env, Error::OracleStale);
+        }
 
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
@@ -258,11 +290,21 @@ impl YTTokenContract {
         env.events().publish((symbol_short!("min_set"),), minter);
     }
 
-    /// One-time wiring of the RecoveryEscrow contract authorized to call `seize`.
+    /// One-time wiring of the RecoveryEscrow contract authorized to call `seize`. Settable once,
+    /// never reassigned -- so an admin mistake here (wrong address, a stale address copied from a
+    /// different market) would otherwise be permanent. Mirroring `PrincipalManager::initialize`'s
+    /// `assert_topology_matches` and `RecoveryEscrow::initialize`'s own cross-check of every
+    /// position's `underlying_address()`, this calls back into the given address and requires its
+    /// own `underlying_address()` to match this token's underlying before accepting it. Found
+    /// during audit review.
     pub fn set_recovery_escrow(env: Env, admin: Address, escrow: Address) {
         Self::assert_admin(&env, &admin);
         if env.storage().instance().has(&DataKey::RecoveryEscrow) {
             panic_with_error!(&env, Error::RecoveryEscrowAlreadySet);
+        }
+        let this_underlying = Self::underlying_address(env.clone());
+        if RecoveryEscrowClient::new(&env, &escrow).underlying_address() != this_underlying {
+            panic_with_error!(&env, Error::RecoveryEscrowMismatch);
         }
         env.storage()
             .instance()
@@ -292,9 +334,9 @@ impl YTTokenContract {
         Self::settle(&env, &from);
         Self::settle(&env, &to);
 
-        Self::set_balance(&env, &from, from_balance - amount);
+        Self::set_balance(&env, &from, Self::checked_sub(&env, from_balance, amount));
         let to_balance = Self::get_balance(&env, &to);
-        Self::set_balance(&env, &to, to_balance + amount);
+        Self::set_balance(&env, &to, Self::checked_add(&env, to_balance, amount));
 
         env.events()
             .publish((symbol_short!("transfer"),), (from, to, amount));
@@ -322,14 +364,14 @@ impl YTTokenContract {
         Self::settle(&env, &from);
         Self::settle(&env, &to);
 
-        Self::set_balance(&env, &from, from_balance - amount);
+        Self::set_balance(&env, &from, Self::checked_sub(&env, from_balance, amount));
         let to_balance = Self::get_balance(&env, &to);
-        Self::set_balance(&env, &to, to_balance + amount);
+        Self::set_balance(&env, &to, Self::checked_add(&env, to_balance, amount));
         Self::set_allowance(
             &env,
             &from,
             &spender,
-            allowance.amount - amount,
+            Self::checked_sub(&env, allowance.amount, amount),
             allowance.expiration_ledger,
         );
 
@@ -398,15 +440,16 @@ impl YTTokenContract {
         Self::settle(&env, &to);
 
         let bal = Self::get_balance(&env, &to);
-        Self::set_balance(&env, &to, bal + amount);
+        Self::set_balance(&env, &to, Self::checked_add(&env, bal, amount));
         let total: i128 = env
             .storage()
             .instance()
             .get(&DataKey::TotalSupply)
             .unwrap_or(0);
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalSupply, &(total + amount));
+        env.storage().instance().set(
+            &DataKey::TotalSupply,
+            &Self::checked_add(&env, total, amount),
+        );
 
         env.events().publish((symbol_short!("mint"),), (to, amount));
     }
@@ -424,15 +467,16 @@ impl YTTokenContract {
         Self::sync_index(&env);
         Self::settle(&env, &from);
 
-        Self::set_balance(&env, &from, bal - amount);
+        Self::set_balance(&env, &from, Self::checked_sub(&env, bal, amount));
         let total: i128 = env
             .storage()
             .instance()
             .get(&DataKey::TotalSupply)
             .unwrap_or(0);
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalSupply, &(total - amount));
+        env.storage().instance().set(
+            &DataKey::TotalSupply,
+            &Self::checked_sub(&env, total, amount),
+        );
 
         env.events()
             .publish((symbol_short!("burn"),), (from, amount));
@@ -463,9 +507,9 @@ impl YTTokenContract {
         Self::settle(&env, &account);
         Self::settle(&env, &caller);
 
-        Self::set_balance(&env, &account, bal - amount);
+        Self::set_balance(&env, &account, Self::checked_sub(&env, bal, amount));
         let to_balance = Self::get_balance(&env, &caller);
-        Self::set_balance(&env, &caller, to_balance + amount);
+        Self::set_balance(&env, &caller, Self::checked_add(&env, to_balance, amount));
 
         // The flagged account's accrued-but-unclaimed yield moves with the position. It is backed
         // by SY in `PrincipalManager`'s custody, and a deauthorized account can never claim it, so
@@ -636,6 +680,13 @@ impl YTTokenContract {
             panic_with_error!(env, Error::OracleStale);
         }
         let now_rate = oracle.get_reference_value();
+        // Defense-in-depth: see the identical check in `initialize`. A non-positive rate here
+        // would otherwise flow into `index_for` (division) and the settlement rate PT redemption
+        // divides by -- fail closed with this contract's own error instead of trusting the
+        // oracle's positivity.
+        if now_rate <= 0 {
+            panic_with_error!(env, Error::OracleStale);
+        }
         let last_rate: i128 = env
             .storage()
             .instance()
@@ -742,6 +793,19 @@ impl YTTokenContract {
     fn mul_div(env: &Env, a: i128, b: i128, c: i128) -> i128 {
         a.checked_mul(b)
             .and_then(|v| v.checked_div(c))
+            .unwrap_or_else(|| panic_with_error!(env, Error::ArithmeticOverflow))
+    }
+
+    /// `a + b`, raising this contract's own typed `ArithmeticOverflow` error on overflow rather
+    /// than a bare Rust arithmetic-overflow panic. Used for every balance/total-supply update.
+    fn checked_add(env: &Env, a: i128, b: i128) -> i128 {
+        a.checked_add(b)
+            .unwrap_or_else(|| panic_with_error!(env, Error::ArithmeticOverflow))
+    }
+
+    /// `a - b`, same overflow behavior as `checked_add`.
+    fn checked_sub(env: &Env, a: i128, b: i128) -> i128 {
+        a.checked_sub(b)
             .unwrap_or_else(|| panic_with_error!(env, Error::ArithmeticOverflow))
     }
 

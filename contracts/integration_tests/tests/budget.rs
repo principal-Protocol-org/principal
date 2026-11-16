@@ -61,9 +61,20 @@ fn amm_operations_fit_the_per_transaction_cpu_budget() {
     measure("add_liquidity_single_sy (18-step bisection)", &|| {
         s.pool.add_liquidity_single_sy(&trader, &(20 * SCALE), &0);
     });
+    // Quoted off-chain first (outside the measured closure, same as a real caller would do
+    // before building the transaction) via `MarketPool.quote_sy_for_yt`, which replicates
+    // `PrincipalManager.mint`'s tokenization-fee-and-oracle-rate formula exactly.
+    let pt_in = s.pool.quote_sy_for_yt(&(20 * SCALE)).yt_out;
     measure("router.swap_sy_for_yt (flash-mint)", &|| {
-        s.router
-            .swap_sy_for_yt(&trader, &pool, &(20 * SCALE), &0, &(20 * SCALE), &u64::MAX);
+        s.router.swap_sy_for_yt(
+            &trader,
+            &pool,
+            &(20 * SCALE),
+            &pt_in,
+            &0,
+            &(20 * SCALE),
+            &u64::MAX,
+        );
     });
     let yt = s.yt.balance(&trader).min(15 * SCALE);
     measure("swap_yt_for_sy (flash-redeem)", &|| {

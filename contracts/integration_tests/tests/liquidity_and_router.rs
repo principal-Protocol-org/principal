@@ -546,7 +546,14 @@ fn router_deadline_and_min_out_guards_apply_to_every_flow() {
 
     assert_eq!(
         s.router
-            .try_wrap_and_mint(&user, &pool, &SCALE, &0, &past)
+            .try_wrap_and_mint(
+                &user,
+                &pool,
+                &SCALE,
+                &underlying_to_shares_for_test(&s, SCALE),
+                &0,
+                &past
+            )
             .err(),
         err_code(dl)
     );
@@ -601,12 +608,25 @@ fn router_deadline_and_min_out_guards_apply_to_every_flow() {
     let sl = RouterError::SlippageExceeded as u32;
     assert_eq!(
         s.router
-            .try_wrap_and_mint(&user, &pool, &(10 * SCALE), &(11 * SCALE), &u64::MAX)
+            .try_wrap_and_mint(
+                &user,
+                &pool,
+                &(10 * SCALE),
+                &underlying_to_shares_for_test(&s, 10 * SCALE),
+                &(11 * SCALE),
+                &u64::MAX
+            )
             .err(),
         err_code(sl)
     );
-    s.router
-        .wrap_and_mint(&user, &pool, &(100 * SCALE), &(100 * SCALE), &u64::MAX);
+    s.router.wrap_and_mint(
+        &user,
+        &pool,
+        &(100 * SCALE),
+        &underlying_to_shares_for_test(&s, 100 * SCALE),
+        &(100 * SCALE),
+        &u64::MAX,
+    );
     assert_eq!(
         s.router
             .try_recombine(&user, &pool, &(10 * SCALE), &(11 * SCALE), &u64::MAX)
@@ -622,10 +642,17 @@ fn router_wrap_unwrap_recombine_and_liquidity_flows_work_end_to_end() {
     let user = s.new_user();
     s.mint_underlying(&user, 500 * SCALE);
 
-    // wrap_and_mint: underlying -> SY -> PT + YT.
-    let m = s
-        .router
-        .wrap_and_mint(&user, &pool, &(200 * SCALE), &0, &u64::MAX);
+    // wrap_and_mint: underlying -> SY -> PT + YT. `sy_in` is quoted off-chain first
+    // (SYWrapper.exchange_rate()), exactly as a real caller would, rather than derived
+    // mid-execution -- see the function's own docs.
+    let m = s.router.wrap_and_mint(
+        &user,
+        &pool,
+        &(200 * SCALE),
+        &underlying_to_shares_for_test(&s, 200 * SCALE),
+        &0,
+        &u64::MAX,
+    );
     assert_eq!(m.pt_minted, 200 * SCALE);
     assert_eq!(underlying_balance(&s, &user), 300 * SCALE);
 
@@ -641,8 +668,14 @@ fn router_wrap_unwrap_recombine_and_liquidity_flows_work_end_to_end() {
     assert_eq!(underlying_balance(&s, &user), 500 * SCALE);
 
     // Liquidity via the router.
-    s.router
-        .wrap_and_mint(&user, &pool, &(100 * SCALE), &0, &u64::MAX);
+    s.router.wrap_and_mint(
+        &user,
+        &pool,
+        &(100 * SCALE),
+        &underlying_to_shares_for_test(&s, 100 * SCALE),
+        &0,
+        &u64::MAX,
+    );
     deposit_sy(&s, &user, 100 * SCALE);
     let (_, _, lp) =
         s.router
@@ -671,9 +704,16 @@ fn router_underlying_denominated_flows_and_keep_yt_work_end_to_end() {
     s.mint_underlying(&user, 500 * SCALE);
 
     // swap_underlying_for_pt: pay underlying directly, no separate wrap call by the caller.
-    let pt_out = s
-        .router
-        .swap_underlying_for_pt(&user, &pool, &(100 * SCALE), &0, &u64::MAX);
+    // `sy_in` is quoted off-chain first (SYWrapper.exchange_rate()), exactly as a real caller
+    // would, rather than derived mid-execution -- see the function's own docs.
+    let pt_out = s.router.swap_underlying_for_pt(
+        &user,
+        &pool,
+        &(100 * SCALE),
+        &underlying_to_shares_for_test(&s, 100 * SCALE),
+        &0,
+        &u64::MAX,
+    );
     assert!(pt_out > 0);
     assert_eq!(underlying_balance(&s, &user), 400 * SCALE);
     assert_eq!(s.pt.balance(&user), pt_out);
@@ -691,11 +731,15 @@ fn router_underlying_denominated_flows_and_keep_yt_work_end_to_end() {
     // hands mid-flow. `sy_in` is quoted off-chain first (SYWrapper.exchange_rate()), exactly as a
     // real caller would, rather than derived mid-execution -- see the function's own docs.
     let sy_in_yt = underlying_to_shares_for_test(&s, 50 * SCALE);
+    // `pt_in` is likewise quoted off-chain first, via the same tokenization-fee-and-oracle-rate
+    // formula `PrincipalManager.mint` uses -- `MarketPool.quote_sy_for_yt` replicates it exactly.
+    let pt_in_yt = s.pool.quote_sy_for_yt(&sy_in_yt).yt_out;
     let (yt_out, _underlying_change) = s.router.swap_underlying_for_yt(
         &user,
         &pool,
         &(50 * SCALE),
         &sy_in_yt,
+        &pt_in_yt,
         &0,
         &i128::MAX,
         &u64::MAX,
@@ -735,7 +779,14 @@ fn router_underlying_denominated_flows_and_keep_yt_work_end_to_end() {
     let past = s.env.ledger().timestamp() - 1;
     assert_eq!(
         s.router
-            .try_swap_underlying_for_pt(&user, &pool, &SCALE, &0, &past)
+            .try_swap_underlying_for_pt(
+                &user,
+                &pool,
+                &SCALE,
+                &underlying_to_shares_for_test(&s, SCALE),
+                &0,
+                &past
+            )
             .err(),
         err_code(RouterError::DeadlineExpired as u32)
     );
@@ -749,6 +800,7 @@ fn router_underlying_denominated_flows_and_keep_yt_work_end_to_end() {
                 &user,
                 &pool,
                 &(10 * SCALE),
+                &underlying_to_shares_for_test(&s, 10 * SCALE),
                 &(1_000_000 * SCALE),
                 &u64::MAX
             )
@@ -774,9 +826,14 @@ fn underlying_denominated_router_flows_tolerate_pre_existing_pt_and_sy() {
     s.mint_underlying(&user, 1_000 * SCALE);
 
     // Unrelated pre-existing PT and SY, from trades that have nothing to do with what follows.
-    let stray_pt = s
-        .router
-        .swap_underlying_for_pt(&user, &pool, &(20 * SCALE), &0, &u64::MAX);
+    let stray_pt = s.router.swap_underlying_for_pt(
+        &user,
+        &pool,
+        &(20 * SCALE),
+        &underlying_to_shares_for_test(&s, 20 * SCALE),
+        &0,
+        &u64::MAX,
+    );
     assert!(stray_pt > 0);
     let stray_sy = deposit_sy(&s, &user, 15 * SCALE);
     assert!(stray_sy > 0);
@@ -784,9 +841,14 @@ fn underlying_denominated_router_flows_tolerate_pre_existing_pt_and_sy() {
     assert_eq!(s.sy.balance_of(&user), stray_sy);
 
     // swap_pt_for_underlying on a *second* batch of PT: the stray PT/SY above must survive.
-    let pt_out = s
-        .router
-        .swap_underlying_for_pt(&user, &pool, &(30 * SCALE), &0, &u64::MAX);
+    let pt_out = s.router.swap_underlying_for_pt(
+        &user,
+        &pool,
+        &(30 * SCALE),
+        &underlying_to_shares_for_test(&s, 30 * SCALE),
+        &0,
+        &u64::MAX,
+    );
     s.router
         .swap_pt_for_underlying(&user, &pool, &pt_out, &0, &u64::MAX);
     assert_eq!(s.pt.balance(&user), stray_pt, "stray PT survived the sell");
@@ -799,11 +861,13 @@ fn underlying_denominated_router_flows_tolerate_pre_existing_pt_and_sy() {
     // swap_underlying_for_yt then swap_yt_for_underlying: same check, on top of the same stray
     // balances (not reset between steps).
     let sy_in_yt = underlying_to_shares_for_test(&s, 25 * SCALE);
+    let pt_in_yt = s.pool.quote_sy_for_yt(&sy_in_yt).yt_out;
     let (yt_out, _) = s.router.swap_underlying_for_yt(
         &user,
         &pool,
         &(25 * SCALE),
         &sy_in_yt,
+        &pt_in_yt,
         &0,
         &i128::MAX,
         &u64::MAX,
@@ -936,9 +1000,14 @@ fn router_quotes_for_underlying_denominated_flows_match_the_real_outcome_exactly
     s.mint_underlying(&user, 500 * SCALE);
 
     let q = s.router.quote_underlying_for_pt(&pool, &(100 * SCALE));
-    let pt_out = s
-        .router
-        .swap_underlying_for_pt(&user, &pool, &(100 * SCALE), &0, &u64::MAX);
+    let pt_out = s.router.swap_underlying_for_pt(
+        &user,
+        &pool,
+        &(100 * SCALE),
+        &underlying_to_shares_for_test(&s, 100 * SCALE),
+        &0,
+        &u64::MAX,
+    );
     assert_eq!(q.amount_out, pt_out, "quote_underlying_for_pt");
 
     let q = s.router.quote_pt_for_underlying(&pool, &pt_out);
@@ -949,11 +1018,15 @@ fn router_quotes_for_underlying_denominated_flows_match_the_real_outcome_exactly
 
     let sy_in_yt = underlying_to_shares_for_test(&s, 50 * SCALE);
     let q = s.router.quote_underlying_for_yt(&pool, &(50 * SCALE));
+    // `q.yt_out` previews exactly the `pt_minted` the real mint leg will produce (1:1 notional),
+    // so it doubles as the caller-quoted `pt_in` literal -- exactly how a real integrator would
+    // use this quote.
     let (yt_out, underlying_change) = s.router.swap_underlying_for_yt(
         &user,
         &pool,
         &(50 * SCALE),
         &sy_in_yt,
+        &q.yt_out,
         &0,
         &i128::MAX,
         &u64::MAX,
@@ -1152,7 +1225,14 @@ fn router_acts_as_the_user_so_a_deauthorized_user_gains_nothing_by_using_it() {
         s.deauthorize(&user);
         assert!(s
             .router
-            .try_wrap_and_mint(&user, &pool, &(10 * SCALE), &0, &u64::MAX)
+            .try_wrap_and_mint(
+                &user,
+                &pool,
+                &(10 * SCALE),
+                &underlying_to_shares_for_test(&s, 10 * SCALE),
+                &0,
+                &u64::MAX
+            )
             .is_err());
         assert!(s
             .router
@@ -1210,8 +1290,14 @@ fn redeem_and_claim_through_the_router_after_maturity() {
     let pool = s.pool.address.clone();
     let user = s.new_user();
     s.mint_underlying(&user, 100 * SCALE);
-    s.router
-        .wrap_and_mint(&user, &pool, &(100 * SCALE), &0, &u64::MAX);
+    s.router.wrap_and_mint(
+        &user,
+        &pool,
+        &(100 * SCALE),
+        &underlying_to_shares_for_test(&s, 100 * SCALE),
+        &0,
+        &u64::MAX,
+    );
     s.advance(T0 + 90 * DAY, SCALE * 105 / 100);
     let claimed = s.router.claim_yield(&user, &pool);
     assert!(claimed > 0);

@@ -134,6 +134,13 @@ pub trait PermissioningInterface {
     fn is_allowed(env: Env, account: Address) -> bool;
 }
 
+/// Minimum interface required from RecoveryEscrow, used only to cross-check `set_recovery_escrow`
+/// at wiring time (see that function's doc comment).
+#[contractclient(name = "RecoveryEscrowClient")]
+pub trait RecoveryEscrowInterface {
+    fn underlying_address(env: Env) -> Address;
+}
+
 #[contractclient(name = "ConfigClient")]
 pub trait ConfigInterface {
     fn swap_fee_rate(env: Env, seconds_to_maturity: u64) -> i128;
@@ -166,15 +173,27 @@ pub enum Error {
     InsufficientLpBalance = 10,
     PermissionDenied = 11,
     NotAuthorizedOnSac = 12,
+    /// Also raised when the oracle *is* fresh but returns a non-positive reference value --
+    /// freshness and positivity are independent properties, and this contract must not trust
+    /// the latter blindly (defense-in-depth against a buggy/compromised oracle; found during
+    /// an audit review).
     OracleStale = 13,
     MaturityTooFar = 14,
     InvalidInitialRatio = 15,
+    /// Also raised when `MarketConfig.swap_fee_rate` returns a value outside `[0, FEE_SCALE)` --
+    /// defense-in-depth independent of `MarketConfig`'s own cap, since this pool divides by
+    /// `FEE_SCALE - fee_rate` (found during an audit review).
     MathError = 16,
     RecoveryEscrowAlreadySet = 17,
     NotRecoveryEscrow = 18,
     NothingToClaim = 19,
     InvalidStretch = 20,
     MinimumLiquidity = 21,
+    /// `set_recovery_escrow` was given an address that does not point back at a RecoveryEscrow
+    /// configured for this same underlying -- most likely a stale address copied from a
+    /// different market. Found during audit review: this wiring is one-shot and irreversible,
+    /// so an admin mistake here previously had no cross-check at all, unlike `initialize`.
+    RecoveryEscrowMismatch = 22,
 }
 
 #[contracttype]
@@ -689,6 +708,19 @@ impl MarketPoolContract {
             panic_with_error!(&env, Error::InsufficientLiquidity);
         }
 
+        // Pulls `sy_in` before this function's own reserve effects, unlike every other
+        // state-changing trade here (checks -> compute quote -> effects -> interactions). This is
+        // deliberate, not an oversight: deriving the pulled amount mid-execution instead of taking
+        // it as a fixed, pre-signed literal previously reproduced a real auth-staleness bug on
+        // Testnet (`Error(Auth, InvalidAction)`), the same bug class documented at length in
+        // `router/src/lib.rs`'s own module doc. This ordering is safe only because `SYWrapper`'s
+        // `transfer` has no external-call surface of its own (it only makes read-only compliance
+        // checks -- confirmed by reading it), so there is no actual reentrancy window today; found
+        // during an audit review, which also confirmed a later `SlippageExceeded` panic still
+        // unwinds this transfer along with everything else, since Soroban has no partial commit.
+        // A future change to `SYWrapper` (or a different SY-wrapper implementation with a
+        // compliance hook that could call out to attacker-controlled code) must not silently
+        // reintroduce a real reentrancy window here without revisiting this ordering.
         let this = env.current_contract_address();
         let sy = SYClient::new(&env, &Self::addr(&env, &DataKey::SY));
         sy.transfer(&from, &this, &sy_in);
@@ -1179,11 +1211,21 @@ impl MarketPoolContract {
             .publish((symbol_short!("adm_xfer"),), (current_admin, new_admin));
     }
 
-    /// One-time wiring of the `RecoveryEscrow` allowed to call `seize_lp`.
+    /// One-time wiring of the `RecoveryEscrow` allowed to call `seize_lp`. Settable once, never
+    /// reassigned -- so an admin mistake here (wrong address, a stale address copied from a
+    /// different market) would otherwise be permanent. Mirroring `PrincipalManager::initialize`'s
+    /// `assert_topology_matches` and `RecoveryEscrow::initialize`'s own cross-check of every
+    /// position's `underlying_address()`, this calls back into the given address and requires its
+    /// own `underlying_address()` to match this pool's underlying before accepting it. Found
+    /// during audit review.
     pub fn set_recovery_escrow(env: Env, admin: Address, escrow: Address) {
         Self::assert_admin(&env, &admin);
         if env.storage().instance().has(&DataKey::RecoveryEscrow) {
             panic_with_error!(&env, Error::RecoveryEscrowAlreadySet);
+        }
+        let this_underlying = Self::underlying_address(env.clone());
+        if RecoveryEscrowClient::new(&env, &escrow).underlying_address() != this_underlying {
+            panic_with_error!(&env, Error::RecoveryEscrowMismatch);
         }
         env.storage()
             .instance()
@@ -1382,7 +1424,17 @@ impl MarketPoolContract {
     }
 
     fn rate(env: &Env) -> i128 {
-        OracleClient::new(env, &Self::addr(env, &DataKey::Oracle)).get_reference_value()
+        let rate = OracleClient::new(env, &Self::addr(env, &DataKey::Oracle)).get_reference_value();
+        // Defense-in-depth: `assert_fresh_oracle` only attests freshness, not positivity. A
+        // non-positive rate here would otherwise flow straight into `value_of`/`calc_*` as a
+        // divisor or multiplicand (divide-by-zero panic or silent sign corruption) -- fail
+        // closed with this contract's own clear error instead of trusting the oracle's value
+        // blindly. Found during an audit review; fixed once here since every quote/trade reads
+        // the rate through this one function.
+        if rate <= 0 {
+            panic_with_error!(env, Error::OracleStale);
+        }
+        rate
     }
 
     fn assert_fresh_oracle(env: &Env) {
@@ -1417,6 +1469,15 @@ impl MarketPoolContract {
             .unwrap_or_else(|_| panic_with_error!(env, Error::MaturityTooFar));
         let fee_rate =
             ConfigClient::new(env, &Self::addr(env, &DataKey::Config)).swap_fee_rate(&secs);
+        // Defense-in-depth, independent of `MarketConfig`'s own cap on `fee_rate`: this pool
+        // divides by `FEE_SCALE - fee_rate` in `calc_buy_exact_pt`, so an out-of-range value from
+        // a different/future config implementation (or a compromised config-admin) must not
+        // reach that divide-by-zero/negative-divisor path silently. Found during an audit
+        // review; fixed once here since every quote/trade reads `fee_rate` through this one
+        // function.
+        if !(0..FEE_SCALE).contains(&fee_rate) {
+            panic_with_error!(env, Error::MathError);
+        }
         PoolState {
             pt_reserve,
             sy_reserve,

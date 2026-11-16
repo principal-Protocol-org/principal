@@ -168,8 +168,11 @@ pub trait Sep40Interface {
 }
 
 /// The most recent `set_reference_value` call this contract refused, if any. `reason` is one of
-/// a small fixed set of short symbols (`decrease`, `stale_ts`, `deviate`, `fb_value`) rather than
-/// a free-form string, so a dashboard can map it to display text without parsing.
+/// a small fixed set of short symbols (`decrease`, `stale_ts`, `deviate`, `fb_value`, and, from
+/// `sync_from_feed`, `oob` and `feed_err` -- the latter covering both a feed returning an error
+/// and a feed panicking internally, since `try_decimals`/`try_lastprice` surface both the same
+/// way) rather than a free-form string, so a dashboard can map it to display text without
+/// parsing.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct OracleRejection {
@@ -461,10 +464,21 @@ impl OracleAdapterContract {
         let (feed, asset) = Self::feed_source(env.clone())
             .unwrap_or_else(|| panic_with_error!(&env, Error::FeedNotConfigured));
         let client = Sep40Client::new(&env, &feed);
-        let decimals = client.decimals();
-        let data = match client.lastprice(&asset) {
-            Some(data) => data,
-            None => return Self::reject(&env, 0, 0, symbol_short!("no_data"), false),
+        // `try_decimals`/`try_lastprice`, not the plain generated calls: a panic inside the feed
+        // contract (a bad implementation, an internal assertion, a divide-by-zero) must not abort
+        // this whole invocation the way a plain cross-contract call would -- that would defeat the
+        // entire point of this function being safely callable by anyone, including an unattended
+        // keeper, on a feed this contract does not control. `try_*` catches a callee panic and
+        // surfaces it as an `Err` instead of propagating it, which this treats the same as any
+        // other feed misbehavior: a graceful `feed_err` rejection, not a panic.
+        let decimals = match client.try_decimals() {
+            Ok(Ok(d)) => d,
+            _ => return Self::reject(&env, 0, 0, symbol_short!("feed_err"), false),
+        };
+        let data = match client.try_lastprice(&asset) {
+            Ok(Ok(Some(data))) => data,
+            Ok(Ok(None)) => return Self::reject(&env, 0, 0, symbol_short!("no_data"), false),
+            _ => return Self::reject(&env, 0, 0, symbol_short!("feed_err"), false),
         };
         if data.price <= 0 {
             return Self::reject(
@@ -629,7 +643,11 @@ impl OracleAdapterContract {
     }
 
     /// Which configured source (primary or fallback) the currently-stored value last came from.
-    /// `None` before the first accepted `set_reference_value`.
+    /// `None` before the first accepted `set_reference_value`. Only meaningful when
+    /// `last_update_was_feed() == false`: a successful `sync_from_feed` updates `Price`/
+    /// `Timestamp` but never touches `ActiveSource`, so after it this getter still reports
+    /// whichever push-path source last won, not the feed that actually produced the current
+    /// value.
     pub fn get_active_source(env: Env) -> Option<BytesN<32>> {
         env.storage().instance().get(&DataKey::ActiveSource)
     }

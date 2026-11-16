@@ -59,14 +59,23 @@
 //! same class of bug still live in `add_liquidity_keep_yt` (its `sy_remaining` and
 //! `minted.pt_minted` were both derived, mid-execution, from a deposit's live-rate-dependent
 //! share count and a mint's live-rate-dependent notional) and in `swap_underlying_for_yt` (its
-//! `sy_in` was the same kind of derived deposit output) -- fixed the same way below.
+//! `sy_in` was the same kind of derived deposit output) -- fixed the same way below. A further,
+//! senior-level audit ahead of mainnet launch found the same unfixed bug in four more places:
+//! `swap_sy_for_yt` and `swap_underlying_for_yt` each chained `mint`'s returned `pt_minted`
+//! straight into `swap_pt_for_sy`'s authorized call; `wrap_and_mint` and `swap_underlying_for_pt`
+//! each chained `deposit`'s returned `shares` straight into `mint`'s/`swap_sy_for_pt`'s authorized
+//! call. All four now take the downstream amount (`pt_in` for the first two, `sy_in` for the
+//! other two) as a caller-quoted literal instead, fixed the same way below.
 //!
 //! Two fixes are used throughout this contract, never a derived amount passed straight through:
 //! * **A caller-supplied literal, quoted off-chain before the call is built** -- `mint_amount`,
 //!   `pt_desired`/`sy_desired`, for `add_liquidity_keep_yt` (quoted via `MarketPool.keep_yt_split`
 //!   and `reserves()`/`lp_total_supply()`, the same way every other min-out in this Router is
-//!   quoted); `sy_in` for `swap_underlying_for_yt` (quoted via `SYWrapper.exchange_rate()`);
-//!   `sy_in` for `add_liquidity_single_underlying` (same).
+//!   quoted); `sy_in` for `swap_underlying_for_yt`, `wrap_and_mint` and `swap_underlying_for_pt`
+//!   (quoted via `SYWrapper.exchange_rate()`); `sy_in` for `add_liquidity_single_underlying`
+//!   (same); `pt_in` for `swap_sy_for_yt` and `swap_underlying_for_yt` (quoted via the same
+//!   tokenization-fee-and-oracle-rate formula `PrincipalManager.mint` uses, e.g.
+//!   `MarketPool.quote_sy_for_yt(sy_in).yt_out`).
 //! * **A sweep of only the gain since a `baseline`, read at execution time instead of taking the
 //!   gain as an argument** -- `SYWrapper.withdraw_gained` and `MarketPool.swap_gained_pt_for_sy`
 //!   have nothing curve- or rate-derived left to authorize, and -- unlike their full-sweep
@@ -399,6 +408,7 @@ impl RouterContract {
         if env.storage().instance().has(&DataKey::Admin) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
+        admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
     }
 
@@ -480,19 +490,27 @@ impl RouterContract {
 
     /// Underlying -> SY -> PT + YT in one transaction. Reverts if fewer than `min_pt_out` PT are
     /// minted (the tokenization fee is withheld before PT/YT are sized).
+    ///
+    /// `sy_in` is a caller-supplied literal (quote `SYWrapper.exchange_rate()` off-chain, the same
+    /// `amount * RATE_SCALE / exchange_rate()` convention `add_liquidity_single_underlying` uses
+    /// for its own `sy_in`), **not** derived from `deposit`'s return value -- chaining `deposit`'s
+    /// live-rate-dependent output straight into `mint`'s authorized call has exactly the
+    /// `Error(Auth, InvalidAction)` drift risk the module docs describe. The wrap leg is unguarded
+    /// (`min_shares_out = 0`); `min_pt_out` protects the whole round trip.
     pub fn wrap_and_mint(
         env: Env,
         from: Address,
         pool: Address,
         amount: i128,
+        sy_in: i128,
         min_pt_out: i128,
         deadline: u64,
     ) -> MintResult {
         from.require_auth();
         Self::assert_deadline(&env, deadline);
         let info = Self::info(&env, &pool);
-        let shares = SYClient::new(&env, &info.sy).deposit(&from, &amount, &0);
-        let result = ManagerClient::new(&env, &info.manager).mint(&from, &shares);
+        SYClient::new(&env, &info.sy).deposit(&from, &amount, &0);
+        let result = ManagerClient::new(&env, &info.manager).mint(&from, &sy_in);
         if result.pt_minted < min_pt_out {
             panic_with_error!(&env, Error::SlippageExceeded);
         }
@@ -548,19 +566,26 @@ impl RouterContract {
     /// signature, for a user who holds the underlying rather than SY. The wrap leg is unguarded
     /// (`min_shares_out = 0`); `min_pt_out` protects the whole round trip, matching
     /// `wrap_and_mint`'s existing pattern of guarding only the final output.
+    ///
+    /// `sy_in` is a caller-supplied literal (quote `SYWrapper.exchange_rate()` off-chain, the same
+    /// convention `add_liquidity_single_underlying` and `wrap_and_mint` use for their own `sy_in`),
+    /// **not** derived from `deposit`'s return value -- chaining `deposit`'s live-rate-dependent
+    /// output straight into `swap_sy_for_pt`'s authorized call has exactly the `Error(Auth,
+    /// InvalidAction)` drift risk the module docs describe.
     pub fn swap_underlying_for_pt(
         env: Env,
         from: Address,
         pool: Address,
         underlying_amount: i128,
+        sy_in: i128,
         min_pt_out: i128,
         deadline: u64,
     ) -> i128 {
         from.require_auth();
         Self::assert_deadline(&env, deadline);
         let info = Self::info(&env, &pool);
-        let shares = SYClient::new(&env, &info.sy).deposit(&from, &underlying_amount, &0);
-        PoolClient::new(&env, &pool).swap_sy_for_pt(&from, &from, &shares, &min_pt_out)
+        SYClient::new(&env, &info.sy).deposit(&from, &underlying_amount, &0);
+        PoolClient::new(&env, &pool).swap_sy_for_pt(&from, &from, &sy_in, &min_pt_out)
     }
 
     /// PT -> SY (`MarketPool`) -> underlying (`SYWrapper.withdraw_gained`), in one transaction.
@@ -600,17 +625,29 @@ impl RouterContract {
     /// the pool in the same transaction, and leaves the user with the YT plus the SY the PT
     /// fetched. Net cost of the YT is `sy_in - sy_back` SY. Returns `(yt_out, sy_back)`.
     ///
+    /// `pt_in` is a caller-supplied literal (quoted off-chain the same way `PrincipalManager.mint`
+    /// computes `pt_minted`: tokenization fee withheld, then valued at the live oracle rate --
+    /// e.g. via `MarketPool.quote_sy_for_yt(sy_in).yt_out`, which replicates that exact formula),
+    /// **not** derived from `mint`'s return value -- chaining `minted.pt_minted` straight into
+    /// `swap_pt_for_sy`'s authorized call has exactly the `Error(Auth, InvalidAction)` drift risk
+    /// the module docs describe, since `mint`'s output depends on the live oracle rate. If `pt_in`
+    /// doesn't match what `mint` actually produced, `swap_pt_for_sy`'s own balance check simply
+    /// fails closed (an ordinary revert, not an auth error); a caller can never benefit from
+    /// quoting `pt_in` higher than the real `pt_minted`.
+    ///
     /// Two guards: `min_yt_out` on the YT minted (fixed by the oracle rate and the tokenization
     /// fee -- it protects against a fee or rate change between quote and inclusion) and
     /// `max_net_cost` on the **price** the PT sale achieves: the call reverts `SlippageExceeded` if
     /// `sy_in - sy_back > max_net_cost`. Without the second guard the pool leg would run
     /// unprotected and could be sandwiched. No loan is involved: it is two synchronous calls in one
     /// atomic transaction, both made as the user.
+    #[allow(clippy::too_many_arguments)] // one entrypoint composing a mint and a sell, by design.
     pub fn swap_sy_for_yt(
         env: Env,
         from: Address,
         pool: Address,
         sy_in: i128,
+        pt_in: i128,
         min_yt_out: i128,
         max_net_cost: i128,
         deadline: u64,
@@ -628,12 +665,8 @@ impl RouterContract {
         } else {
             sy_in - max_net_cost
         };
-        let sy_back = PoolClient::new(&env, &pool).swap_pt_for_sy(
-            &from,
-            &from,
-            &minted.pt_minted,
-            &min_sy_back,
-        );
+        let sy_back =
+            PoolClient::new(&env, &pool).swap_pt_for_sy(&from, &from, &pt_in, &min_sy_back);
         (minted.yt_minted, sy_back)
     }
 
@@ -656,6 +689,11 @@ impl RouterContract {
     /// `withdraw_gained` sweep below, same as a generous `mint_amount` leaves a recoverable
     /// surplus with `add_liquidity_keep_yt`.
     ///
+    /// `pt_in` is likewise a caller-supplied literal (quoted the same way as `swap_sy_for_yt`'s
+    /// own `pt_in` -- see its docs: the tokenization-fee-and-oracle-rate formula
+    /// `PrincipalManager.mint` uses, e.g. via `MarketPool.quote_sy_for_yt(sy_in).yt_out`), **not**
+    /// derived from `mint`'s return value, for the identical drift reason.
+    ///
     /// Reads `baseline = from`'s SY balance *before* the wrap, then unwraps only what this call
     /// gained (`withdraw_gained`) -- see `swap_pt_for_underlying`'s docs for why this replaced an
     /// earlier `withdraw_all` + zero-pre-existing-SY-balance precondition that the dApp team
@@ -667,6 +705,7 @@ impl RouterContract {
         pool: Address,
         underlying_amount: i128,
         sy_in: i128,
+        pt_in: i128,
         min_yt_out: i128,
         max_net_cost: i128,
         deadline: u64,
@@ -686,7 +725,7 @@ impl RouterContract {
         } else {
             sy_in - max_net_cost
         };
-        PoolClient::new(&env, &pool).swap_pt_for_sy(&from, &from, &minted.pt_minted, &min_sy_back);
+        PoolClient::new(&env, &pool).swap_pt_for_sy(&from, &from, &pt_in, &min_sy_back);
         let underlying_back = sy.withdraw_gained(&from, &baseline, &from, &0);
         (minted.yt_minted, underlying_back)
     }
@@ -1195,3 +1234,6 @@ impl RouterContract {
         }
     }
 }
+
+#[cfg(test)]
+mod test;

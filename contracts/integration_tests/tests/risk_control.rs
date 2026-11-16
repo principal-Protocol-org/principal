@@ -116,8 +116,17 @@ fn a_wrap_and_mint_through_the_router_is_counted_at_both_entry_points() {
     s.risk.set_cb_limit(&s.admin, &(1_000 * SCALE));
     let user = s.new_user();
     s.sac().mint(&user, &(100 * SCALE));
-    s.router
-        .wrap_and_mint(&user, &s.pool.address, &(100 * SCALE), &0, &u64::MAX);
+    // `sy_in` is quoted off-chain first (SYWrapper.exchange_rate()), exactly as a real caller
+    // would, rather than derived mid-execution -- see `Router.wrap_and_mint`'s own docs.
+    let sy_in = (100 * SCALE) * SCALE / s.sy.exchange_rate();
+    s.router.wrap_and_mint(
+        &user,
+        &s.pool.address,
+        &(100 * SCALE),
+        &sy_in,
+        &0,
+        &u64::MAX,
+    );
     assert_eq!(s.risk.get_cb_volume(), 200 * SCALE);
 }
 
@@ -133,12 +142,20 @@ fn window_is_ledger_sequence_based_and_ignores_wall_clock() {
     s.advance_flat(T0 + DAY);
     assert!(deposit_err(&s, &user, SCALE).is_some());
 
-    // One ledger short of the window: still closed. At exactly the window length: open again.
+    // One ledger short of the window: still closed. At exactly the window length, the window
+    // rolls over -- but the sliding-window fix (closing the original tumbling-reset bypass,
+    // where timing a deposit right at the boundary let ~2x the limit through) means the prior
+    // window's volume still counts at full weight at the instant of rollover, decaying only as
+    // further ledgers pass. So a deposit here is still correctly rejected, not reopened.
     advance_ledgers(&s, DEFAULT_WINDOW_LEDGERS - 1);
     assert!(deposit_err(&s, &user, SCALE).is_some());
     advance_ledgers(&s, 1);
+    assert!(deposit_err(&s, &user, 100 * SCALE).is_some());
+    // A second full window elapses with no further activity: the carried-over volume has fully
+    // decayed, and the window is genuinely open again.
+    advance_ledgers(&s, DEFAULT_WINDOW_LEDGERS);
     s.sy.deposit(&user, &(100 * SCALE), &0);
-    assert_eq!(s.risk.get_cb_volume(), 100 * SCALE); // restarted, not 200
+    assert_eq!(s.risk.get_cb_volume(), 100 * SCALE); // restarted, not 300
 }
 
 #[test]

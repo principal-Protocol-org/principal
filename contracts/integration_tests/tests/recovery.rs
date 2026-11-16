@@ -147,6 +147,87 @@ fn seize_pt_and_yt_hold_until_maturity_then_finalize_onto_the_same_record() {
     });
 }
 
+// Found during a test-coverage review: no end-to-end test seized a position via RecoveryEscrow
+// and then took it through `PrincipalManager::redeem` (`finalize_record` mediates entirely
+// through the manager, never the token contracts directly -- see its own doc comment) while
+// also cross-checking the result against an ordinary holder redeeming the *same* notional
+// directly. `seize_batch` (via the `req` helper above) puts both PT and YT into the *same*
+// record, so `finalize_record` redeems both legs in the one combined call this review was also
+// checking for.
+#[test]
+fn seize_then_redeem_through_the_manager_settles_consistently_with_a_direct_redeemer() {
+    each_kind(|kind| {
+        let s = setup(kind, Config::free(LONG));
+        let flagged = s.new_user();
+        let bystander = s.new_user();
+        let flagged_shares = deposit_sy(&s, &flagged, 100 * SCALE);
+        let bystander_shares = deposit_sy(&s, &bystander, 100 * SCALE);
+        let flagged_minted = s.pm.mint(&flagged, &flagged_shares);
+        let bystander_minted = s.pm.mint(&bystander, &bystander_shares);
+
+        s.deauthorize(&flagged);
+        let mut reqs: Vec<SeizeRequest> = Vec::new(&s.env);
+        reqs.push_back(req(
+            &s.env,
+            &flagged,
+            0,
+            flagged_minted.pt_minted,
+            flagged_minted.yt_minted,
+            0,
+        ));
+        let ids = s.escrow.seize_batch(&s.admin, &reqs);
+        assert_eq!(ids.len(), 1);
+        assert_eq!(s.pt.balance(&flagged), 0);
+        assert_eq!(s.yt.balance(&flagged), 0);
+        assert_eq!(s.pt.balance(&s.escrow.address), flagged_minted.pt_minted);
+        assert_eq!(s.yt.balance(&s.escrow.address), flagged_minted.yt_minted);
+
+        // Rate moves; maturity arrives. `settle_all` is called explicitly here (not left to the
+        // implicit settle inside the first redeem), mirroring a keeper closing out the market --
+        // both the escrow's mediated redeem and the bystander's direct one must then agree on
+        // this one frozen rate.
+        s.advance(LONG, SCALE * 2);
+        let settled = s.pm.settle_all();
+
+        // One `finalize_record` call redeems *both* the PT and YT legs of this record together
+        // (see the comment above) -- `PrincipalManager::redeem` is reached with both
+        // `pt_amount > 0` and `yt_amount > 0` in the same call, mediated by the escrow, not the
+        // token contracts.
+        let (pt_under, yt_under) = s.escrow.finalize_record(&s.admin, &0);
+        let bystander_result = s.pm.redeem(
+            &bystander,
+            &bystander_minted.pt_minted,
+            &bystander_minted.yt_minted,
+        );
+
+        assert_eq!(Some(settled), s.pm.settled_rate());
+        let expected_pt = flagged_minted.pt_minted * SCALE / settled;
+        assert_eq!(pt_under, expected_pt);
+        assert_eq!(bystander_result.underlying_from_pt, expected_pt, "{kind:?}");
+        assert!(yt_under > 0);
+        assert!(bystander_result.underlying_from_yt > 0);
+
+        // Fully wound down: nothing left outstanding for either the seized party or the escrow.
+        assert_eq!(s.pm.total_pt(), 0);
+        assert_eq!(s.pm.total_yt(), 0);
+        assert_eq!(s.pt.balance(&flagged), 0);
+        assert_eq!(s.yt.balance(&flagged), 0);
+        assert_eq!(
+            underlying_balance(&s, &s.escrow.address),
+            pt_under + yt_under
+        );
+        assert_eq!(
+            underlying_balance(&s, &bystander),
+            bystander_result.underlying_from_pt + bystander_result.underlying_from_yt
+        );
+
+        let rec = s.escrow.get_record(&0);
+        assert!(rec.finalized);
+        assert_eq!(rec.underlying_from_pt, pt_under);
+        assert_eq!(rec.underlying_from_yt, yt_under);
+    });
+}
+
 #[test]
 fn a_record_can_only_be_finalized_once_and_only_by_the_issuer() {
     each_kind(|kind| {
@@ -367,7 +448,15 @@ fn seize_all_positions_sweeps_every_position_type_and_skips_empty_accounts() {
         let shares = deposit_sy(&s, &full, 100 * SCALE);
         s.pm.mint(&full, &(60 * SCALE));
         let _ = shares;
-        // `full` also holds 40 SY; `lp_holder` holds YT (kept from seeding) and LP.
+        // `full` also holds 40 SY. `lp_holder` would also hold YT kept from seeding, but
+        // `RecoveryEscrow` now refuses a second unfinalized YT record in one batch (Fix 2, pooled
+        // yield accounting), so its YT is swept to an unrelated, non-batch account up front --
+        // `full`'s is the one YT seizure this batch exercises; `lp_holder` contributes LP only.
+        let yt_sink = s.new_user();
+        let lp_yt = s.yt.balance(&lp_holder);
+        if lp_yt > 0 {
+            s.yt.transfer(&lp_holder, &yt_sink, &lp_yt);
+        }
         for a in [&full, &empty, &lp_holder] {
             s.deauthorize(a);
         }
@@ -589,4 +678,83 @@ fn escrow_initialization_rejects_a_genuinely_different_underlying() {
             .err(),
         err_code(EscrowError::PositionUnderlyingMismatch as u32)
     );
+}
+
+// ------------------------------------------------------- set_recovery_escrow self-reference (Fix 1)
+// `MarketPool::set_recovery_escrow` is one-shot and, before this audit fix, never cross-checked the
+// given address at all -- unlike `RecoveryEscrow::initialize`'s own check of every position's
+// `underlying_address()`. It now calls back into the given escrow and requires its
+// `underlying_address()` to match the pool's own. `SYWrapper`/`PTToken`/`YTToken` carry the
+// equivalent unit tests directly in their own crates; `MarketPool` has no unit-test module of its
+// own (see its `lib.rs`), so this exercises it here instead, against the real deployed stack.
+
+/// A minimal RecoveryEscrow-*shaped* contract exposing only `underlying_address()` -- enough to
+/// exercise the self-referential cross-check without standing up a second full stack (SY/PT/YT/
+/// PrincipalManager/MarketPool) just to get a second real RecoveryEscrow.
+mod mock_escrow {
+    use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
+
+    #[contracttype]
+    enum DataKey {
+        Underlying,
+    }
+
+    #[contract]
+    pub struct MockEscrow;
+
+    #[contractimpl]
+    impl MockEscrow {
+        pub fn init(env: Env, underlying: Address) {
+            env.storage()
+                .instance()
+                .set(&DataKey::Underlying, &underlying);
+        }
+
+        pub fn underlying_address(env: Env) -> Address {
+            env.storage().instance().get(&DataKey::Underlying).unwrap()
+        }
+    }
+}
+
+fn deploy_escrow_mock(env: &soroban_sdk::Env, underlying: &Address) -> Address {
+    let id = env.register(mock_escrow::MockEscrow, ());
+    mock_escrow::MockEscrowClient::new(env, &id).init(underlying);
+    id
+}
+
+#[test]
+fn pool_set_recovery_escrow_rejects_an_escrow_configured_for_a_different_underlying() {
+    let s = setup(UnderlyingKind::Sac, Config::free(T0 + 300 * DAY));
+    // `s.pool` already has its real escrow wired by `deploy_stack`'s own setup (which succeeding
+    // for every other integration test already demonstrates the correct-address case), so a
+    // second one would hit `RecoveryEscrowAlreadySet` first. Deploy a fresh, unwired pool for the
+    // same underlying to isolate the cross-check itself.
+    let fresh_pool_id = s
+        .env
+        .register(principal_market_pool::MarketPoolContract, ());
+    let fresh_pool = principal_market_pool::MarketPoolContractClient::new(&s.env, &fresh_pool_id);
+    fresh_pool.initialize(&s.admin, &s.pm.address, &4_u32);
+
+    let other_underlying = Address::generate(&s.env);
+    let wrong_escrow = deploy_escrow_mock(&s.env, &other_underlying);
+    assert_eq!(
+        fresh_pool
+            .try_set_recovery_escrow(&s.admin, &wrong_escrow)
+            .err(),
+        err_code(principal_market_pool::Error::RecoveryEscrowMismatch as u32)
+    );
+}
+
+#[test]
+fn pool_set_recovery_escrow_accepts_an_escrow_configured_for_the_same_underlying() {
+    let s = setup(UnderlyingKind::Sac, Config::free(T0 + 300 * DAY));
+    let fresh_pool_id = s
+        .env
+        .register(principal_market_pool::MarketPoolContract, ());
+    let fresh_pool = principal_market_pool::MarketPoolContractClient::new(&s.env, &fresh_pool_id);
+    fresh_pool.initialize(&s.admin, &s.pm.address, &4_u32);
+
+    let escrow = deploy_escrow_mock(&s.env, &s.underlying);
+    fresh_pool.set_recovery_escrow(&s.admin, &escrow);
+    assert_eq!(fresh_pool.recovery_escrow(), Some(escrow));
 }

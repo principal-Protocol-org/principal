@@ -27,9 +27,13 @@ fn deposit_tokenize_trade_claim_settle_redeem_with_fees_stays_solvent() {
 
     let alice = s.new_user();
     s.sac().mint(&alice, &(500 * SCALE));
+    // `sy_in` is quoted off-chain first (SYWrapper.exchange_rate(), via the same `shares_at`
+    // formula this file already uses), exactly as a real caller would, rather than derived
+    // mid-execution -- see `Router.wrap_and_mint`'s own docs.
+    let sy_in = shares_at(s.sy.exchange_rate(), 500 * SCALE);
     let minted = s
         .router
-        .wrap_and_mint(&alice, &pool, &(500 * SCALE), &0, &FAR);
+        .wrap_and_mint(&alice, &pool, &(500 * SCALE), &sy_in, &0, &FAR);
     // 5 bps tokenization fee: 0.25 of the 500 SY is withheld, the rest becomes 499.75 PT + YT.
     assert_eq!(minted.fee_shares, 2_500_000);
     assert_eq!(minted.pt_minted, 4_997_500_000);
@@ -44,9 +48,19 @@ fn deposit_tokenize_trade_claim_settle_redeem_with_fees_stays_solvent() {
 
     let carol = s.new_user();
     deposit_sy(&s, &carol, 200 * SCALE);
-    let (carol_yt, _) =
-        s.router
-            .swap_sy_for_yt(&carol, &pool, &(200 * SCALE), &0, &(200 * SCALE), &FAR);
+    // `pt_in` is quoted off-chain first, via the same tokenization-fee-and-oracle-rate formula
+    // `PrincipalManager.mint` uses -- `MarketPool.quote_sy_for_yt` replicates it exactly -- rather
+    // than derived mid-execution from `mint`'s return value.
+    let pt_in = s.pool.quote_sy_for_yt(&(200 * SCALE)).yt_out;
+    let (carol_yt, _) = s.router.swap_sy_for_yt(
+        &carol,
+        &pool,
+        &(200 * SCALE),
+        &pt_in,
+        &0,
+        &(200 * SCALE),
+        &FAR,
+    );
     assert!(carol_yt > 199 * SCALE && carol_yt < 200 * SCALE); // minus the 5 bps fee
 
     // --- day 30: rate 1.01. Alice claims mid-life yield (10% YT fee withheld) ------------------

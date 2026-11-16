@@ -146,10 +146,15 @@ fn example_6_flash_mint_and_flash_redeem_yt() {
     seed_pool(&s, 1_000 * SCALE, 950 * SCALE);
     let b = s.new_user();
     deposit_sy(&s, &b, 100 * SCALE);
+    // `pt_in` is quoted off-chain first, via the same tokenization-fee-and-oracle-rate formula
+    // `PrincipalManager.mint` uses -- `MarketPool.quote_sy_for_yt` replicates it exactly -- rather
+    // than derived mid-execution from `mint`'s return value.
+    let pt_in = s.pool.quote_sy_for_yt(&(100 * SCALE)).yt_out;
     let (yt, sy_back) = s.router.swap_sy_for_yt(
         &b,
         &s.pool.address,
         &(100 * SCALE),
+        &pt_in,
         &0,
         &(100 * SCALE),
         &u64::MAX,

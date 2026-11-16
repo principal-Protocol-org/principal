@@ -2,8 +2,13 @@
 //!
 //! # Design
 //! Users deposit the underlying asset (e.g. BENJI, USDY) and receive SY shares in return.
-//! The exchange rate (underlying per share) increases over time as the underlying accrues yield.
-//! The PrincipalManager reads the exchange rate to compute PT and YT amounts when splitting.
+//! The exchange rate (underlying per share) is meant to increase over time as the underlying
+//! accrues yield, mirroring how SY wrappers work elsewhere. For a price-appreciating asset like
+//! USDY, where holding the token doesn't change its own balance, nothing in this contract today
+//! moves `TotalUnderlying` independent of `TotalShares` -- the rate is provably pinned at 1.0 for
+//! the life of the contract (see the test `exchange_rate_stays_at_inception_rate`); reconciling
+//! this for a balance-rebasing asset is out of scope until one is onboarded. The PrincipalManager
+//! reads the exchange rate to compute PT and YT amounts when splitting.
 //!
 //! # Exchange-rate invariant
 //!   exchange_rate = total_underlying / total_shares   (scaled by RATE_SCALE = 1e7)
@@ -35,7 +40,10 @@
 //!   revert with `SlippageExceeded` if the output would be below the caller's minimum, so a rate
 //!   move between simulation and inclusion cannot silently cost the user. Pass `0` to opt out.
 //! * A **per-address deposit cap** (`set_deposit_cap`) bounds the underlying any one address may
-//!   have deposited, net of what it has withdrawn (`net_deposited`). `0` disables it.
+//!   have deposited, net of what it has withdrawn (`net_deposited`). `0` disables it. A
+//!   custodian contract unwinding SY it holds in its own name on a user's behalf (only
+//!   `PrincipalManager` today) must release that cap against the real user via
+//!   `withdraw_crediting`, not plain `withdraw` -- see `net_deposited`'s doc comment.
 //! * Once `set_risk_control` is called, every `deposit` invokes `RiskControl.check_deposit` for the
 //!   deposited amount *inside the same transaction*, so a deposit that would breach the
 //!   protocol-wide or per-asset circuit-breaker limit (or hit the global pause) reverts by itself.
@@ -83,6 +91,14 @@ pub trait PermissioningInterface {
 #[contractclient(name = "RiskControlClient")]
 pub trait RiskControlInterface {
     fn check_deposit(env: Env, caller: Address, asset: Address, amount: i128);
+    fn is_consumer(env: Env, account: Address) -> bool;
+}
+
+/// Minimum interface required from RecoveryEscrow, used only to cross-check `set_recovery_escrow`
+/// at wiring time (see that function's doc comment).
+#[contractclient(name = "RecoveryEscrowClient")]
+pub trait RecoveryEscrowInterface {
+    fn underlying_address(env: Env) -> Address;
 }
 
 /// Instance-storage TTL applied by `bump` (~30 days at 5 s per ledger).
@@ -107,6 +123,11 @@ pub enum Error {
     SlippageExceeded = 13,
     DepositCapExceeded = 14,
     InvalidCap = 15,
+    /// `set_recovery_escrow` was given an address that does not point back at a RecoveryEscrow
+    /// configured for this same underlying -- most likely a stale address copied from a
+    /// different market. Found during audit review: this wiring is one-shot and irreversible,
+    /// so an admin mistake here previously had no cross-check at all, unlike `initialize`.
+    RecoveryEscrowMismatch = 16,
 }
 
 #[contracttype]
@@ -224,21 +245,6 @@ impl SYWrapperContract {
         }
         Self::charge_deposit_cap(&env, &from, amount);
 
-        // Circuit breaker: registered as a consumer of RiskControl, this contract reports every
-        // deposit to it; a breach reverts this whole call. The nested call is authorized by this
-        // contract's own address (a contract auto-authorizes calls it makes directly).
-        if let Some(rc) = env
-            .storage()
-            .instance()
-            .get::<_, Address>(&DataKey::RiskControl)
-        {
-            RiskControlClient::new(&env, &rc).check_deposit(
-                &env.current_contract_address(),
-                &Self::get_underlying(&env),
-                &amount,
-            );
-        }
-
         // Effects before interaction (checks-effects-interactions): update state first so a
         // reentrant call from a malicious `underlying` token would see this deposit already
         // accounted for.
@@ -260,6 +266,28 @@ impl SYWrapperContract {
             .set(&DataKey::TotalShares, &(total_s + shares));
         Self::add_balance(&env, &from, shares);
 
+        // Circuit breaker: registered as a consumer of RiskControl, this contract reports every
+        // deposit to it; a breach reverts this whole call. The nested call is authorized by this
+        // contract's own address (a contract auto-authorizes calls it makes directly). Moved here
+        // -- immediately before the final external token transfer, after every one of this
+        // function's own state effects -- to match the checks-effects-interactions ordering this
+        // module already uses for the transfer itself and for `do_withdraw`'s equivalent checks.
+        // `RiskControl` is a pure external check with no return value this function's own logic
+        // depends on afterward, so reordering it changes nothing else here. Found during audit
+        // review: this call previously ran before `TotalUnderlying`/`TotalShares`/the depositor's
+        // balance were updated, inconsistent with this file's own documented invariant.
+        if let Some(rc) = env
+            .storage()
+            .instance()
+            .get::<_, Address>(&DataKey::RiskControl)
+        {
+            RiskControlClient::new(&env, &rc).check_deposit(
+                &env.current_contract_address(),
+                &Self::get_underlying(&env),
+                &amount,
+            );
+        }
+
         // Interaction last: transfer underlying from depositor to this contract. If this
         // fails, the whole transaction (including the state updates above) reverts atomically.
         let underlying = Self::get_underlying(&env);
@@ -273,6 +301,15 @@ impl SYWrapperContract {
 
     /// Burn `shares` and return the equivalent underlying amount to `to`. Reverts
     /// `SlippageExceeded` if less than `min_underlying_out` would be returned.
+    ///
+    /// Releases the per-address deposit cap against `from` -- correct whenever `from` is the
+    /// real economic depositor withdrawing their own position, which is every caller of this
+    /// function today. A custodian contract unwinding SY it holds in *its own* name on behalf of
+    /// a different end user (e.g. `PrincipalManager`, between `mint` and `redeem`/`claim_yield`)
+    /// must use `withdraw_crediting` instead, or the cap release is a silent no-op against the
+    /// custodian's own (never-charged) `NetDeposited` entry -- see that function's doc comment
+    /// and `NetDeposited`'s own doc comment for the full limitation this closes. Found during
+    /// audit review.
     pub fn withdraw(
         env: Env,
         from: Address,
@@ -285,7 +322,38 @@ impl SYWrapperContract {
         if balance < shares {
             panic_with_error!(&env, Error::InsufficientShares);
         }
-        Self::do_withdraw(&env, &from, shares, &to, min_underlying_out)
+        Self::do_withdraw(&env, &from, shares, &to, min_underlying_out, &from)
+    }
+
+    /// Same as `withdraw`, except the per-address deposit-cap release is credited to
+    /// `beneficiary` instead of `from`. For a custodian contract that holds SY in its own name on
+    /// behalf of a specific end user -- today, only `PrincipalManager`'s `redeem` (the PT leg) and
+    /// its internal `pay_yield` (the YT leg and `claim_yield`) -- `from` here is the custodian's
+    /// own address, not the real depositor who originally paid into the per-address cap at
+    /// `deposit` time. Crediting `from` (plain `withdraw`'s behavior) would be a no-op against an
+    /// address whose `NetDeposited` was never charged, leaving the real depositor's cap stuck at
+    /// its deposited level forever, even after they fully exit -- found during audit review (see
+    /// `NetDeposited`'s doc comment). `beneficiary` does not need any standing of its own here:
+    /// it is only a storage key for the release, not a party to the transfer.
+    ///
+    /// Mirrors `withdraw_all`/`withdraw_gained`'s existing pattern of a clearly named variant
+    /// rather than an extra parameter threaded through the one common function every caller must
+    /// pass, which would force every existing integration (Router, RecoveryEscrow, any off-chain
+    /// caller) to adopt a wider signature it has no use for.
+    pub fn withdraw_crediting(
+        env: Env,
+        from: Address,
+        shares: i128,
+        to: Address,
+        min_underlying_out: i128,
+        beneficiary: Address,
+    ) -> i128 {
+        from.require_auth();
+        let balance = Self::get_balance(&env, &from);
+        if balance < shares {
+            panic_with_error!(&env, Error::InsufficientShares);
+        }
+        Self::do_withdraw(&env, &from, shares, &to, min_underlying_out, &beneficiary)
     }
 
     /// Burn `from`'s *entire* SY balance and return the equivalent underlying to `to`. Unlike
@@ -309,7 +377,7 @@ impl SYWrapperContract {
     pub fn withdraw_all(env: Env, from: Address, to: Address, min_underlying_out: i128) -> i128 {
         from.require_auth();
         let shares = Self::get_balance(&env, &from);
-        Self::do_withdraw(&env, &from, shares, &to, min_underlying_out)
+        Self::do_withdraw(&env, &from, shares, &to, min_underlying_out, &from)
     }
 
     /// Withdraw only the SY `from` gained *since* `baseline` -- the balance `from` already held
@@ -355,15 +423,19 @@ impl SYWrapperContract {
             }
             return 0;
         }
-        Self::do_withdraw(&env, &from, shares, &to, min_underlying_out)
+        Self::do_withdraw(&env, &from, shares, &to, min_underlying_out, &from)
     }
 
+    /// `credit_to` is whose `NetDeposited` the withdrawn amount is released against -- `from`
+    /// for every public entry point except `withdraw_crediting`, which lets a custodian name a
+    /// different real depositor. See `withdraw_crediting`'s doc comment.
     fn do_withdraw(
         env: &Env,
         from: &Address,
         shares: i128,
         to: &Address,
         min_underlying_out: i128,
+        credit_to: &Address,
     ) -> i128 {
         Self::assert_not_paused_unless_escrow(env, &[from]);
         // Both sides are checked, not just `to`: if only the recipient were gated, a
@@ -403,7 +475,7 @@ impl SYWrapperContract {
             .instance()
             .set(&DataKey::TotalShares, &(total_s - shares));
         Self::sub_balance(env, from, shares);
-        Self::release_deposit_cap(env, from, underlying_out);
+        Self::release_deposit_cap(env, credit_to, underlying_out);
 
         // Transfer underlying to recipient.
         let underlying = Self::get_underlying(env);
@@ -483,6 +555,21 @@ impl SYWrapperContract {
 
     /// Underlying `account` has deposited, net of what it withdrew (floored at 0). This is the
     /// quantity the per-address cap applies to.
+    ///
+    /// Released correctly by `withdraw`/`withdraw_all`/`withdraw_gained` whenever `account` is
+    /// the address that actually calls one of those functions (the ordinary case). It is
+    /// *not* released by a plain `withdraw`-family call made by some other custodian contract on
+    /// `account`'s behalf while holding `account`'s SY in the custodian's own name -- e.g.
+    /// `PrincipalManager`, between `mint` (which moves a user's SY into the manager's own custody
+    /// with a plain `transfer`, untouched by the cap) and `redeem`/`claim_yield` (which unwind
+    /// that custodied SY back to the user). A naive `withdraw` call there would credit the
+    /// release against the manager's own `NetDeposited` entry -- which was never charged -- so
+    /// the real depositor's cap would stay stuck at its deposited level forever, even after
+    /// fully exiting, silently blocking any further deposit. `PrincipalManager` closes this by
+    /// calling `withdraw_crediting` instead, naming the real depositor explicitly; any future
+    /// custodian contract added to the protocol that holds SY across a call boundary on behalf
+    /// of a specific end user needs to do the same, or inherits this same gap. Found during
+    /// audit review.
     pub fn net_deposited(env: Env, account: Address) -> i128 {
         env.storage()
             .persistent()
@@ -525,8 +612,19 @@ impl SYWrapperContract {
 
     /// Wire the RiskControl this wrapper reports deposits to. The wrapper must also be registered
     /// as a consumer on that RiskControl (`RiskControl.add_consumer`) or every deposit reverts.
+    ///
+    /// Unlike `set_recovery_escrow`, this is updatable (no "already set" guard), so a wrong
+    /// address here is not irreversible the same way -- but an admin mistake (e.g. a copy-pasted
+    /// address of some other contract entirely) would otherwise only surface the next time a
+    /// user deposits. This calls back into the given address's own `is_consumer` -- the one
+    /// read-only view every real RiskControl exposes -- so a non-RiskControl address (wrong
+    /// contract type, unrelated address) fails this call instead of silently being wired in.
+    /// Deliberately does not require the *result* to be `true`: every deployment path in this
+    /// repo (see `scripts/create_market.sh`, `MarketFactory`) calls `set_risk_control` before the
+    /// matching `RiskControl.add_consumer`, so this wrapper is not registered yet at this point.
     pub fn set_risk_control(env: Env, admin: Address, risk_control: Address) {
         Self::assert_admin(&env, &admin);
+        RiskControlClient::new(&env, &risk_control).is_consumer(&env.current_contract_address());
         env.storage()
             .instance()
             .set(&DataKey::RiskControl, &risk_control);
@@ -544,11 +642,21 @@ impl SYWrapperContract {
 
     /// One-time wiring of the RecoveryEscrow contract authorized to call `seize`. Mirrors the
     /// `set_minter` pattern used on PTToken/YTToken: settable once, never reassigned, breaking
-    /// the circular dependency between SYWrapper and RecoveryEscrow at deployment time.
+    /// the circular dependency between SYWrapper and RecoveryEscrow at deployment time -- which
+    /// also means an admin mistake here (wrong address, a stale address copied from a different
+    /// market) is otherwise permanent. Mirroring `PrincipalManager::initialize`'s
+    /// `assert_topology_matches` and `RecoveryEscrow::initialize`'s own cross-check of every
+    /// position's `underlying_address()`, this calls back into the given address and requires its
+    /// own `underlying_address()` to match this wrapper's underlying before accepting it. Found
+    /// during audit review.
     pub fn set_recovery_escrow(env: Env, admin: Address, escrow: Address) {
         Self::assert_admin(&env, &admin);
         if env.storage().instance().has(&DataKey::RecoveryEscrow) {
             panic_with_error!(&env, Error::RecoveryEscrowAlreadySet);
+        }
+        let this_underlying = Self::get_underlying(&env);
+        if RecoveryEscrowClient::new(&env, &escrow).underlying_address() != this_underlying {
+            panic_with_error!(&env, Error::RecoveryEscrowMismatch);
         }
         env.storage()
             .instance()

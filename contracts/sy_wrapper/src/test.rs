@@ -66,6 +66,43 @@ fn mint(env: &Env, token: &Address, _admin: &Address, to: &Address, amount: i128
     tok.mint(to, &amount);
 }
 
+/// A minimal RecoveryEscrow-*shaped* contract exposing only `underlying_address()` -- enough to
+/// exercise `set_recovery_escrow`'s self-referential cross-check without standing up a full
+/// RecoveryEscrow (which itself requires PT/YT/PrincipalManager/MarketPool all deployed and
+/// wired together). Used in place of a bare `Address::generate` wherever a test needs a
+/// plausible escrow address that the new cross-check will actually call into.
+mod mock_escrow {
+    use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
+
+    #[contracttype]
+    enum DataKey {
+        Underlying,
+    }
+
+    #[contract]
+    pub struct MockEscrow;
+
+    #[contractimpl]
+    impl MockEscrow {
+        pub fn init(env: Env, underlying: Address) {
+            env.storage()
+                .instance()
+                .set(&DataKey::Underlying, &underlying);
+        }
+
+        pub fn underlying_address(env: Env) -> Address {
+            env.storage().instance().get(&DataKey::Underlying).unwrap()
+        }
+    }
+}
+
+/// Deploy a `mock_escrow` reporting `underlying` as its own underlying address.
+fn deploy_escrow_mock(env: &Env, underlying: &Address) -> Address {
+    let id = env.register_contract(None, mock_escrow::MockEscrow);
+    mock_escrow::MockEscrowClient::new(env, &id).init(underlying);
+    id
+}
+
 #[test]
 #[should_panic]
 fn initialize_rejects_admin_not_matching_sac_admin() {
@@ -341,7 +378,7 @@ fn transfer_more_than_balance_panics() {
 #[test]
 fn set_recovery_escrow_once() {
     let f = setup();
-    let escrow = Address::generate(&f.env);
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
     f.client.set_recovery_escrow(&f.admin, &escrow);
     assert_eq!(f.client.recovery_escrow(), escrow);
 }
@@ -350,16 +387,32 @@ fn set_recovery_escrow_once() {
 #[should_panic]
 fn set_recovery_escrow_twice_panics() {
     let f = setup();
-    let escrow1 = Address::generate(&f.env);
+    let escrow1 = deploy_escrow_mock(&f.env, &f.underlying);
     let escrow2 = Address::generate(&f.env);
     f.client.set_recovery_escrow(&f.admin, &escrow1);
+    // The second call panics on `RecoveryEscrowAlreadySet` before it ever calls back into
+    // `escrow2`, so `escrow2` can stay a bare, non-contract address here.
     f.client.set_recovery_escrow(&f.admin, &escrow2);
+}
+
+#[test]
+#[should_panic]
+fn set_recovery_escrow_rejects_an_escrow_configured_for_a_different_underlying() {
+    // Found during audit review: this wiring is one-shot and irreversible, so an admin mistake
+    // (a stale escrow address copied from a different market) previously had no cross-check at
+    // all. This mock reports a *different* underlying than this wrapper's own -- mirroring
+    // `RecoveryEscrow::initialize`'s own cross-check of each position's `underlying_address()`,
+    // the wrapper must now reject it.
+    let f = setup();
+    let other_underlying = Address::generate(&f.env);
+    let wrong_escrow = deploy_escrow_mock(&f.env, &other_underlying);
+    f.client.set_recovery_escrow(&f.admin, &wrong_escrow);
 }
 
 #[test]
 fn seize_moves_balance_to_escrow_without_holder_auth() {
     let f = setup();
-    let escrow = Address::generate(&f.env);
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
     f.client.set_recovery_escrow(&f.admin, &escrow);
 
     let bad_actor = Address::generate(&f.env);
@@ -386,7 +439,7 @@ fn seize_moves_balance_to_escrow_without_holder_auth() {
 #[should_panic]
 fn seize_requires_configured_escrow_caller() {
     let f = setup();
-    let escrow = Address::generate(&f.env);
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
     let impostor = Address::generate(&f.env);
     f.client.set_recovery_escrow(&f.admin, &escrow);
 
@@ -402,7 +455,7 @@ fn seize_requires_configured_escrow_caller() {
 #[should_panic]
 fn seize_cannot_exceed_target_balance() {
     let f = setup();
-    let escrow = Address::generate(&f.env);
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
     f.client.set_recovery_escrow(&f.admin, &escrow);
 
     let bad_actor = Address::generate(&f.env);
@@ -416,7 +469,7 @@ fn seize_cannot_exceed_target_balance() {
 #[test]
 fn seize_works_while_paused() {
     let f = setup();
-    let escrow = Address::generate(&f.env);
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
     f.client.set_recovery_escrow(&f.admin, &escrow);
 
     let bad_actor = Address::generate(&f.env);
@@ -434,7 +487,7 @@ fn escrow_can_unwrap_seized_sy_via_normal_withdraw() {
     // End-to-end: seize, then the escrow -- pre-authorized on both layers, same as any
     // legitimate holder -- unwraps into raw underlying via the ordinary withdraw path.
     let f = setup();
-    let escrow = Address::generate(&f.env);
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
     f.client.set_recovery_escrow(&f.admin, &escrow);
     grant(&f, &escrow); // issuer + Principal both pre-authorize the escrow
 
@@ -463,7 +516,7 @@ fn double_initialize_panics() {
 #[should_panic]
 fn seize_rejects_zero_shares() {
     let f = setup();
-    let escrow = Address::generate(&f.env);
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
     f.client.set_recovery_escrow(&f.admin, &escrow);
     let bad_actor = Address::generate(&f.env);
     grant(&f, &bad_actor);
@@ -489,7 +542,7 @@ fn non_admin_cannot_set_paused() {
 #[test]
 fn admin_transfer_and_getters() {
     let f = setup();
-    let escrow = Address::generate(&f.env);
+    let escrow = deploy_escrow_mock(&f.env, &f.underlying);
     f.client.set_recovery_escrow(&f.admin, &escrow);
     assert_eq!(f.client.get_admin(), f.admin);
     assert_eq!(f.client.underlying_address(), f.underlying);
@@ -607,11 +660,94 @@ fn deposit_cap_is_released_on_withdraw_so_a_fresh_deposit_up_to_the_cap_succeeds
     );
 }
 
+// ======================================================================== withdraw_crediting
+// Found during audit review: a custodian contract (e.g. `PrincipalManager`) that holds a user's
+// SY in its own name between taking custody and unwinding it later must release the user's own
+// deposit cap, not its own -- plain `withdraw` always credits `from`, which is the custodian's
+// own address in that case, a no-op against an address the cap was never charged on. These
+// confirm `withdraw_crediting` actually credits `beneficiary`, independent of both `from` and
+// `to`.
+
+#[test]
+fn withdraw_crediting_releases_the_named_beneficiarys_cap_not_froms() {
+    let f = setup();
+    f.client.set_deposit_cap(&f.admin, &1_000_i128);
+
+    // `user` deposits (charging its own cap), then moves its SY into `custodian`'s own name via
+    // a plain transfer -- mirroring `PrincipalManager.mint`, which never touches the cap.
+    let user = Address::generate(&f.env);
+    let custodian = Address::generate(&f.env);
+    grant(&f, &user);
+    grant(&f, &custodian);
+    mint(&f.env, &f.underlying, &f.admin, &user, 1_000);
+    let shares = f.client.deposit(&user, &1_000_i128, &0);
+    f.client.transfer(&user, &custodian, &shares);
+
+    // `user` is now capped out even though it holds no SY at all anymore.
+    assert_eq!(f.client.net_deposited(&user), 1_000);
+    assert_eq!(
+        f.client.try_deposit(&user, &1_i128, &0).err(),
+        Some(Ok(soroban_sdk::Error::from_contract_error(
+            Error::DepositCapExceeded as u32
+        )))
+    );
+
+    // `custodian` unwinds the custodied SY back to `user`, naming `user` as the beneficiary of
+    // the cap release -- exactly what `PrincipalManager.redeem`/`pay_yield` do.
+    f.client
+        .withdraw_crediting(&custodian, &shares, &user, &0, &user);
+
+    // `user`'s cap is released, not `custodian`'s (which was never charged in the first place).
+    assert_eq!(f.client.net_deposited(&user), 0);
+    assert_eq!(f.client.net_deposited(&custodian), 0);
+    assert_eq!(f.client.deposit(&user, &1_000_i128, &0), 1_000);
+}
+
+#[test]
+fn plain_withdraw_by_a_custodian_would_not_have_released_the_real_depositors_cap() {
+    // Locks in the bug `withdraw_crediting` exists to fix: if a custodian uses plain `withdraw`
+    // instead (crediting itself, `from`), the real depositor's cap stays stuck even though it
+    // now holds no SY at all.
+    let f = setup();
+    f.client.set_deposit_cap(&f.admin, &1_000_i128);
+    let user = Address::generate(&f.env);
+    let custodian = Address::generate(&f.env);
+    grant(&f, &user);
+    grant(&f, &custodian);
+    mint(&f.env, &f.underlying, &f.admin, &user, 1_000);
+    let shares = f.client.deposit(&user, &1_000_i128, &0);
+    f.client.transfer(&user, &custodian, &shares);
+
+    f.client.withdraw(&custodian, &shares, &user, &0);
+
+    assert_eq!(f.client.net_deposited(&user), 1_000);
+    assert!(f.client.try_deposit(&user, &1_i128, &0).is_err());
+}
+
 fn setup_risk_control(f: &Fixture) -> RiskControlContractClient<'static> {
     let rc_id = f.env.register_contract(None, RiskControlContract);
     let rc = RiskControlContractClient::new(&f.env, &rc_id);
     rc.initialize(&f.admin, &(10_000 * 1_000_000_000_i128));
     rc
+}
+
+#[test]
+#[should_panic]
+fn set_risk_control_rejects_an_address_that_is_not_a_risk_control_contract() {
+    // Found during audit review: `set_risk_control` wired in the admin-supplied address with
+    // no cross-check at all. `f.perm.address` is a real deployed contract, but not
+    // RiskControl-shaped: it has no `is_consumer` entry point, so the cross-check call traps
+    // instead of silently wiring in a copy-pasted address of the wrong contract type.
+    let f = setup();
+    f.client.set_risk_control(&f.admin, &f.perm.address);
+}
+
+#[test]
+fn set_risk_control_accepts_a_real_risk_control_contract() {
+    let f = setup();
+    let rc = setup_risk_control(&f);
+    f.client.set_risk_control(&f.admin, &rc.address);
+    assert_eq!(f.client.risk_control(), Some(rc.address));
 }
 
 #[test]

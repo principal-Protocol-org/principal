@@ -94,8 +94,14 @@ pub fn is_authorized(env: &Env, underlying: &Address, account: &Address) -> bool
         ),
         Kind::Rwa => {
             let rwa = RwaTokenClient::new(env, underlying);
-            if rwa.is_frozen(account) {
-                return false;
+            // `try_is_frozen`, not the plain call: a trap inside the RWA token (same rationale
+            // as the SAC branch above, and the same pattern `is_authority`'s own RWA branch
+            // already uses for this identical call) is "not authorized", not a panic of the
+            // calling contract.
+            match rwa.try_is_frozen(account) {
+                Ok(Ok(true)) => return false,
+                Ok(Ok(false)) => {}
+                _ => return false,
             }
             let verifier = match rwa.try_identity_verifier() {
                 Ok(Ok(v)) => v,

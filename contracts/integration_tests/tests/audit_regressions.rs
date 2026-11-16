@@ -26,10 +26,15 @@ fn flash_redeem_leaves_the_sellers_accrued_yield_with_the_seller() {
     let pool = s.pool.address.clone();
     let holder = s.new_user();
     deposit_sy(&s, &holder, 100 * SCALE);
+    // `pt_in` is quoted off-chain first, via the same tokenization-fee-and-oracle-rate formula
+    // `PrincipalManager.mint` uses -- `MarketPool.quote_sy_for_yt` replicates it exactly -- rather
+    // than derived mid-execution from `mint`'s return value.
+    let pt_in = s.pool.quote_sy_for_yt(&(100 * SCALE)).yt_out;
     let (yt, _) = s.router.swap_sy_for_yt(
         &holder,
         &pool,
         &(100 * SCALE),
+        &pt_in,
         &0,
         &(100 * SCALE),
         &u64::MAX,
@@ -82,6 +87,10 @@ fn flash_mint_reverts_when_the_pt_sells_for_less_than_the_callers_max_net_cost()
     // The honest price of the leg: what the 100 PT would fetch right now.
     let honest = s.pool.quote_pt_for_sy(&(100 * SCALE)).amount_out;
     let honest_cost = 100 * SCALE - honest;
+    // `pt_in` is quoted off-chain first too, same as `pt_minted`'s own formula -- unaffected by
+    // the sandwich below, since `mint`'s output depends on the oracle rate, not the pool's
+    // reserves.
+    let pt_in = s.pool.quote_sy_for_yt(&(100 * SCALE)).yt_out;
 
     // A sandwicher first dumps PT, making the victim's PT sell for less.
     let attacker = s.new_user();
@@ -96,6 +105,7 @@ fn flash_mint_reverts_when_the_pt_sells_for_less_than_the_callers_max_net_cost()
         &victim,
         &pool,
         &(100 * SCALE),
+        &pt_in,
         &(100 * SCALE),
         &max_cost,
         &u64::MAX,
@@ -210,14 +220,22 @@ fn batch_bound_is_three_and_is_checked_before_any_balance_is_read() {
 
 #[test]
 fn a_full_batch_at_the_bound_of_every_position_type_succeeds() {
+    // Found during audit review (Fix 2): `RecoveryEscrow` now refuses a second YT seizure while
+    // an unfinalized YT record already exists (pooled yield accounting -- see
+    // `principal_recovery_escrow`'s module doc), so only the *first* account in this batch holds
+    // YT; the others hold SY/PT/LP only. Every position type is still represented somewhere in
+    // the batch, and the batch is still at `MAX_BATCH`'s exact bound -- just not every type on
+    // every account, which was never something `seize_all_positions` itself requires.
     let s = deploy_stack(T0 + 200 * DAY);
     seed_pool(&s, 1_000 * SCALE, 950 * SCALE);
     let mut accounts: Vec<Address> = Vec::new(&s.env);
-    for _ in 0..principal_recovery_escrow::MAX_BATCH {
+    for i in 0..principal_recovery_escrow::MAX_BATCH {
         let u = s.new_user();
         let sh = deposit_sy(&s, &u, 300 * SCALE);
-        s.pm.mint(&u, &(100 * SCALE));
-        let (_, _, _) = s.pool.add_liquidity(&u, &(50 * SCALE), &(40 * SCALE), &0);
+        if i == 0 {
+            s.pm.mint(&u, &(100 * SCALE));
+            let (_, _, _) = s.pool.add_liquidity(&u, &(50 * SCALE), &(40 * SCALE), &0);
+        }
         let _ = sh;
         s.deauthorize(&u);
         accounts.push_back(u);
