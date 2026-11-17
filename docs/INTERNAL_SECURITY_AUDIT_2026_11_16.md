@@ -49,8 +49,10 @@ contract source before being accepted. Of these:
 Every fix was implemented, tested, and the entire workspace was re-verified after all changes
 landed: `cargo fmt --all -- --check` is clean, `cargo clippy --workspace --all-targets --locked --
 -D warnings` is clean, and `cargo test --workspace` passes with zero failures and zero ignored
-tests. §6's per-crate coverage breakdown predates the follow-up pass's additional regression tests
-and is scheduled for re-measurement.
+tests (**489 tests**, up from 477, across 25 test binaries). §6's per-crate coverage breakdown has
+been re-measured against this round's final state — see
+[`INTERNAL_SECURITY_AUDIT_COVERAGE_REPORT_2026_11_16.md`](INTERNAL_SECURITY_AUDIT_COVERAGE_REPORT_2026_11_16.md),
+now at 98.27% line / 98.23% region coverage.
 
 This review did identify one path to direct fund loss reachable by an external, unprivileged
 attacker: Finding C-2, now fixed. Absent that finding, no other finding in this review involved
@@ -941,13 +943,14 @@ they are related and worth deciding as a set rather than independently:
 
 ## 6. Test Coverage Report
 
-Measured across the full workspace after every fix in this review landed: **98.24% line coverage,
-98.21% region coverage**, both above the 98% target set for this review, with
-`cargo test --workspace` passing all 477 tests. Kept as a separate, standalone document so it can
-be re-measured and updated independently of this findings record going forward:
+Re-measured across the full workspace after the follow-up round's fixes (C-2, H-3's clock
+correction, H-4, M-12, L-12) landed: **98.27% line coverage, 98.23% region coverage**, both above
+the 98% target set for this review, with `cargo test --workspace` passing all **489 tests** (up
+from the first measurement's 477). Kept as a separate, standalone document so it can be
+re-measured and updated independently of this findings record going forward:
 [`INTERNAL_SECURITY_AUDIT_COVERAGE_REPORT_2026_11_16.md`](INTERNAL_SECURITY_AUDIT_COVERAGE_REPORT_2026_11_16.md)
-— full per-file breakdown, methodology, and the lowest-covered files for anyone prioritizing
-further test-writing.
+— full per-file breakdown (now the complete set of `lib.rs`/`math.rs` files, not a subset),
+methodology, and the lowest-covered files for anyone prioritizing further test-writing.
 
 ---
 
