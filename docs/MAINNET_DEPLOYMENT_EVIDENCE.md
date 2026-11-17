@@ -6,13 +6,12 @@ the security review documents (`INTERNAL_SECURITY_AUDIT_2026_11_16.md` and its c
 each can be updated independently — this one grows with every deployment action; those are closed
 findings records.
 
-**Status (2026-11-18): Markets 1 AND 2 (MOCKUSDY) plus a new MOCKUSTRY market are all COMPLETE AND
-LIVE on mainnet, with real end-to-end transaction testing performed on all three.** Shared
-infrastructure (§4), the 90-day MOCKUSDY market (§5 Market 1), the 30-minute MOCKUSDY flow-test
-market (§5 Market 2), and the 90-day MOCKUSTRY market (§5) are all fully deployed, wired,
-compliance-granted, and independently verified (78/79 real checks pass on each — the one
-"failure" is the expected `git_tree_dirty` flag). Real mint→deposit→split→trade cycles were run
-against all three markets with real signatures — see §5's "Real transaction testing"
+**Status (2026-11-18): All five planned mock assets (MOCKUSDY ×2 markets, MOCKUSTRY, MOCKGILTS,
+MOCKCETES, MOCKXAUM) are COMPLETE AND LIVE on mainnet, with real end-to-end transaction testing
+performed on every one of them.** Shared infrastructure (§4) and all six markets (§5) are fully
+deployed, wired, compliance-granted, and independently verified (78/79 real checks pass on each —
+the one "failure" is the expected `git_tree_dirty` flag). Real mint→deposit→split→trade cycles
+were run against every market with real signatures — see §5's "Real transaction testing"
 subsection for the full record. Mainnet deployment had paused twice along the way on funding (current
 mainnet Soroban WASM-upload resource fees, ~0.0012-0.0015 XLM/byte confirmed on two independent
 RPC endpoints, made the real cost far higher than first assumed) — each pause left nothing
@@ -642,6 +641,90 @@ from the resulting 500 SY (tx `20ad9b9a233c71c80339050091a47cff1bd87dd7458cedb0e
 Balances after this round: `mainnet-admin` `7.4515064` XLM, `mainnet-cetes-issuer` `1.7951000`
 XLM — comfortably enough for XAUM, the last remaining asset.
 
+### MOCKXAUM market — fifth and final mock asset — **STATUS: COMPLETE AND LIVE** — 2026-11-18
+
+Tracks real XAUM (Matrixdock Gold, per §2's RedStone feed lookup,
+`CC2RBGYNCFBCVENIDL5BFBWPH4OUZM2UA3OD2K2N54GLMWCC4KWPVAGO`, real price `386575800000` at the
+feed's 8-decimal scale ≈ $3865.76/token). Unlike USDY/USTRY/CETES/GILTS, the real XAUM token is
+**not** a classic-asset SAC — it is a native Soroban fungible token (`symbol()` = `"XAUM"`,
+`decimals()` = `9`, no `admin()` function at all). Doesn't change Principal's own approach:
+`MOCKXAUM` is still issued as an ordinary classic asset + SAC, using the same
+`auth_revocable`/`auth_clawback_enabled` flag pair as the other four mock assets for internal
+consistency, since there is no real G-account issuer to mirror flags from this time.
+
+**Setup**: issuer `mainnet-xaum-issuer` (`GC6VP3LK7JWQRRLZVTHMPYYNN3ZRUJ7KSZGMV4AJTYETICNISI4I7AMN`)
+funded (tx `2a430491f68e0bfdf06f0f3a0aa84c50818d0e53fabda18bdac19550fa8b6798`), flags set (tx
+`504cd38eb506d9ad644bcd46134f4bed4c5541037904eb03b01dbbf8fdb3463e`), SAC deployed (tx
+`762968e7c4a8ceaba2f94956717628de2d63146a42fea506071d7c3ee0bd3f35`) →
+**`MOCKXAUM` SAC: `CBAJVVTBBR6XXAK4N32WHVOALDRMQ27YMQNS6PBLGNWJIBFWOYS6AVVD`**. New
+`OracleAdapter` instance (deploy tx `1d04f8bad3d758d6c245d79a0b35a5d9a3aa57e6523ed627d717d751396083dc`,
+init tx `5aca494499a63918693ee59228765e6d7cb0d62462764333782b0f8493111415`) →
+**`CCLB6RTJOG24TMIZ74IMVEMBLKYCD6ERDPBNL5IB4L6AGQCKOKGR6IS7`**, genesis `386575800000` pushed (tx
+`a7ace84d06c66659ab64c32911449fcc3edaad574ad7cf305b2f88a3f75bb36c`).
+
+**Deployed contracts** (`"Principal Token MOCKXAUM"`/`"PT-MXAUM"`,
+`"Yield Token MOCKXAUM"`/`"YT-MXAUM"`):
+
+| Contract | ID |
+|---|---|
+| `OracleAdapter` (XAUM-specific) | `CCLB6RTJOG24TMIZ74IMVEMBLKYCD6ERDPBNL5IB4L6AGQCKOKGR6IS7` |
+| `SYWrapper` | `CB7KQ4O6QFJRFBVXV2AZB6WW6JCWK5OP5RXRDBK6E2AAPAMD2GSBOAMR` |
+| `PTToken` (`PT-MXAUM`) | `CC6HX7M5PNFWAFIVINN6ZKPFFBSHPN3AKBCANKTIA5JHFOEZC6ETMXVA` |
+| `YTToken` (`YT-MXAUM`) | `CAZ6SBSSIPYE55EOF2YGUYEVJV32X4LC6EDMZHYGP6W37I5HAW7VXAT3` |
+| `MarketConfig` | `CCAIOFZUD3YGFFOTUCVZVZR2CFCH4WQ4U2XBHLLUVGQVD5J7TK2KL5LO` |
+| `PrincipalManager` | `CAR65MVWLRPIOAYAY54RYLWS6AOOPMQ4M3LADAAA72NFVLFXOR33AFR6` |
+| `MarketPool` | `CDRJJMQZ7XDTOWIW64BELMID2SNTRLZ2KBS5ZLY62ECQIYTR5W3TGLCI` |
+| `RecoveryEscrow` | `CBP46WKLXNJ5ESU5YEOOH3VLG7J7RRPQLQAFXHP26EQRY5OJTMZG6AD4` |
+
+Maturity: `1802729865` (90 days). `market_id` = `mainnet-CBAJVV-CB7KQ4O6`. Salt
+`32a2ecc518be6d8158caee3d6bf125d62be7e7de5ed39af4cd600943823ff0bb`.
+
+**Factory + wiring**: `create_tokens` tx `744ec7d354ef9cb1afa549254a7e8ac59aca28a0b1f47f6733f7d69f70f10fcd`,
+`create_engine` tx `110edfad059b7175ed898e7f14c7d090b2a40beb4bef456e491b2c0576594ad8`,
+`create_pool_and_escrow` tx `7dc5903bbd24607cab3a3a93e549d609704c38b9fb2606944fc58dbb56c3691d`,
+`risk_control.add_consumer` ×2 (tx `8e57ed778b5ff5f9e74ba5c67b68e245b870d8c3d0dea16356d0301919a45ce9`,
+`3c76375e62728353aeca1e139660ed592d196d70ed4e6ecda199e64aeb870d6d`), `router.register_market`
+tx `bab156e2506c898325937e08784821a1b46caa38b9b6721bfcf1e255bd56d8c7`.
+
+**Two more real gaps found and fixed live, both reserve/trustline-related**:
+1. `mainnet-test-a` hit `LowReserve` establishing its 6th classic-asset trustline (5 existing
+   subentries × 0.5 XLM + 1 XLM base already consumed its balance) — topped up with 2 XLM from
+   `mainnet-mockusdy-issuer`'s surplus (tx `ba0590464dcbe9d3f8fc02e43752672eb2fa33c0f0e069d4a1fe7c6412f98dc8`)
+   before the trustline (tx `c25c74e5f8c8baacea9b34dea59d729aaae740fcd193b9f0a318d023866acd96`)
+   would go through.
+2. **`principal-mainnet-treasury` itself had never held a trustline to USTRY/GILTS/CETES either**
+   — only discovered now because this round's grants loop surfaced the SAC's own
+   `TrustlineMissingError` (#13) in its diagnostic output instead of silently continuing past it
+   like the earlier three rounds did. Treasury's `Permissioning` standing (`is_allowed`,
+   `is_allowed_for_asset`) was never affected — those are independent of the classic SAC's
+   trustline — but treasury could not have received a direct classic-asset payment of any of
+   those three mock assets until now. Fixed for XAUM (trustline tx
+   `e3d93e4d98d6f3bd290cdaf20d56b97bf5fe931597b455ea443b053792724fe0`, retried `set_authorized`
+   tx `fb6d8737a4bb92e529750deff088cbc0223cd0e2082e96ac2e593019964a9314`, retried `grant_account`
+   tx `d944bb2f7f0ec051d00755b47b38a4fbdc8fe1ec3eb7ea887b70599de8979f9b`). **Open follow-up**:
+   `principal-mainnet-treasury` should get the same trustline+`set_authorized` treatment for
+   MOCKUSTRY, MOCKGILTS, and MOCKCETES too — not blocking (nothing has tried to pay treasury
+   directly in those classic assets yet, only in SY shares via `claim_protocol_fees`, which is an
+   internal `SYWrapper` balance, not the classic asset), but worth closing before treasury ever
+   needs to call `SYWrapper.withdraw` on any of those three markets.
+
+**Verification**: `MANIFEST=deployments/mainnet-xaum/deployment-manifest.json
+./scripts/deploy/verify-deployment.sh` → **78 passed, 1 failed** (expected `git_tree_dirty`),
+after both fixes above.
+
+**Real smoke test**: minted 1 MOCKXAUM (tx `1c092628e2d14755ef7466cac09a442d9ca10d69ceb5e7cd62c377234f1d9c8a`),
+deposited 0.5 into `SYWrapper` — first attempt timed out, confirmed 404 on Horizon, resubmitted
+identically and the same tx hash landed the second time (tx
+`7c0ee5d8700c1be029b33739de3830904206245353f75084d234e96e5b0b12b9`) — then minted PT/YT from the
+resulting 0.5 SY (tx `6e65dec17d7c646ad8eb3d649fda66c4fa9ae2cd322ac7bc3c341aca7443c6e8`) →
+`193.19125605` PT and YT minted, fee `0.0025` SY withheld.
+
+Balances after this round: `mainnet-admin` `6.9145994` XLM, `mainnet-xaum-issuer` `1.7981153` XLM.
+
+**All five markets from the original Tranche 3 mock-asset plan (MOCKUSDY ×2, MOCKUSTRY,
+MOCKGILTS, MOCKCETES, MOCKXAUM) are now live, wired, compliance-granted, and real-transaction
+smoke-tested on Stellar mainnet.**
+
 ## 6. Self-service tester tooling
 
 *(filled in once built)*
@@ -684,48 +767,46 @@ hash (captured at upload time) is cross-checked against this table.
 
 *(filled in once contract addresses are finalized and handed off)*
 
-## 10. Resume checklist (next steps now that three markets are live and tested)
+## 10. Resume checklist (next steps now that all five mock assets are live and tested)
 
-**Shared infrastructure (§4), MOCKUSDY Markets 1 & 2, MOCKUSTRY's market, and a full real
-deposit→split→AMM/trade→mature→settle→redeem cycle (§5) are all done.** Next steps, in priority
-order:
+**Shared infrastructure (§4) and all six markets (MOCKUSDY ×2, MOCKUSTRY, MOCKGILTS, MOCKCETES,
+MOCKXAUM — §5) are done**, each independently verified (78/79) and real-transaction smoke-tested.
+Next steps, in priority order:
 
-1. **GILTS, CETES, XAUM remain** from the original plan. Confirmed cost model (see MOCKUSTRY's
-   write-up in §5): no genuinely new WASM upload needed for any of them — `oracle_adapter` and
-   all 7 per-market WASMs are already installed on mainnet; each asset only needs new, cheap
-   *instances* plus its own classic asset/SAC. Real prices already captured live from the RedStone
-   feed (§2 cross-reference): GILTS `141972700`, CETES `6469400` (feed's 8-decimal scale). XAUM's
-   real token (`CC2RBGYNCFBCVENIDL5BFBWPH4OUZM2UA3OD2K2N54GLMWCC4KWPVAGO`, symbol `XAUM`, 9
-   decimals) is a native Soroban token, not a classic-asset SAC like the others (confirmed: it has
-   no `admin()`) — doesn't change Principal's own mock-asset approach (still issue
-   `MOCKXAUM` as a classic asset + SAC the usual way), only means there's no real G-account issuer
-   to mirror flags from; use the same `auth_revocable`/`auth_clawback_enabled` pair as the others
-   for consistency. Real XAUM price: `386575800000` (8-decimal scale, ≈$3865.76).
-2. **Operational lesson from MOCKUSTRY's near-miss** (its own write-up in §5 has the full story):
-   when running `scripts/deploy/deploy.sh` for a new asset, give the per-market phase a long
-   foreground timeout or run it with `run_in_background` — it was killed mid-flight this round,
-   leaving `create_tokens`-only orphaned contracts that had to be recovered by hand via the
-   factory's own `mkt_tok` event (salt + `predict_market`). This recovery path always works
-   (salts are caller-chosen and deterministic), so a kill is recoverable, but it costs real time;
-   better to avoid it. Never re-run `create_tokens` with a fresh random salt to "retry" after a
-   partial failure — check the factory's events for an existing `mkt_tok`/`mkt_new` first.
+1. **Close the treasury trustline gap found during MOCKXAUM's round (§5)**:
+   `principal-mainnet-treasury` never established a classic-asset trustline to MOCKUSTRY,
+   MOCKGILTS, or MOCKCETES (only MOCKXAUM was fixed live). Not urgent — treasury's `Permissioning`
+   standing is unaffected and nothing has tried to pay it directly in those classic assets yet —
+   but should be closed (three `change-trust` + `set_authorized` calls) before treasury ever calls
+   `SYWrapper.withdraw` on any of those three markets, or before a real `claim_creator_fees`/
+   `claim_protocol_fees` payout flow is exercised end to end against them.
+2. **Operational lessons from this round, worth folding into tooling**:
+   - `deploy.sh`'s monolithic per-market phase is fragile against a host-side kill (hit once, for
+     MOCKUSTRY) — prefer the manual phase-by-phase factory-call approach used cleanly for
+     MOCKGILTS/MOCKCETES/MOCKXAUM, or run `deploy.sh` with a generous background timeout.
+   - A bare `invoke ... | tail -N` loop over several compliance-grant addresses can silently drop
+     one `transaction submission timeout` in the middle (hit for MOCKCETES's `PrincipalManager`
+     grant and MOCKXAUM's treasury grant) — always re-run `verify-deployment.sh` after a grants
+     batch and check its own exit code/pass count, never trust the batch script's exit code alone.
+   - A test/treasury account can hit Stellar's own `LowReserve` error adding its *n*-th classic
+     trustline once enough mock assets exist (hit for `mainnet-test-a`'s 6th, for MOCKXAUM) — keep
+     a small XLM buffer on any account that will accumulate trustlines across many mock assets.
+   - Never re-run `create_tokens` with a fresh random salt to "retry" after a partial failure —
+     check the factory's own events (`mkt_tok`/`mkt_eng`/`mkt_new`) for an already-created market
+     at that salt first; salts are caller-chosen and deterministic, so recovery is always possible.
 3. Self-service tester tooling (`scripts/self_service/`) and the oracle relay
    (`services/oracle-relay/relay.sh`) are already built and proven on testnet, and the manual
    grant/mint/deposit/mint/settle/redeem steps they automate are now also proven by hand on
-   mainnet (§5's testing tables) — both apply directly to this deployment now; neither needs to be
-   rebuilt, only pointed at the mainnet contract IDs in §4/§5 and run on a real schedule (the
-   oracle going stale repeatedly across Market 1, Market 2, and MOCKUSTRY's creation is a direct,
-   repeated demonstration of why the relay needs to actually run, not just exist).
-4. Reproducible-build sign-off and dApp handoff (§8/§9) can now reference three real, live,
-   fully-exercised mainnet markets' addresses.
+   mainnet across all five assets (§5's testing tables) — both apply directly to this deployment
+   now; neither needs to be rebuilt, only pointed at the mainnet contract IDs in §4/§5 and run on
+   a real schedule (the oracle going stale repeatedly across every market's creation this
+   deployment is a direct, repeated demonstration of why the relay needs to actually run).
+4. Reproducible-build sign-off and dApp handoff (§8/§9) can now reference six real, live,
+   fully-exercised mainnet markets' addresses across five distinct mock assets.
 5. **Permission-gap finding to carry forward**: a human trading account needs its own
-   `Permissioning.grant_asset` for every PT/YT token it will hold, separate from the market's own
-   contract-level grants — found live during MOCKUSDY's testing round (§5), and hit again
-   identically for MOCKUSTRY (test-a's `set_authorized` also needs its own classic-asset trustline
-   established first, a related but distinct gap — found live there too). Any future testing
-   checklist or self-service doc should call both out explicitly as required steps for a *new
-   human tester* against a *new asset*, not just a new market on an already-tested asset.
-6. `deploy.sh`'s known `upload_wasm`/`deploy_from_hash` `set -e`-blind-spot bug (a real failure
-   inside a `$(...)` substitution doesn't stop the script cleanly, and a mere submission timeout
-   isn't distinguished from a real failure) is still open — still worth fixing before relying on
-   `deploy.sh` fully unattended for the next asset.
+   `Permissioning.grant_asset` for every PT/YT token it will hold (separate from the market's own
+   contract-level grants) *and* its own classic-asset trustline to that market's underlying,
+   established before `set_authorized` is called for it — found live during MOCKUSDY's testing
+   round and hit again for every subsequent asset. Any future testing checklist or self-service
+   doc should call both out explicitly as required steps for a *new human tester* against a *new
+   asset*, not just a new market on an already-tested asset.
