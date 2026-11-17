@@ -6,18 +6,20 @@ the security review documents (`INTERNAL_SECURITY_AUDIT_2026_11_16.md` and its c
 each can be updated independently — this one grows with every deployment action; those are closed
 findings records.
 
-**Status (2026-11-17, updated twice): shared infrastructure COMPLETE; market creation IN
+**Status (2026-11-17, updated three times): shared infrastructure COMPLETE; market creation IN
 PROGRESS, PAUSED AGAIN on funding.** Mainnet deployment first paused after discovering that
 current mainnet Soroban WASM-upload resource fees (~0.0012-0.0015 XLM/byte, confirmed on two
 independent RPC endpoints) make the full first deployment cost far more than the treasury was
 initially funded with. After a treasury top-up (≈452 XLM across the three working keys), shared
-infrastructure (§4) was completed in full and verified. After a second top-up, market creation
-began: 4 of the first market's 7 per-market contracts are now uploaded (§5) — paused again
-before the 5th (`principal_manager`) when the issuer key's remaining balance became too low to
-safely attempt it. **≈108.69 XLM remains** across the three keys; **≈199-229 XLM more** is
-needed for the three remaining uploads alone (`principal_manager`, `market_pool`,
-`recovery_escrow`), before even counting the `MarketFactory`'s three `create_*` calls (not yet
-cost-measured). See §10 (Resume checklist) for exactly what's needed to finish.
+infrastructure (§4) was completed in full and verified. After a second top-up and further
+spend-down (consolidating idle funds between keys, continuing on existing funds per explicit
+user instruction rather than waiting for more), **5 of the first market's 7 per-market contracts
+are now uploaded** (§5) — paused again before `recovery_escrow` when the issuer key's remaining
+balance (~41 XLM) could no longer safely cover even the cheaper of the two remaining uploads
+(quoted 55.81 XLM). **≈52.71 XLM remains** across the three keys; **≈143-165 XLM more** is
+needed for the two remaining uploads alone (`market_pool`, `recovery_escrow`), before even
+counting the `MarketFactory`'s three `create_*` calls (not yet cost-measured). See §10 (Resume
+checklist) for exactly what's needed to finish.
 
 Entries below are added only after the corresponding on-chain transaction has actually been
 submitted and its hash confirmed — nothing in this document is planned-but-not-yet-done unless
@@ -257,9 +259,10 @@ before ever calling `create_market_via_factory.sh`, so this is a safe place to p
 upload below is independently sunk, idempotent, and fully reusable whenever the rest of the
 market is created — nothing is left half-built.
 
-**Uploaded so far** (4 of 7), each balance-checked against the real fee before proceeding to the
+**Uploaded so far** (5 of 7), each balance-checked against the real fee before proceeding to the
 next, confirming the same ~13% real-cost-below-simulated-quote pattern first seen in §4 held
-consistently across all four:
+consistently across all five (now 7 of 7 contracts total, counting §4's two, at a remarkably
+tight 13.0-13.1% discount every single time):
 
 | Contract | WASM hash | Upload tx | Quoted (XLM) | Real cost (XLM) |
 |---|---|---|---|---|
@@ -267,26 +270,34 @@ consistently across all four:
 | `pt_token` | `db025340887ef9d92922e2444da24edab5fec125460e9adc373a5f77b26578b2` | `5e90ef46a93fc20f9150c9d3c95e1129397738d07fe006ffa086f4a130c7233a` | 42.1388872 | 36.6427374 |
 | `yt_token` | `c83a2a8d2a4a79ff5348675581a27d48e52a920d83dc887672840d4a79c02654` | `233514e0ebab444e40ce11e3845ffa4b5285cac3ec94c5fde1bee581aebb5268` | 60.7313451 | 52.8103563 |
 | `market_config` | `11b0cbdf10a8d204fcb568c54529801747feac05208c5bcbfaefd822ad0c79a8` | `22432394de18898744edc16571eedea3ad42612042b4e8786c620bea50f3e5df` | 34.1468408 | 29.6930028 |
+| `principal_manager` | `e2d04b45b867d0dbc41660ac0d97d3e705005ddfb10350bb030d25b1aff86115` | `3dcaca908ae2dceb2200679c05d2a0c0b1a3e0ad4f8fc33465d5a80eb5dd52a2` | 64.3810413 | 55.9840685 |
 
-All four signed by `ISSUER_KEY` (`mainnet-mockusdy-issuer`), matching `deploy.sh`'s own
+All five signed by `ISSUER_KEY` (`mainnet-mockusdy-issuer`), matching `deploy.sh`'s own
 convention and the contract requirement that `ISSUER_KEY` be the real issuer authority relayed
-into these contracts' `initialize` calls later.
+into these contracts' `initialize` calls later. Before this round, the admin key's own surplus
+(beyond what §4's wiring step needs — confirmed ~1 XLM) was consolidated into the issuer key to
+maximize what was available to spend: `mainnet-admin` → `mainnet-mockusdy-issuer`, 55 XLM, tx
+confirmed successful; a second, smaller top-up from `principal-mainnet-treasury` failed
+(`Underfunded` — asked for slightly more than its own minimum-reserve headroom allowed) and
+genuinely did not go through (only the tiny base fee was charged).
 
-**Stopped before `principal_manager`** (quoted 64.3810413 XLM, likely ~56 XLM real at the
-observed discount) — remaining balance on `mainnet-mockusdy-issuer` at that point was only
-42.3369425 XLM, not enough to safely attempt it. **Still needed for this market: uploading
-`principal_manager`, `market_pool`, `recovery_escrow` (quoted 64.38 + 108.51 + 55.81 = 228.70
-XLM, likely ≈199 XLM at the ~13% discount observed so far — not yet confirmed for these three
-specifically), plus the `MarketFactory`'s three `create_*` calls (cost not yet measured — each
-deploys 2-3 new contract instances in one transaction, likely costlier than the small plain
-invokes already measured in §4, so budget for this with some caution rather than assuming it is
-negligible), plus wiring/compliance grants (confirmed cheap, ~1 XLM total for ~25 calls).**
+**Stopped before `recovery_escrow`**: re-quoted live at exactly 55.8143835 XLM (unchanged from
+§5's first pass) — even at the observed ~13% discount (~48.6 XLM real), this exceeds the
+41.3528740 XLM remaining on the issuer key at that point, and `market_pool` (quoted 108.5089046,
+~94.4 at discount) is far further out of reach. Rather than risk a failed
+`TxInsufficientBalance` transaction, stopped here cleanly.
 
-Balances after this round: `mainnet-admin` 60.0045044, `mainnet-mockusdy-issuer` 42.3369425,
-`principal-mainnet-treasury` 6.3511631 XLM — **≈ 108.69 XLM remaining across all three keys**,
-short of the ~199-229 XLM still needed for just the three remaining uploads (before even
-counting the factory calls). Paused here again rather than risk a failed upload partway through
-`principal_manager`. See §10 for the updated resume checklist.
+**Still needed for this market**: uploading `market_pool` and `recovery_escrow` (quoted
+108.51 + 55.81 = 164.32 XLM, likely ≈143 XLM at the ~13% discount — not yet confirmed for these
+two specifically), plus the `MarketFactory`'s three `create_*` calls (cost not yet measured —
+each deploys 2-3 new contract instances in one transaction, likely costlier than the small plain
+invokes already measured in §4, so budget with real caution rather than assuming it is
+negligible), plus wiring/compliance grants (confirmed cheap, ~1 XLM total for ~25 calls).
+
+Balances after this round: `mainnet-admin` 5.0044944, `mainnet-mockusdy-issuer` 41.3528740,
+`principal-mainnet-treasury` 6.3511531 XLM — **≈ 52.71 XLM remaining across all three keys**,
+short of the ~143-165 XLM still needed for just the two remaining uploads (before even counting
+the factory calls). See §10 for the updated resume checklist.
 
 ## 6. Self-service tester tooling
 
@@ -337,29 +348,29 @@ itself remains.
 
 1. **Fund `mainnet-mockusdy-issuer`** (`GB3SOEMQVYBLMHPV3AK64PV4FJTOMQ2XUJLOZSVDJLP2LT42EU3XLE4P`
    — signs every per-market WASM upload *and* the factory's three `create_*` calls) with enough
-   XLM for the three still-missing uploads (`principal_manager`, `market_pool`,
-   `recovery_escrow`: quoted 64.38 + 108.51 + 55.81 = 228.70 XLM, likely ≈199 XLM at the ~13%
-   real-cost discount observed on every upload so far in §4 and §5 — not yet confirmed for these
-   three specifically) **plus** the three `create_*` calls' own cost, which has **not yet been
+   XLM for the two still-missing uploads (`market_pool`, `recovery_escrow`: quoted
+   108.51 + 55.81 = 164.32 XLM, likely ≈143 XLM at the ~13% real-cost discount observed on every
+   single upload so far, seven for seven, in §4 and §5 — not yet confirmed for these two
+   specifically) **plus** the three `create_*` calls' own cost, which has **not yet been
    measured** — each deploys 2-3 new contract instances in a single transaction, so budget with
-   real caution rather than assuming it is as cheap as a plain invoke. **`mainnet-admin`**
-   (`GDZN5WVOUBRTZKADUULRXJOGVGNK4WWXJPSALTVOORLSU5NFOZ2P5NCB`, for the wiring + compliance
-   grants) already has plenty (60.00 XLM against a confirmed ~1 XLM need). Balances as of this
-   update: `mainnet-admin` 60.0045044, `mainnet-mockusdy-issuer` 42.3369425,
-   `principal-mainnet-treasury` 6.3511631 XLM. Re-check the live resource fee first
-   (`simulateTransaction` against a built-only upload XDR, as done throughout §4/§5) in case
-   network fee conditions have changed.
+   real caution rather than assuming it is as cheap as a plain invoke. **`mainnet-admin`** (for
+   the wiring + compliance grants) only needs ~1 XLM total — it was drawn down to ~5 XLM this
+   round precisely because its surplus was moved to the issuer key instead; top it back up only
+   if that 5 XLM buffer turns out not to be enough. Balances as of this update: `mainnet-admin`
+   5.0044944, `mainnet-mockusdy-issuer` 41.3528740, `principal-mainnet-treasury` 6.3511531 XLM.
+   Re-check the live resource fee first (`simulateTransaction` against a built-only upload XDR,
+   as done throughout §4/§5) in case network fee conditions have changed.
 2. **Re-running `ENV_FILE=.env.mainnet-mockusdy ./scripts/deploy/deploy.sh` will redundantly
-   re-upload `sy_wrapper`/`pt_token`/`yt_token`/`market_config`** (already uploaded this round —
-   see §5's table) **before** reaching `principal_manager`/`market_pool`/`recovery_escrow` —
-   `deploy.sh`'s per-market loop has no manifest check for already-uploaded-but-not-yet-deployed
-   WASM, unlike the shared-infra `deploy_or_reuse` function. This is believed harmless, not
-   wasteful: re-uploading byte-identical code that already exists on-chain was confirmed
-   idempotent and nearly free when checked against `permissioning` in §4 (`0.0036 XLM` to
-   "re-upload" code already present) — but this has **not been independently re-confirmed for
-   these specific four contracts**, so budget a small buffer for that assumption being wrong
-   before relying on it. The cleaner alternative is uploading `principal_manager`/`market_pool`/
-   `recovery_escrow` by hand first (`stellar contract upload --wasm ... --source
+   re-upload all five already-uploaded per-market contracts** (`sy_wrapper`, `pt_token`,
+   `yt_token`, `market_config`, `principal_manager` — see §5's table) **before** reaching
+   `market_pool`/`recovery_escrow` — `deploy.sh`'s per-market loop has no manifest check for
+   already-uploaded-but-not-yet-deployed WASM, unlike the shared-infra `deploy_or_reuse`
+   function. This is believed harmless, not wasteful: re-uploading byte-identical code that
+   already exists on-chain was confirmed idempotent and nearly free when checked against
+   `permissioning` in §4 (`0.0036 XLM` to "re-upload" code already present) — but this has **not
+   been independently re-confirmed for these specific five contracts**, so budget a small buffer
+   for that assumption being wrong before relying on it. The cleaner alternative is uploading
+   `market_pool`/`recovery_escrow` by hand first (`stellar contract upload --wasm ... --source
    mainnet-mockusdy-issuer --network mainnet`, same pattern as §5's table), then running
    `scripts/create_market_via_factory.sh` directly with all seven resulting hashes (see that
    script's own usage comment) instead of `deploy.sh`'s market section at all.
