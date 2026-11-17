@@ -13,6 +13,13 @@ This mirrors the structure of the dApp's own testnet integration story (its READ
 selection" and "Manifest" sections, and `config/manifests/testnet.json`) — but for mainnet, and
 with the real money implications that come with it made explicit rather than assumed.
 
+**File paths below**: anything under `lib/`, `app/`, `components/`, `config/`, `scripts/` (other
+than `scripts/self_service/` and `scripts/create_market_via_factory.sh`) and `.env.example` is a
+path inside **`principal-Protocol-org/dapp`** (branch `testnet` at the time this guide was
+written), read directly to verify every claim in this guide. `scripts/`, `docs/`, and
+`deployments/` paths with no such prefix, and anything under `contracts/`, are in **this**
+(`principal`) repo.
+
 ---
 
 ## 0. Read this before touching anything
@@ -21,16 +28,20 @@ with the real money implications that come with it made explicit rather than ass
 real XLM and real (mock, but real on-chain) assets. Specifically, unlike testnet:
 
 - **There is no Friendbot.** Funding a new account costs real XLM, from a real wallet, every time.
-- **There is no automated oracle push on mainnet by design.** The dApp's own `ORACLE_ADMIN_SECRET`
-  / `GET,POST /api/cron/oracle` route **already refuses to run when `network === "mainnet"`**
-  (confirmed in your own `README.md`: *"Never set on mainnet (the route refuses to run there)"*).
-  That was the right call for Tranche 2 and it still is — but it means **something else must keep
-  every mainnet `OracleAdapter` fresh**, or every mint/redeem/settle call on it reverts
-  `OracleStale`. This deployment has been doing that by hand (`stellar contract invoke ...
-  set_reference_value`, with the real RedStone-sourced price, repeated manually throughout
-  deployment and testing — see §2 below). **Before any mainnet traffic beyond manual testing, this
-  needs a real scheduled job** (`services/oracle-relay/relay.sh` in the `principal` repo is built
-  and proven on testnet for exactly this; it has not yet been pointed at mainnet).
+- **There is no automated oracle push on mainnet by design — confirmed by reading the code, not
+  just the README.** `lib/server/oracle-keeper.ts:131` throws
+  `OracleKeeperConfigError` the instant `manifest.network === "mainnet"`, before anything else
+  runs: `if (manifest.network === "mainnet") throw new OracleKeeperConfigError("the oracle keeper
+  runs only on testnet and local networks.")`. That is the right call for Tranche 2 and it still
+  is — leave it in place — but it means **something else must keep every mainnet `OracleAdapter`
+  fresh**, or every mint/redeem/settle call on it reverts `OracleStale`. This deployment has been
+  doing that by hand (`stellar contract invoke ... set_reference_value`, with the real
+  RedStone-sourced price, repeated manually throughout deployment and testing — see §2 below).
+  **Before any mainnet traffic beyond manual testing, this needs a real scheduled job**
+  (`services/oracle-relay/relay.sh` in the `principal` repo is built and proven on testnet for
+  exactly this; it has not yet been pointed at mainnet). Do **not** repurpose
+  `lib/server/oracle-keeper.ts` for this — build the mainnet relay as its own, separately-reviewed
+  job, the same way `services/oracle-relay/relay.sh` already is.
 - **`set_authorized` on a classic asset reverts if the target account has no trustline yet** — this
   bit every single mock asset at least once during deployment (see the `TrustlineMissingError`
   findings in `MAINNET_DEPLOYMENT_EVIDENCE.md` §5). A dApp UI flow that authorizes a new user must
@@ -122,10 +133,69 @@ Set the environment:
 ```bash
 # .env.mainnet (gitignored — never commit real keys)
 NEXT_PUBLIC_PRINCIPAL_NETWORK=mainnet
-# FAUCET_ISSUER_SECRET / FAUCET_PERMISSIONING_ADMIN_SECRET: see §3 below before setting these on
-# mainnet — "Get test tokens" moving real assets with a server-held secret key is a materially
-# different risk than on testnet. Decide deliberately; do not default-enable it.
+
+# FAUCET_ISSUER_SECRET / FAUCET_PERMISSIONING_ADMIN_SECRET: leave unset on mainnet. "Get test
+# tokens" is already network-gated end to end -- confirmed by reading the code, not assumed:
+# lib/protocol/onboarding.ts's onboardingAvailable({ network }) returns false for "mainnet"
+# (asserted directly in lib/protocol/__tests__/onboarding.test.ts), and every call site that
+# renders or serves the faucet checks it before doing anything else -- the button
+# (wallet-button.tsx, onboarding-dialog.tsx, compliance-card.tsx) and the server route itself
+# (app/api/faucet/route.ts, via lib/server/faucet.ts:246's
+# `if (!onboardingAvailable(manifest) ...) return { error: "network" }`). Setting these two
+# secrets on mainnet does nothing unsafe by itself -- the route still refuses every call -- but
+# there is no reason to hold a real secret key in a mainnet environment that can never use it.
+
+# DATABASE_URL / DATABASE_URL_UNPOOLED: needed for the market-snapshot recorder (rate charts,
+# /api/cron/record) -- see §1a for the required one-time migration and the production scheduler.
+# Without these the app still works (market pages fall back to the manifest after 1.5s with no
+# history/chart data), so this is required for full functionality, not for the app to run at all.
+DATABASE_URL=
+DATABASE_URL_UNPOOLED=
+
+# QSTASH_CURRENT_SIGNING_KEY / QSTASH_NEXT_SIGNING_KEY: from the mainnet QStash account (see §1a).
+QSTASH_CURRENT_SIGNING_KEY=
+QSTASH_NEXT_SIGNING_KEY=
 ```
+
+### 1a. Infrastructure that must exist before the recorder/charts work on mainnet
+
+These are genuinely required steps, separate from the code change above, and your own
+`README.md`'s "Scheduler" table already names the target: branch `main`, Vercel **Production**,
+domain `principalmarket.fi`, QStash account `principalmarket-mainnet`. That table's own network
+column said *"Mainnet, once supported (Tranche 3)"* — Tranche 3 is this deployment, so this is now
+the moment to actually do it, not a future placeholder.
+
+1. **Run the DB migration once, against the mainnet Neon branch**, before the first deploy:
+   ```bash
+   pnpm db:migrate --env-file .env.mainnet
+   ```
+   This applies `db/migrations/*.sql` over a direct (unpooled) connection — never run it against the
+   pooled `DATABASE_URL` directly (Neon convention, already handled by the script if
+   `DATABASE_URL_UNPOOLED` is set or derivable by stripping `-pooler` from the host).
+2. **Create a QStash schedule** with cron `*/15 * * * *` calling
+   `https://principalmarket.fi/api/cron/record` on the final host (no redirect), and set
+   `QSTASH_CURRENT_SIGNING_KEY`/`QSTASH_NEXT_SIGNING_KEY` from that same QStash account in the
+   Production environment's variables.
+3. **Do not** create a corresponding mainnet schedule to `/api/cron/oracle` — see §0 and `oracle-keeper.ts`'s
+   own refusal above. That route has no mainnet mode to enable.
+4. Keep the mainnet secrets (`DATABASE_URL`, `QSTASH_*`) scoped to the Production environment only,
+   the same isolation your README already describes for the `testnet` branch/Preview environment.
+
+### 1b. What you do *not* need to change
+
+Confirmed by reading the actual call sites, not assumed — these already handle `"mainnet"`
+correctly with zero code change once §1's one diff lands:
+
+- **The testnet/local banner already hides itself.** `components/app/shell/testnet-banner.tsx`:
+  `if (network !== "testnet" && network !== "local") return null` — a mainnet manifest already
+  renders no banner. `networkLabel()` in `components/app/shell/network.ts` already has a
+  `"Stellar Mainnet"` branch too, in case you want to reuse it elsewhere.
+- **The manager wizard and `/app/manage` have no network-specific gating at all** — grepped the
+  whole `app/app` and `components/app/manage` trees for a literal `"testnet"`/`"local"` check and
+  found none outside `manifest-source.ts` itself. The wizard's `predict_market`/`create_*` calls
+  and the resume-by-salt flow are already network-agnostic.
+- **`lib/protocol/manifest.ts`'s schema, `PASSPHRASES`, and `types.ts`'s `Network` union already
+  include `"mainnet"`** — nothing to add there.
 
 ---
 
@@ -369,26 +439,59 @@ against Horizon on 2026-11-18).
 
 ## 5. Checklist before pointing real users at mainnet
 
+**Code and config (this guide):**
+
 - [ ] `manifest-source.ts` updated per §1, `config/manifests/mainnet.json` copied from
       `deployments/mainnet-dapp-manifest.json` and committed.
+- [ ] `DATABASE_URL`/`DATABASE_URL_UNPOOLED` set for the mainnet Neon branch, migration run once
+      (§1a step 1), QStash schedule created for `/api/cron/record` (§1a step 2).
 - [ ] An oracle-freshness job is actually running against every `OracleAdapter` in §2 — manual spot
       checks are not a substitute (confirmed necessary: the oracle went stale multiple times during
-      this deployment's own multi-hour working sessions).
+      this deployment's own multi-hour working sessions). Confirmed this is *not* the dApp's own
+      `/api/cron/oracle` route (§0, §1a step 3) — that one must stay mainnet-disabled.
 - [ ] The 30-minute MOCKUSDY market is either excluded from the UI's live-market list or clearly
       labeled matured/closed — it cannot mint or trade, only read.
-- [ ] `FAUCET_ISSUER_SECRET` / `FAUCET_PERMISSIONING_ADMIN_SECRET` are deliberately scoped: decide
-      who, if anyone, should be able to trigger a server-signed mainnet mint from the UI before
-      setting these in a mainnet environment, and treat that key with real-funds custody discipline.
 - [ ] The dApp's transaction-submission retry path is confirmed to check Horizon by hash before
       treating a timeout as a failure (see §0) — this is not hypothetical, it happened repeatedly
       on real mainnet calls this deployment made.
 - [ ] Every new trading wallet's onboarding flow in the UI covers all four steps in §3.6, in order
       (trustline → `set_authorized` → `grant_account` → `grant_asset` ×2) — missing any one of them
       produces a real, confirmed-reproducible revert, not a hypothetical edge case.
+- [x] ~~`FAUCET_ISSUER_SECRET`/`FAUCET_PERMISSIONING_ADMIN_SECRET` risk on mainnet~~ — not a real
+      risk to decide on: `onboardingAvailable()` already returns `false` for `network: "mainnet"`
+      everywhere it's checked (button, dialog, compliance card, and the server route itself); the
+      faucet cannot run on mainnet regardless of whether these secrets are set. Confirmed by
+      reading the code and its own test (§1b).
+- [x] ~~Testnet banner showing on mainnet~~ — already correctly hides itself (§1b). No change needed.
+
+**Known pre-existing gaps, from the dApp's own `README.md` "Before mainnet" section** — these
+predate this deployment and are not something this guide can verify the status of; the dApp team's
+own notes say each one is *"fine on Testnet; each needs a change before mainnet traffic."* Confirm
+each is actually closed (or consciously accepted) before real mainnet traffic, not just before
+real mainnet *support*:
+
+- [ ] **Bounded registry reads** — `sqlRegistryStore.rows()` reads every `market_registry` row on
+      every page render; a junk factory market (anyone can call `create_tokens` on the real,
+      permissionless `MarketFactory` at `CDYH7UV24XS7G7MDRTBJUS4PJNKKUXTLUUTL67MR5CYJAXSPPHNWS65T`)
+      adds a row forever. More directly relevant on mainnet than testnet, since the factory is
+      real and permissionless there too — anyone, not just Principal, can call it.
+- [ ] **Sparks above 50 pools** — `GET /api/markets/sparks` refuses more than 50 pools in one
+      request. Six markets today; headroom exists, but this is a real ceiling, not a theoretical one.
+- [ ] **Header role polling** scales with markets × connected users — six markets today is fine,
+      worth revisiting before adding the remaining mock assets planned in
+      `MAINNET_DEPLOYMENT_EVIDENCE.md` §10.
+- [ ] **Step-quote-vs-preview warning** and **refundable-fee margin** — both about a later step in a
+      multi-step route failing when mainnet ledger state moves between simulation and inclusion.
+      Reproduced twice on the *local* network per the dApp's own README; not yet reproduced on
+      mainnet by this deployment (every real mainnet flow in §3/§4 was single-step), but mainnet's
+      real trading activity is exactly the condition that would trigger it.
+
+**Open items from the contracts side** (tracked in `MAINNET_DEPLOYMENT_EVIDENCE.md` §10, not
+blocking the dApp code change itself):
+
 - [ ] `principal-mainnet-treasury` still needs a classic-asset trustline to MOCKUSTRY, MOCKGILTS
       and MOCKCETES before any UI flow that pays it directly in those classic assets (as opposed to
-      SY shares via `claim_protocol_fees`) is exercised — open item, tracked in
-      `MAINNET_DEPLOYMENT_EVIDENCE.md` §10.
+      SY shares via `claim_protocol_fees`) is exercised.
 
 ---
 
