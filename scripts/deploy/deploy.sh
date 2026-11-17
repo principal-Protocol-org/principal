@@ -53,6 +53,8 @@ RISK_WINDOW_LEDGERS="${RISK_WINDOW_LEDGERS:-17280}"
 MARKET_MATURITY_UNIX="${MARKET_MATURITY_UNIX:-$(( $(date +%s) + 90 * 86400 ))}"
 FORCE_REDEPLOY="${FORCE_REDEPLOY:-false}"
 
+[ "$RISK_CB_LIMIT" = "0" ] && echo "WARNING: RISK_CB_LIMIT=0 -- the protocol-wide deposit circuit breaker is disabled for this deployment. Confirm this is deliberate (e.g. a test run) before relying on it for a real mainnet asset; see .env.example's own comment on this variable." >&2
+
 ISSUER_ADDR="$(stellar keys address "$ISSUER_KEY")"
 ADMIN_ADDR="$(stellar keys address "$ADMIN_KEY")"
 SOURCE_COMMIT="$(git rev-parse HEAD 2>/dev/null || echo unknown)"

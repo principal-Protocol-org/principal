@@ -299,6 +299,7 @@ pub trait MarketPoolInterface {
 pub trait RecoveryEscrowInterface {
     fn initialize(
         env: Env,
+        caller: Address,
         underlying: Address,
         sy_wrapper: Address,
         pt_token: Address,
@@ -536,6 +537,7 @@ impl MarketFactoryContract {
 
         let escrow_addr = deploy(TAG_ESCROW, wasm.recovery_escrow);
         RecoveryEscrowClient::new(&env, &escrow_addr).initialize(
+            &issuer,
             &params.underlying,
             &tokens.sy_wrapper,
             &tokens.pt_token,

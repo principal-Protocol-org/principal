@@ -306,7 +306,15 @@ fn deploy_inner(cfg: Config, kind: UnderlyingKind, pool_wasm: Option<&[u8]>) -> 
 
     let escrow_id = env.register(RecoveryEscrowContract, ());
     let escrow = RecoveryEscrowContractClient::new(&env, &escrow_id);
-    escrow.initialize(&underlying, &sy_id, &pt_id, &yt_id, &pm_id, &pool_id);
+    escrow.initialize(
+        &admin,
+        &underlying,
+        &sy_id,
+        &pt_id,
+        &yt_id,
+        &pm_id,
+        &pool_id,
+    );
     sy.set_recovery_escrow(&admin, &escrow_id);
     pt.set_recovery_escrow(&admin, &escrow_id);
     yt.set_recovery_escrow(&admin, &escrow_id);

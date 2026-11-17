@@ -15,16 +15,19 @@ TECHNICAL_SPECIFICATION.md §17, which `contracts/integration_tests/src/stack.rs
  6. MarketConfig       (underlying, maturity, fees, protocol admin, treasury)
  7. PrincipalManager   (SYWrapper, PT, YT, Oracle, Permissioning, underlying, maturity, MarketConfig) + wire RiskControl, set_minter
  8. MarketPool         (PrincipalManager, time stretch)
- 9. RecoveryEscrow     (underlying, SYWrapper, PT, YT, PrincipalManager, MarketPool)  + set_recovery_escrow ×4
+ 9. RecoveryEscrow     (caller, underlying, SYWrapper, PT, YT, PrincipalManager, MarketPool)  + set_recovery_escrow ×4
 10. Router             (admin)                                 + register_market(pool)
 11. Compliance standing for every protocol contract that holds value
 ```
 
-**Every `initialize` that takes an `admin` (steps 4–8) requires the underlying's issuer authority to sign the
+**Every `initialize` that takes an `admin` or `caller` (steps 4–9) requires the underlying's issuer authority to sign the
 transaction** — for a Stellar asset the SAC's live `admin()`, for a SEP-57 token an account holding the
-operator role (`--source` must be that key, not a generic deployer key). This is the market-creation gate. `RecoveryEscrow` has no admin of its own
-and can be initialized by anyone, since it only validates that its contracts share one underlying and
-re-derives all authority live at call time. The `Router` holds nothing and needs no compliance standing.
+operator role (`--source` must be that key, not a generic deployer key). This is the market-creation gate.
+`RecoveryEscrow` has no stored admin *field* of its own — it re-derives the issuer's authority live, the same
+way every other call on it does (`seize_*`, `finalize_record`) — but `initialize` itself still requires that
+live authority's signature (`caller.require_auth()` plus a `compliance::is_authority` check), closing a
+front-running window the original, unauthenticated version of this call left open on any deployment that does
+not run `initialize` atomically with deployment. The `Router` holds nothing and needs no compliance standing.
 
 ### Key roles: `ISSUER_KEY` vs `ADMIN_KEY`
 
@@ -358,7 +361,8 @@ stellar contract deploy --wasm target/wasm32v1-none/release/principal_recovery_e
   --source admin --network testnet --alias recovery_escrow
 
 stellar contract invoke --id recovery_escrow --source admin --network testnet \
-  -- initialize --underlying <USDY_CONTRACT_ID> \
+  -- initialize --caller $(stellar keys address admin) \
+     --underlying <USDY_CONTRACT_ID> \
      --sy_wrapper        $(stellar contract id alias sy_wrapper --network testnet) \
      --pt_token          $(stellar contract id alias pt_token --network testnet) \
      --yt_token          $(stellar contract id alias yt_token --network testnet) \

@@ -54,7 +54,9 @@
 //! seizures are unaffected -- only YT has pooled yield accounting.
 
 #![no_std]
-#![allow(deprecated)] // `env.events().publish` / `register_contract`: migration to `#[contractevent]` is tracked separately; event topics are kept stable for indexers.
+#![allow(deprecated)]
+// `env.events().publish` / `register_contract`: migration to `#[contractevent]` is tracked separately; event topics are kept stable for indexers.
+#![allow(clippy::too_many_arguments)] // Soroban `initialize` entrypoints wire many contracts by design.
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractimpl, contracttype, panic_with_error,
@@ -230,9 +232,19 @@ impl RecoveryEscrowContract {
     }
 
     /// One-time wiring. Every position contract (and the manager and pool) must report the same
-    /// underlying as `underlying`.
+    /// underlying as `underlying`. `caller` must be the live issuer authority for `underlying`
+    /// (the same standing every other market-creation `initialize` in this codebase already
+    /// requires) -- without this, deployment and initialization being necessarily separate
+    /// transactions left a window where anyone could front-run the legitimate operator's own
+    /// `initialize` call with attacker-controlled sub-contracts that merely echo the right
+    /// `underlying_address()`, permanently hijacking this instance (`AlreadyInitialized` blocks
+    /// any correction afterward) and silently no-opping every future seizure. Found during a
+    /// follow-up review after this contract's first audit pass; closes the same root-cause class
+    /// as C-1/M-12, on a window `scripts/create_market.sh`'s own two-step deploy-then-initialize
+    /// genuinely leaves open today.
     pub fn initialize(
         env: Env,
+        caller: Address,
         underlying: Address,
         sy_wrapper: Address,
         pt_token: Address,
@@ -243,6 +255,11 @@ impl RecoveryEscrowContract {
         if env.storage().instance().has(&DataKey::Underlying) {
             panic_with_error!(&env, Error::AlreadyInitialized);
         }
+        caller.require_auth();
+        compliance::init(&env, &underlying);
+        if !compliance::is_authority(&env, &underlying, &caller) {
+            panic_with_error!(&env, Error::Unauthorized);
+        }
         let same = |other: Address| other == underlying;
         if !same(SYWrapperClient::new(&env, &sy_wrapper).underlying_address())
             || !same(PTTokenClient::new(&env, &pt_token).underlying_address())
@@ -252,7 +269,6 @@ impl RecoveryEscrowContract {
         {
             panic_with_error!(&env, Error::PositionUnderlyingMismatch);
         }
-        compliance::init(&env, &underlying);
         let s = env.storage().instance();
         s.set(&DataKey::Underlying, &underlying);
         s.set(&DataKey::SYWrapper, &sy_wrapper);

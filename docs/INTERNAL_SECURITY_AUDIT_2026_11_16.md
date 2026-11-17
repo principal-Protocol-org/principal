@@ -28,21 +28,23 @@ required) withdraw underlying belonging to other depositors, bounded only by the
 token balance (Finding C-2). Both are fixed and each is now covered by dedicated regression tests
 specifically designed to catch reintroduction.
 
-Across the full review, **34 findings** were identified and individually verified against the real
+Across the full review, **40 findings** were identified and individually verified against the real
 contract source before being accepted. Of these:
 
 - **2 Critical** findings — both fixed.
-- **3 High** findings — 2 fixed (one covering four separate functions, one closing the
+- **4 High** findings — 3 fixed (one covering four separate functions; one closing the
   `sync_from_feed` rate-limit gap, itself later found to measure the wrong clock and corrected
-  during the same follow-up pass that surfaced C-2 — see Finding H-3), 1 remains open as an
-  architectural recommendation requiring a product/operations decision rather than a code fix
-  (see §5, Outstanding Recommendations).
-- **13 Medium** findings — 10 fixed, 3 remain open as architectural or operational
+  during the same follow-up pass that surfaced C-2 — see Finding H-3; one closing a second missing
+  `initialize` authorization check, this time on `RecoveryEscrow` — see Finding H-4), 1 remains
+  open as an architectural recommendation requiring a product/operations decision rather than a
+  code fix (see §5, Outstanding Recommendations).
+- **15 Medium** findings — 10 fixed, 5 remain open as architectural or operational
   recommendations.
-- **11 Low** findings — 10 fixed; 1 confirmed but not independently fixable from this repository
+- **13 Low** findings — 12 fixed; 1 confirmed but not independently fixable from this repository
   (a transitively pinned dependency advisory — see Finding L-11).
-- **5 Informational** findings — 2 fixed (documentation accuracy), 3 are confirmed non-issues or
-  accepted, documented limitations requiring no code change.
+- **6 Informational** findings — 2 fixed (documentation accuracy), 4 are confirmed non-issues,
+  accepted/documented limitations, or an investigated-but-unreproduced report, requiring no code
+  change.
 
 Every fix was implemented, tested, and the entire workspace was re-verified after all changes
 landed: `cargo fmt --all -- --check` is clean, `cargo clippy --workspace --all-targets --locked --
@@ -52,15 +54,19 @@ and is scheduled for re-measurement.
 
 This review did identify one path to direct fund loss reachable by an external, unprivileged
 attacker: Finding C-2, now fixed. Absent that finding, no other finding in this review involved
-such a path. The Critical findings were a full administrative takeover vector (C-1) and a direct
-custody-invariant violation (C-2); the fixed High findings were reliability/availability issues
-(transactions failing closed, not funds moving incorrectly) and a rate-limit gap on a
-permissionless path that is now closed and clocked correctly; the fixed Medium findings included
-real accounting-correctness, compliance-traceability, and initialization-authorization defects,
-none of which (beyond C-2 itself) allowed value extraction beyond what was already deposited. The
-one remaining open High-severity item is architectural — key-management concentration — and is
-deliberately left as an explicit recommendation rather than a rushed fix, for the reasons given in
-§5.
+such a path. A second, independently surfaced authorization-bypass vector (Finding H-4,
+`RecoveryEscrow::initialize`) did not itself move funds, but would have let an attacker silently
+neutralize the one contract whose entire purpose is to make compliance-driven seizure provable
+on-chain — a serious failure mode in its own right, now also fixed. The Critical findings were a
+full administrative takeover vector (C-1) and a direct custody-invariant violation (C-2); the
+fixed High findings were reliability/availability issues (transactions failing closed, not funds
+moving incorrectly), a rate-limit gap on a permissionless path that is now closed and clocked
+correctly, and the second missing-authorization gap just described; the fixed Medium findings
+included real accounting-correctness, compliance-traceability, and initialization-authorization
+defects, none of which (beyond C-2 itself) allowed value extraction beyond what was already
+deposited. The one remaining open High-severity item is architectural — key-management
+concentration — and is deliberately left as an explicit recommendation rather than a rushed fix,
+for the reasons given in §5.
 
 ---
 
@@ -131,6 +137,7 @@ fixes).
 | H-1 | Router functions chained a live, oracle/rate-derived value into a further authorized call | High | **Fixed** (4 functions) |
 | H-2 | Oracle/Permissioning/RiskControl/Router administration concentrated in one unprotected key | High | Open — recommendation |
 | H-3 | `sync_from_feed`'s per-call deviation guard has no time-windowed budget | High | **Fixed** |
+| H-4 | `RecoveryEscrow::initialize` had no caller-authorization check at all | High | **Fixed** |
 | M-1 | A panicking SEP-40 feed aborted `sync_from_feed` instead of rejecting gracefully | Medium | **Fixed** |
 | M-2 | RiskControl's circuit-breaker window was a hard "tumbling" reset, allowing ~2x the limit at the boundary | Medium | **Fixed** |
 | M-3 | PT/YT balance and supply arithmetic relied solely on a global build setting, not typed checks | Medium | **Fixed** |
@@ -144,6 +151,8 @@ fixes).
 | M-11 | `Router.register_market`'s topology cross-check had no regression test | Medium | **Fixed** |
 | M-12 | `initialize` did not require the nominated admin's own signature in OracleAdapter, Permissioning, or RiskControl | Medium | **Fixed** |
 | M-13 | RecoveryEscrow allows only one unfinalized YT recovery record globally, blockable for a market's remaining lifetime | Medium | Open — recommendation |
+| M-14 | Default oracle feed deviation/interval configuration permits ~3x/hour compounding drift if the configured feed misbehaves | Medium | Open — recommendation |
+| M-15 | `protocol_share_bps` has no cap below 100% and no timelock | Low/Medium | Open — recommendation |
 | L-1 | `get_active_source()` not updated by the SEP-40 pull path | Low | **Fixed** |
 | L-2 | Yield-index module doc overstated "no path dependence" | Low | **Fixed** |
 | L-3 | No sanity check on oracle rate positivity before use as a divisor | Low | **Fixed** |
@@ -155,11 +164,14 @@ fixes).
 | L-9 | A RiskControl regression test asserted nothing beyond "does not panic" | Low | **Fixed** |
 | L-10 | Salt-reuse protection in MarketFactory was asserted in comments, not tested | Low | **Fixed** |
 | L-11 | Locked dependency tree includes a `crypto-bigint` constant-time timing advisory (RUSTSEC-2026-0387) | Low | Confirmed — tracked, not independently fixable |
+| L-12 | `add_liquidity_single_sy`'s reentrancy-safety comment did not account for a `Kind::Rwa` underlying | Low | **Fixed** |
+| L-13 | `deploy.sh` defaults the protocol-wide circuit breaker to disabled with no warning | Low | **Fixed** |
 | I-1 | PT settlement uses a historical high-water-mark rate, not necessarily the rate at maturity | Informational | Confirmed intended — no action |
 | I-2 | Recipient-side compliance is enforced at the token layer, not duplicated at the pool layer | Informational | Confirmed correct — no action |
 | I-3 | `SYWrapper`'s module doc overstated its own exchange-rate behavior | Informational | **Fixed** |
 | I-4 | Per-address deposit cap can be bypassed by multiple addresses under one controller | Informational | Open — accepted limitation |
 | I-5 | The SEP-57 authority-probe mechanism assumes a real-world token behaves like the test mock | Informational | Open — operational note for future onboarding |
+| I-6 | A reported "0 tests" anomaly for `router`/`recovery_escrow` did not reproduce in this repository's canonical working tree | Informational | Investigated — not reproduced |
 
 ---
 
@@ -376,6 +388,71 @@ Corrected by adding a dedicated `LastFeedAcceptLedgerTs` storage key, written on
 acceptance to `env.ledger().timestamp()`, and measuring the throttle against that instead. A new
 test (`throttle_clock_is_ledger_acceptance_time_not_the_feeds_own_reported_timestamp`) reproduces
 the exact bypass pattern against the corrected code and confirms it no longer succeeds.
+
+---
+
+### H-4 — `RecoveryEscrow::initialize` had no caller-authorization check at all
+
+**Severity:** High · **Status:** Fixed
+
+**Affected:** `contracts/recovery_escrow/src/lib.rs`, `fn initialize`
+
+Found during the same round of independent review that surfaced C-2. Unlike every other
+market-creation `initialize` in this codebase (Router, SYWrapper, MarketConfig, PTToken, YTToken,
+PrincipalManager, MarketPool, and — per M-12 — OracleAdapter/Permissioning/RiskControl),
+`RecoveryEscrow::initialize` took no `caller` argument and called no `require_auth()` at all. It
+checked only that it had not already been initialized, and that every named sub-contract
+(`SYWrapper`/`PTToken`/`YTToken`/`PrincipalManager`/`MarketPool`) reported the same
+`underlying_address()` — a check that is trivially satisfiable by an attacker's own minimal
+contracts, each of which needs only to echo back the right address from a hardcoded view function.
+
+**This was not merely a theoretical window.** `MarketFactory::create_pool_and_escrow`'s atomic
+deploy-and-init flow was never affected, but `scripts/create_market.sh` — a real, currently
+present manual deployment path in this repository — deploys `RecoveryEscrow` and calls its
+`initialize` as two **separate** transactions (`stellar contract deploy`, then a distinct `stellar
+contract invoke ... initialize`). Anyone watching the chain could have raced the legitimate
+operator's own `initialize` call in that window with attacker-controlled stand-in contracts,
+permanently hijacking that escrow instance (`AlreadyInitialized` blocks any correction
+afterward). The consequence is not a direct fund drain: every later `seize_*`/`finalize_record`
+call still correctly re-verifies the live issuer authority. But it would silently call out to the
+attacker's fake sub-contracts instead of the real token contracts, so a sanctioned or
+deauthorized account's actual position is never seized while the escrow's own on-chain
+`RecoveryRecord` bookkeeping faithfully records a "successful recovery" that did not happen — a
+serious compliance/legal failure mode for the one contract in this codebase whose entire purpose
+is to make seizure provable on-chain.
+
+**Fix:** `initialize` now takes a `caller: Address`, calls `caller.require_auth()`, and verifies
+`compliance::is_authority(&env, &underlying, &caller)` before anything else — the exact pattern
+every other market-creation `initialize` already uses. `MarketFactory::create_pool_and_escrow`,
+`scripts/create_market.sh`, and every test/integration call site were updated to pass the live
+issuer as the new argument; the release WASM artifacts were rebuilt and the full workspace
+(including the WASM-loading `market_factory` integration test, which caught the stale-artifact
+mismatch immediately) re-verified clean.
+
+**Regression test:** `initialize_requires_the_issuers_own_signature`
+(`contracts/recovery_escrow/src/test.rs`) builds the real five-contract supporting stack under
+`env.mock_all_auths()`, then calls `env.set_auths(&[])` — which, per that method's own
+documentation, disables auth mocking — before proving `initialize` fails with no signature
+present and succeeds once the issuer's signature is mocked for exactly that one call, mirroring
+the `Router`/`OracleAdapter`/`Permissioning`/`RiskControl` regression tests this same bug class
+already has (C-1, M-12).
+
+**Independently re-reviewed:** a second, freshly-started reviewer, given only the diff and the
+live repository (no shared context with the fix itself), independently confirmed the fix is
+correctly placed and unskippable, confirmed every call site was updated by its own repository-wide
+search, confirmed the regression test proves what it claims by reading the SDK's own `set_auths`
+semantics, and verified the ordering of `compliance::init`/`compliance::is_authority` against the
+identical pattern already relied on elsewhere in this codebase. It also caught two stale,
+unrelated pre-existing inconsistencies this fix exposed rather than introduced: `docs/
+TECHNICAL_SPECIFICATION.md` §16.1 and `docs/DEPLOYMENT.md` still described `RecoveryEscrow::
+initialize` (and, in `TECHNICAL_SPECIFICATION.md`'s case, also `OracleAdapter`/`Permissioning`/
+`RiskControl`/`Router`, stale since C-1/M-12) as admin-less/first-caller-wins — both corrected.
+Separately, this review's own first pass had introduced one inaccurate clause into the
+`add_liquidity_single_sy` comment fixed under L-12 (claiming `flash_mint_yt` "opts out" of
+Soroban's non-reentrant default, which conflates that function's unrelated authorization-entry
+mechanism with reentry mode, and which doesn't apply in any case since `flash_mint_yt` never calls
+back into `MarketPool` at all); the second reviewer caught this too, and the comment was corrected
+to drop the inaccurate clause while keeping its correct bottom-line conclusion.
 
 ---
 
@@ -671,7 +748,48 @@ of the first YT seizure) as a known operational constraint rather than an unboun
 
 ---
 
-### L-1 through L-11 — Lower-severity findings
+### M-14 — Default oracle feed deviation/interval configuration permits ~3x/hour compounding drift if the configured feed misbehaves
+
+**Severity:** Medium · **Status:** Open — recommendation (configuration, not a logic defect)
+
+**Affected:** `contracts/oracle_adapter/src/lib.rs` `sync_from_feed`; `scripts/deploy/deploy.sh`'s
+`ORACLE_MAX_DEVIATION_BPS` (default 1000 = 10%) and `ORACLE_FEED_MIN_INTERVAL_SECONDS` (default
+300 = 5 min, per H-3's own fix)
+
+Found during the same follow-up review pass as H-4. The H-3 throttle mechanism itself works
+exactly as designed and is not in question here — this is about the specific *default numbers*
+`deploy.sh` ships. The combined bound the code's own comment already states is `(1 +
+max_deviation_bps/10_000)^(3600/interval)` per hour; at the shipped defaults that is `1.10^12 ≈
+3.14x` per hour if the configured SEP-40 feed itself is buggy or compromised. This is the same
+risk-policy question §5 already flagged when H-3 was first fixed ("informed by the real update
+cadence of whichever feed is actually integrated... reviewed before this mechanism is relied upon
+for a live market") — implementing the mechanism did not retire that question, since the specific
+numbers still need calibrating to the real asset's expected volatility before a feed is wired in
+for a live mainnet market. See §5.
+
+### M-15 — `protocol_share_bps` has no cap below 100% and no timelock
+
+**Severity:** Low/Medium · **Status:** Open — recommendation (governance decision, not a code
+defect)
+
+**Affected:** `contracts/market_config/src/lib.rs` `set_protocol_share`, `assert_share`
+
+Found during the same follow-up review pass as H-4. Every other percentage-like parameter in this
+same file is capped well below 100% at creation time (`MAX_TOKENIZATION_FEE_BPS` = 1%,
+`MAX_YT_FEE_BPS` = 50%, `MAX_SWAP_FEE_TIER_BPS` = 5%) specifically so no single admin action can
+push a user-facing fee to an extreme. `assert_share` is the one exception: it only rejects
+`share_bps > 10_000` (100%), and `set_protocol_share` takes effect immediately on
+`protocol_admin`'s single signature, with no market-creator consent, cap, or delay. Unlike the
+other fee parameters, this one does not touch what a depositor pays — it only redistributes an
+already-capped fee between the protocol treasury and the market creator — but a compromised or
+adversarial `protocol_admin` key could still zero out every market creator's revenue instantly,
+with no on-chain recourse. Deciding the right floor (if any) a market creator should be
+structurally guaranteed is a product/business commitment, not a value this review can pick
+unilaterally — recorded here for that decision. See §5.
+
+---
+
+### L-1 through L-13 — Lower-severity findings
 
 The following were each individually verified, fixed, and covered by a new or corrected test:
 
@@ -723,10 +841,26 @@ The following were each individually verified, fixed, and covered by a new or co
   **Status:** confirmed, tracked; not independently fixable from this repository today. Resolving
   it requires an upstream `soroban-sdk`/`soroban-env-host` release that bumps this chain; revisit on
   the next SDK upgrade.
+- **L-12.** `market_pool::add_liquidity_single_sy`'s reentrancy-safety comment claimed `SYWrapper.
+  transfer` "has no external-call surface of its own," which is true for a `Kind::Sac` underlying
+  but not for `Kind::Rwa` (its compliance check does call out to the issuer-deployed RWA/
+  IdentityVerifier contract). Found during the same follow-up review pass as H-4. Verified directly
+  against `soroban-env-host`'s own `call_n_internal` reentry check that this is safe regardless:
+  an ordinary cross-contract call defaults to `ContractReentryMode::Prohibited`, so any attempted
+  callback from that external contract back into this same `MarketPool` instance (already on the
+  call stack) is rejected by the host itself — independent of this function's own call ordering,
+  and independent of the underlying's kind. The comment is corrected to state both reasons
+  precisely (no external call at all for `Kind::Sac`; the host's own non-reentrant default for
+  `Kind::Rwa`) instead of a claim that only held for one of the two cases.
+- **L-13.** `scripts/deploy/deploy.sh` defaults `RISK_CB_LIMIT` to `0` (the protocol-wide deposit
+  circuit breaker disabled) unless an operator explicitly sets it. Already documented in
+  `.env.example`'s own comment on that variable; `deploy.sh` now also prints an explicit `WARNING`
+  at that default so it cannot be missed on a real deployment run. Found during the same follow-up
+  review pass as H-4; operational checklist item, not a code defect.
 
 ---
 
-### I-1 through I-5 — Informational findings
+### I-1 through I-6 — Informational findings
 
 - **I-1.** PT settlement uses a historical high-water-mark of the oracle rate, not necessarily the
   rate at the maturity instant — a deliberate, internally consistent consequence of the
@@ -749,17 +883,30 @@ The following were each individually verified, fixed, and covered by a new or co
   being idempotent and side-effect-free against the test mock's own behavior. A real third-party
   token's implementation may not share that exact behavior. No code change made; recorded as a
   pre-onboarding verification step for whenever a real SEP-57 asset is integrated.
+- **I-6.** An independent review pass (the same one that surfaced H-4) reported that `router`'s
+  and `recovery_escrow`'s own unit-test binaries executed zero tests (`running 0 tests`) under a
+  full `cargo test --workspace` run in its own isolated worktree, including the Router
+  regression test that specifically guards C-1. Investigated directly in this repository's own
+  canonical working tree: `cargo test -p principal_router -p principal_recovery_escrow --lib`
+  ran 6 and 9 tests respectively, all passing, both there and in every subsequent full-workspace
+  run in this session. The symptom did not reproduce here. The reporting agent itself flagged,
+  without asserting a cause, that it was working concurrently across multiple git worktrees created
+  for this same review round — a plausible explanation for a one-off build/cache artifact specific
+  to that isolated environment, not a defect in the test suites themselves. Recorded for
+  transparency rather than silently dropped, since it was reported with real (if inconclusive)
+  supporting evidence; no code change made, and no reproduction found.
 
 ---
 
 ## 5. Outstanding Recommendations
 
-Four findings (H-2, M-4, M-10, M-13) were deliberately left unfixed in this pass because each
-requires a specific, consequential decision — a key-management model, an emergency-recovery
-authorization scheme, a recovery-concurrency redesign — that belongs with whoever will actually
-operate this protocol in production, not embedded unilaterally inside a code review. Rushing any
-of these would trade one risk for another, less well-understood one. They are restated here
-together because they are related and worth deciding as a set rather than independently:
+Six findings (H-2, M-4, M-10, M-13, M-14, M-15) were deliberately left unfixed in this pass
+because each requires a specific, consequential decision — a key-management model, an
+emergency-recovery authorization scheme, a recovery-concurrency redesign, an asset-specific risk
+parameter, or a revenue-sharing commitment — that belongs with whoever will actually operate this
+protocol in production, not embedded unilaterally inside a code review. Rushing any of these would
+trade one risk for another, less well-understood one. They are restated here together because
+they are related and worth deciding as a set rather than independently:
 
 1. **Administrative key model (H-2, and M-10 as a special case of the same question).** Decide
    whether Oracle, Permissioning, RiskControl, and Router should share one multisig-protected
@@ -780,6 +927,16 @@ together because they are related and worth deciding as a set rather than indepe
    block every other restricted holder's YT recovery for the remainder of a market's lifetime once
    triggered, or whether a per-record redesign is needed before go-live.
 
+4. **Oracle feed defaults (M-14).** Before `set_feed_source` is ever called for a real mainnet
+   asset, review `ORACLE_MAX_DEVIATION_BPS`/`ORACLE_FEED_MIN_INTERVAL_SECONDS` against that
+   asset's real expected volatility and update cadence, rather than relying on `deploy.sh`'s
+   general-purpose shipped defaults.
+
+5. **Protocol/creator fee split (M-15).** Decide whether market creators should be structurally
+   guaranteed a minimum fee share (a cap below 100% on `protocol_admin`'s own `set_protocol_share`
+   authority, and/or a timelock), as a deliberate product commitment rather than an unbounded
+   admin discretion.
+
 ---
 
 ## 6. Test Coverage Report
@@ -798,15 +955,20 @@ further test-writing.
 
 This review found and closed two Critical findings (a complete, unauthenticated administrative
 takeover path on the Router contract, and a direct custody-invariant violation in SYWrapper's
-`withdraw_gained`, the latter surfaced during an independent follow-up pass) and a further 28
+`withdraw_gained`, the latter surfaced during an independent follow-up pass) and a further 38
 findings ranging from High to Low severity, spanning authorization, arithmetic safety, accounting
 correctness, compliance traceability, and test coverage. Every fixable finding was fixed, tested,
-and independently re-verified; the four findings left open are architectural or policy decisions,
+and independently re-verified; the six findings left open are architectural or policy decisions,
 clearly scoped and handed off rather than quietly deferred. The workspace, in its final state,
 builds cleanly, lints cleanly, and passes its entire test suite.
 
-This document, together with the four remaining open recommendations in §5, should be treated as a
-required input to the mainnet launch decision, not merely a historical record of this pass. The
-follow-up pass that surfaced C-2 and M-12, and corrected H-3's own first implementation, is itself
-evidence for why an independent second review ahead of mainnet is worth the time: a finding this
-severe was not caught by this document's own first pass.
+This document, together with the six remaining open recommendations in §5, should be treated as a
+required input to the mainnet launch decision, not merely a historical record of this pass. Two
+independent follow-up review passes, run cold against this codebase with no shared context with
+each other or with this document's own first pass, each surfaced at least one finding the other
+pass (and this document's original pass) had missed: the first surfaced C-2 and M-12, and
+corrected H-3's own first implementation; the second surfaced H-4, M-14, M-15, L-12, and L-13.
+That pattern — independent reviews consistently finding real issues the prior pass did not — is
+itself the strongest evidence for why further independent review ahead of a real production
+launch (beyond this internal-testing deployment) is worth the time, not a reason to treat this
+document as a closed, final record.

@@ -9,8 +9,8 @@
 //! doesn't involve them.
 
 use soroban_sdk::{
-    testutils::{Address as _, IssuerFlags, Ledger as _},
-    token, Address, BytesN, Env, String, Vec,
+    testutils::{Address as _, IssuerFlags, Ledger as _, MockAuth, MockAuthInvoke},
+    token, Address, BytesN, Env, IntoVal, String, Vec,
 };
 
 use principal_manager::{PrincipalManagerContract, PrincipalManagerContractClient};
@@ -144,7 +144,15 @@ fn setup() -> Fixture {
 
     let escrow_id = env.register(RecoveryEscrowContract, ());
     let escrow = RecoveryEscrowContractClient::new(&env, &escrow_id);
-    escrow.initialize(&underlying, &sy_id, &pt_id, &yt_id, &pm_id, &pool_id);
+    escrow.initialize(
+        &admin,
+        &underlying,
+        &sy_id,
+        &pt_id,
+        &yt_id,
+        &pm_id,
+        &pool_id,
+    );
     sy.set_recovery_escrow(&admin, &escrow_id);
     pt.set_recovery_escrow(&admin, &escrow_id);
     yt.set_recovery_escrow(&admin, &escrow_id);
@@ -186,6 +194,151 @@ fn grant_user(f: &Fixture, user: &Address) {
 fn deposit_sy(f: &Fixture, user: &Address, amount: i128) -> i128 {
     token::StellarAssetClient::new(&f.env, &f.underlying).mint(user, &amount);
     f.sy.deposit(user, &amount, &0)
+}
+
+// ------------------------------------------------------------------ initialize authorization
+
+/// Regression for a follow-up finding (closes the same root-cause class as C-1/M-12):
+/// `initialize` must bind to the live issuer authority's own signature, not just check topology.
+/// Builds the real supporting stack under `mock_all_auths()` (every sibling initializer already
+/// requires its own admin's signature, so this is the simplest way to stand them up), then
+/// disables mocking with `env.set_auths(&[])` -- which, per `set_auths`'s own documentation,
+/// turns off auth recording/mocking so a subsequent call only succeeds against an explicit,
+/// matching authorization entry -- before testing `escrow.initialize` itself in isolation.
+#[test]
+fn initialize_requires_the_issuers_own_signature() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|li| li.timestamp = T0);
+
+    let admin = Address::generate(&env);
+
+    let oracle_id = env.register(OracleAdapterContract, ());
+    let oracle = OracleAdapterContractClient::new(&env, &oracle_id);
+    let oracle_source = BytesN::from_array(&env, &[1u8; 32]);
+    oracle.initialize(&admin, &MAX_STALE_SECS, &MAX_DEVIATION_BPS);
+    oracle.set_sources(&admin, &oracle_source, &None);
+    oracle.set_reference_value(&admin, &oracle_source, &SCALE, &T0);
+
+    let perm_id = env.register(PermissioningContract, ());
+    let perm = PermissioningContractClient::new(&env, &perm_id);
+    perm.initialize(&admin);
+
+    let sac = env.register_stellar_asset_contract_v2(admin.clone());
+    sac.issuer().set_flag(IssuerFlags::RevocableFlag);
+    sac.issuer().set_flag(IssuerFlags::ClawbackEnabledFlag);
+    let underlying = sac.address();
+
+    let sy_id = env.register(SYWrapperContract, ());
+    let sy = SYWrapperContractClient::new(&env, &sy_id);
+    sy.initialize(&admin, &underlying, &perm_id);
+
+    let pt_id = env.register(PTTokenContract, ());
+    let pt = PTTokenContractClient::new(&env, &pt_id);
+    pt.initialize(
+        &admin,
+        &perm_id,
+        &underlying,
+        &MATURITY,
+        &String::from_str(&env, "Principal Token USDY"),
+        &String::from_str(&env, "PT-USDY"),
+        &7,
+    );
+
+    let yt_id = env.register(YTTokenContract, ());
+    let yt = YTTokenContractClient::new(&env, &yt_id);
+    yt.initialize(
+        &admin,
+        &perm_id,
+        &underlying,
+        &oracle_id,
+        &MATURITY,
+        &String::from_str(&env, "Yield Token USDY"),
+        &String::from_str(&env, "YT-USDY"),
+        &7,
+    );
+
+    let config_id = env.register(MarketConfigContract, ());
+    let config = MarketConfigContractClient::new(&env, &config_id);
+    config.initialize(
+        &admin,
+        &underlying,
+        &MATURITY,
+        &admin,
+        &admin,
+        &0_u32,
+        &0_u32,
+        &0_u32,
+        &2_000_u32,
+    );
+
+    let pm_id = env.register(PrincipalManagerContract, ());
+    let pm = PrincipalManagerContractClient::new(&env, &pm_id);
+    pm.initialize(
+        &admin,
+        &sy_id,
+        &pt_id,
+        &yt_id,
+        &oracle_id,
+        &perm_id,
+        &underlying,
+        &MATURITY,
+        &config_id,
+    );
+
+    let pool_id = env.register(MarketPoolContract, ());
+    let pool = MarketPoolContractClient::new(&env, &pool_id);
+    pool.initialize(&admin, &pm_id, &4_u32);
+
+    let escrow_id = env.register(RecoveryEscrowContract, ());
+    let escrow = RecoveryEscrowContractClient::new(&env, &escrow_id);
+
+    // Disable mocking: from here on, a call only succeeds against an explicit, matching
+    // authorization entry -- exactly what a missing `require_auth()` call would never produce.
+    env.set_auths(&[]);
+    assert!(escrow
+        .try_initialize(
+            &admin,
+            &underlying,
+            &sy_id,
+            &pt_id,
+            &yt_id,
+            &pm_id,
+            &pool_id
+        )
+        .is_err());
+    assert!(escrow.try_underlying_address().is_err()); // did not take effect
+
+    // The issuer's own signature, mocked for exactly this one invocation, is enough.
+    escrow
+        .mock_auths(&[MockAuth {
+            address: &admin,
+            invoke: &MockAuthInvoke {
+                contract: &escrow_id,
+                fn_name: "initialize",
+                args: (
+                    &admin,
+                    &underlying,
+                    &sy_id,
+                    &pt_id,
+                    &yt_id,
+                    &pm_id,
+                    &pool_id,
+                )
+                    .into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .initialize(
+            &admin,
+            &underlying,
+            &sy_id,
+            &pt_id,
+            &yt_id,
+            &pm_id,
+            &pool_id,
+        );
+    assert_eq!(escrow.underlying_address(), underlying);
 }
 
 // ------------------------------------------------------------------ seize/finalize happy path

@@ -713,14 +713,30 @@ impl MarketPoolContract {
         // deliberate, not an oversight: deriving the pulled amount mid-execution instead of taking
         // it as a fixed, pre-signed literal previously reproduced a real auth-staleness bug on
         // Testnet (`Error(Auth, InvalidAction)`), the same bug class documented at length in
-        // `router/src/lib.rs`'s own module doc. This ordering is safe only because `SYWrapper`'s
-        // `transfer` has no external-call surface of its own (it only makes read-only compliance
-        // checks -- confirmed by reading it), so there is no actual reentrancy window today; found
-        // during an audit review, which also confirmed a later `SlippageExceeded` panic still
-        // unwinds this transfer along with everything else, since Soroban has no partial commit.
-        // A future change to `SYWrapper` (or a different SY-wrapper implementation with a
-        // compliance hook that could call out to attacker-controlled code) must not silently
-        // reintroduce a real reentrancy window here without revisiting this ordering.
+        // `router/src/lib.rs`'s own module doc. Found during an audit review, which also confirmed
+        // a later `SlippageExceeded` panic still unwinds this transfer along with everything
+        // else, since Soroban has no partial commit.
+        //
+        // For a `Kind::Sac` underlying, `SYWrapper.transfer` has no external-call surface of its
+        // own at all (only read-only compliance checks against the SAC itself -- confirmed by
+        // reading it), so there is no reentrancy question to begin with. For a `Kind::Rwa`
+        // underlying, `SYWrapper.transfer`'s compliance check does make a real cross-contract call
+        // into the issuer-deployed RWA/IdentityVerifier contract -- but a callback from there into
+        // this same `MarketPool` instance (already on the call stack) is rejected by the Soroban
+        // host itself before this contract's code ever runs: every ordinary cross-contract call
+        // this codebase makes (the kind every `Client::new(..).method(..)` here generates, via
+        // `env.invoke_contract`/the generated client) always uses `ContractReentryMode::
+        // Prohibited` -- confirmed by reading `soroban-env-host`'s own `call` host function and its
+        // `call_n_internal` reentry check. `SelfAllowed`/`Allowed` reentry exist in the host but are
+        // not reachable from guest contract code in this SDK/host version at all (only the host's
+        // own built-in account contract can use them) -- `flash_mint_yt`'s own
+        // `env.authorize_as_current_contract` is an unrelated mechanism (supplying an
+        // authorization-tree entry for a nested call two hops away, not a reentry-mode change), and
+        // in any case `flash_mint_yt`'s call chain never calls back into this `MarketPool` instance
+        // at all. So this ordering is safe for both underlying kinds today, for two independent
+        // reasons (no external call at all / the host's own unconditional non-reentrant default
+        // for guest contracts), not because of any assumption this contract makes on its own, and
+        // not because of any opt-out anywhere in this codebase.
         let this = env.current_contract_address();
         let sy = SYClient::new(&env, &Self::addr(&env, &DataKey::SY));
         sy.transfer(&from, &this, &sy_in);

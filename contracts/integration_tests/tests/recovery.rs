@@ -599,6 +599,7 @@ fn escrow_initialization_is_one_time_and_validates_the_wiring() {
     assert_eq!(
         s.escrow
             .try_initialize(
+                &s.admin,
                 &s.underlying,
                 &s.sy.address,
                 &s.pt.address,
@@ -625,6 +626,7 @@ fn escrow_initialization_is_one_time_and_validates_the_wiring() {
     assert_eq!(
         fresh
             .try_initialize(
+                &s.admin,
                 &s.underlying,
                 &foreign,
                 &s.pt.address,
@@ -668,6 +670,7 @@ fn escrow_initialization_rejects_a_genuinely_different_underlying() {
     assert_eq!(
         fresh
             .try_initialize(
+                &s.admin,
                 &s.underlying, // this stack's underlying ...
                 &other_sy_id,  // ... paired with a SYWrapper for a *different* one.
                 &s.pt.address,

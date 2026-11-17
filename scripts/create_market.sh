@@ -162,8 +162,8 @@ echo "-- Deploying RecoveryEscrow --"
 stellar contract deploy --wasm "$WASM_DIR/principal_recovery_escrow.wasm" \
   --source "$ISSUER_KEY" --network "$NETWORK" --alias "${ALIAS_PREFIX}_recovery_escrow"
 ESCROW_ID="$(alias_id "${ALIAS_PREFIX}_recovery_escrow")"
-inv "$ESCROW_ID" initialize --underlying "$UNDERLYING_ID" --sy_wrapper "$SY_ID" --pt_token "$PT_ID" \
-  --yt_token "$YT_ID" --principal_manager "$PM_ID" --market_pool "$POOL_ID"
+inv "$ESCROW_ID" initialize --caller "$ISSUER_ADDR" --underlying "$UNDERLYING_ID" --sy_wrapper "$SY_ID" \
+  --pt_token "$PT_ID" --yt_token "$YT_ID" --principal_manager "$PM_ID" --market_pool "$POOL_ID"
 
 for c in "$SY_ID" "$PT_ID" "$YT_ID" "$POOL_ID"; do
   inv "$c" set_recovery_escrow --admin "$ISSUER_ADDR" --escrow "$ESCROW_ID"

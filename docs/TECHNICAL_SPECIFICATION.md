@@ -801,7 +801,7 @@ so calling the claim functions cannot redirect value. **LPs receive no swap fees
 
 ### 16.1 Authorization
 
-Every state-changing entrypoint that acts on a named party uses `require_auth()` on that party before any state reads or writes. The exceptions are deliberate: the permissionless keeper calls (`settle_all`, `update_yield_index`, fee claims, `bump`) and the one-time `initialize` of `OracleAdapter`, `Permissioning`, `RiskControl`, `Router` and `RecoveryEscrow`, which are **first-caller-wins** and must therefore be deployed and initialized atomically (see DEPLOYMENT.md). This integrates with Soroban's native auth framework, supporting multisig accounts and policy contracts on the admin side.
+Every state-changing entrypoint that acts on a named party uses `require_auth()` on that party before any state reads or writes, including the one-time `initialize` of every contract in this workspace: each binds to its nominated admin's or the live issuer's own signature, so none of them are first-caller-wins. (`OracleAdapter`, `Permissioning`, `RiskControl`, and `RecoveryEscrow` did not originally enforce this on `initialize` specifically; `Router` had the same gap. All five were closed during security review — see `docs/INTERNAL_SECURITY_AUDIT_2026_11_16.md` findings C-1, M-12, and H-4 — and deployment/initialization no longer needs to be atomic purely to avoid a front-running window on this step, though `scripts/create_market.sh` and the `MarketFactory` atomic flow still do it that way by convention.) The only deliberate exceptions left are the permissionless keeper calls (`settle_all`, `update_yield_index`, fee claims, `bump`). This integrates with Soroban's native auth framework, supporting multisig accounts and policy contracts on the admin side.
 
 ### 16.2 Checks-effects-interactions
 
@@ -901,7 +901,8 @@ Phase B — market (per maturity)
                        set_risk_control(admin, risk_control); RiskControl.add_consumer(admin, manager)
   9. PT.set_minter(admin, manager); YT.set_minter(admin, manager)
  10. MarketPool        initialize(admin, manager, time_stretch_years)   — reads all wiring from the manager
- 11. RecoveryEscrow    initialize(underlying, sy_wrapper, pt, yt, manager, pool)   — no admin
+ 11. RecoveryEscrow    initialize(caller, underlying, sy_wrapper, pt, yt, manager, pool)
+                       — caller must be the live issuer authority (require_auth + is_authority)
  12. SYWrapper/PT/YT/MarketPool .set_recovery_escrow(admin, escrow)     — one-time each
  13. Router            initialize(admin); register_market(admin, pool)
 ```
