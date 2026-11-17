@@ -240,13 +240,62 @@ round-trip.
 
 ## 7. Self-service tester tooling
 
-**Not yet built.** No existing script in this repository lets an external tester deploy their
-own mock asset or create their own market (confirmed by search — nothing under any
-`self-service`/`watcher`/`tester`-named path exists yet). This remains open from the original
-Tranche 3 plan: a minting script for testers to deploy their own mock asset, plus the
-semi-automated `Router.register_market` watcher that auto-registers a new `MarketFactory`-created
-market after a topology/naming-pattern sanity check. Scoped as a separate, dedicated piece of
-work rather than rushed into this deployment session.
+Built this session: `scripts/self_service/create_mock_asset.sh` (tester-facing, no Principal
+admin key needed), `scripts/self_service/registration_watcher.sh` (Principal's own semi-automated
+registrar), and `scripts/self_service/decode_mkt_new.py` (a helper the watcher uses to decode
+`MarketFactory`'s `mkt_new` event payload). Full design rationale and usage in
+`scripts/self_service/README.md`.
+
+**Proven end-to-end, for real, against this deployment:**
+
+1. Generated a fresh key, `self-service-tester` (`GAQPNK6BUDJ7OGHNTCHZXMJPPNHOR6SRVNWN6YZXTH4SOC63ZIPF6BT6`),
+   simulating an external tester with no relationship to any key Principal controls.
+2. **`create_mock_asset.sh`** created `MOCKFOO`, issued and flagged identically to MOCKUSDY —
+   set-options tx `4d2c2cd6f47babad0f1fa2f1a3e59e6a2689d953dd5935c88412c4591fea3c4d`, SAC deploy tx
+   `8a6d276ab2b0d9adc309de4775b59579f59fb0908f65e85fa1d59575d456a811` →
+   `CCJ67I4OVWJUD5HAYFQQ5BLS66PFMES37QOP7C2MQS5E4XKXMIW5MLPK`. Zero signatures from any Principal
+   key.
+3. **`create_market_via_factory.sh SKIP_WIRING=1`**, signed entirely by the tester's own key,
+   created a full market for `MOCKFOO` — `SYWrapper`
+   `CD3EINWKW7AFL7JABI4UY4OPAT6UFG5M6TOHESMQJK2326MFDLORA5AA`, `PrincipalManager`
+   `CDTLTAVS532W3FI6KVOAEXJM23ZJOCX5T2VTHNIZWOLIVXSCDL6BGAHK`, `MarketPool`
+   `CCLZRIGQEBGVRP3376C5TGC4I4N5UVG7OB7ADR5MH5JKEKWYHVVBYMGB`, `RecoveryEscrow`
+   `CAGUX643K6IWHQFQ4A7J5Y7WC7B4LU5YRF7H5ODXTSSGQ4UUZRENY5M2` (plus PT/YT/MarketConfig) — tx
+   `d462cfd846031b74152bb96aa8189294b3ace4f05008c6b5e7d15c1719ae56e5` for the final
+   `create_pool_and_escrow` phase. Correctly skipped `risk_control.add_consumer`/
+   `router.register_market`, since the tester has no authority to call either.
+4. **`registration_watcher.sh`**, run with only Principal's own `ADMIN_KEY` and the shared infra
+   IDs, scanned `MarketFactory`'s real on-chain events, decoded the new pool/escrow addresses
+   from the raw event XDR (not told about them out of band), independently resolved the
+   underlying's real asset code (`MOCKFOO`) by reading the SAC directly, matched it against the
+   recognized test-asset pattern, and auto-registered it.
+5. **Verified independently on-chain afterward** (not just trusting the watcher's own log):
+   `RiskControl.is_consumer(SY) == true`, `RiskControl.is_consumer(Manager) == true`,
+   `Router.market(pool)` returns the correct full topology, `Permissioning.is_allowed(pool) ==
+   true`. The tester's market is fully registered and ready to accept compliance-granted
+   deposits, without a human ever running a per-tester registration command by hand.
+
+**Two real bugs found and fixed while building and actually running this, not while writing it:**
+
+- **A bash parameter-expansion gotcha**: `${VAR:-default}` with literal `{`/`}` characters inside
+  the default value (a regex like `{0,8}`) does not nest — bash's parser closes the substitution
+  at the *first* unescaped `}` it meets, silently truncating the intended default and leaving
+  stray characters glued on afterward. Both `create_mock_asset.sh` and `registration_watcher.sh`
+  had this in their `ASSET_CODE_PATTERN` default, confirmed live: a genuinely matching code
+  (`MOCKUSDY`) was incorrectly rejected until fixed by setting the default as a separate statement
+  instead of inside the substitution.
+- **A real oracle-staleness interaction**, not a bug in these new scripts: creating the tester's
+  market reverted `OracleStale` (`YTToken::initialize`'s own check) because enough real wall-clock
+  time had passed since this deployment's original genesis push that `OracleAdapter`'s stored
+  value had aged past `max_stale_seconds` (3600s). Fixed operationally by pushing a fresh value
+  (tx `c765cf8e41e744c22e7477fcc69e2d1c0216173be3154674a6637f90e4f1e6ae`) before retrying — a real
+  demonstration of why the oracle relay (§6) needs to run on an actual schedule in any deployment
+  that stays up longer than an hour between manual touches, not just once at genesis.
+
+**Deliberately not automated**: granting a tester's own trading account Permissioning standing.
+The watcher only grants the market's own four protocol contracts — never an arbitrary human
+account — exactly as intended: the market's plumbing is self-service, but who is allowed to
+actually trade remains Principal's own deliberate compliance decision.
 
 ## 8. Reproducible build evidence
 
