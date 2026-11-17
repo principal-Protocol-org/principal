@@ -6,10 +6,13 @@ the security review documents (`INTERNAL_SECURITY_AUDIT_2026_11_16.md` and its c
 each can be updated independently — this one grows with every deployment action; those are closed
 findings records.
 
-**Status (2026-11-17): Market 1 COMPLETE AND LIVE on mainnet.** Shared infrastructure (§4) and
-the first (90-day) market (§5) are both fully deployed, wired, compliance-granted, and
-independently verified (78/79 real checks pass — the one "failure" is the expected
-`git_tree_dirty` flag). Mainnet deployment had paused twice along the way on funding (current
+**Status (2026-11-18): Markets 1 AND 2 both COMPLETE AND LIVE on mainnet, with real end-to-end
+transaction testing performed on both.** Shared infrastructure (§4), the 90-day market (§5 Market
+1), and the 30-minute flow-test market (§5 Market 2) are all fully deployed, wired,
+compliance-granted, and independently verified (78/79 real checks pass on Market 1 — the one
+"failure" is the expected `git_tree_dirty` flag). Real mint→deposit→split→trade cycles were run
+against both markets with real MOCKUSDY and real signatures — see §5's "Real transaction testing"
+subsection for the full record. Mainnet deployment had paused twice along the way on funding (current
 mainnet Soroban WASM-upload resource fees, ~0.0012-0.0015 XLM/byte confirmed on two independent
 RPC endpoints, made the real cost far higher than first assumed) — each pause left nothing
 half-built, and every upload proved fully reusable once funding resumed. Real costs landed a
@@ -327,6 +330,106 @@ Balances after completing this market: `mainnet-admin` 4.5996396, `mainnet-mocku
 likely cover a second (30-minute) market for the same asset, since it reuses all 7 already-
 uploaded WASM hashes and only needs cheap deploy+init+wiring+grant calls (see §10).
 
+### Market 2 — 30-minute internal flow-test market — **STATUS: COMPLETE AND LIVE**
+
+Created directly via `scripts/create_market_via_factory.sh` (not `deploy.sh`), reusing all 7
+WASM hashes already uploaded for Market 1 — no new uploads, only cheap `deploy_from_hash` +
+`initialize` calls for 7 new contract instances plus the usual factory wiring. Underlying is the
+same `MOCKUSDY` SAC (`CDQYZUYQF7TRQ7BX6YBSCU3HLWBDS3E2VSP7AUE7C3E2D2U2IBBQOBGF`) as Market 1 — this
+market exists purely to exercise a real, short-lived maturity→settlement→redemption cycle on
+mainnet, mirroring the proof already done on testnet
+(`TESTNET_MOCKUSDY_DEPLOYMENT_EVIDENCE_2026_11_17.md` §5 "Market 2").
+
+Maturity: `1794946266` (≈30 minutes from creation). `market_id` = `mainnet-CDQYZU-CA74VH`.
+Salt: `d5cf4691e6c18b70ec6abad0cef0d7ae8f91c3f9adb7f441ea32c63e3101a7e4`.
+
+**Deployed contracts:**
+
+| Contract | ID |
+|---|---|
+| `SYWrapper` | `CA74VHFDP5G6TQK274OW7S7UUDDBUASXTJUYZ5H2RAJVNJJKYJOY6S55` |
+| `PTToken` (`PT-MU30M`) | `CAKNYWZCBZZML3Y7MZVFVVUAIDVB6EV6MR2MMDPDBYIGFE56ONMKR6JW` |
+| `YTToken` (`YT-MU30M`) | `CCT6H57QP2YYDAES6OPTWJJOKI5SGLFFMK2G2TXGS4UMPJNCSPLYJWXS` |
+| `MarketConfig` | `CAYOF3S5NBBK4XVHHFIKJQPWDZSMYX7OZ26MWLPQAT2EKWPVL44VN336` |
+| `PrincipalManager` | `CB7VVJJNU44HPGOEVLH5D7E4BVAHUP5MAFXZUVC4RS34F5TSXSUUV3SV` |
+| `MarketPool` | `CC3HM3YGRMJ4QHHZQCF2Q7XVMO3MIAJGZNBEYTOQSSGE76HCP25MMULV` |
+| `RecoveryEscrow` | `CAET3XI5BM75DOABUEG5RTTNXXYADLTTM7EHTC2IJEDU5DR4BL4CVAGW` |
+
+**Factory + wiring transactions:**
+
+| Step | Tx hash |
+|---|---|
+| `create_tokens` | `9ef56e0fecfda733cfab952127b82b0c1332bd0fad8923c8a0ae7b305f50fd8b` |
+| `create_engine` | `5afc1deab6787694cca25c7880d956fcc0ec3150e595d6b8e667ae57f52b9c78` |
+| `create_pool_and_escrow` | `698240cba79b7f6b3f31eac3956a29dbae13b91a7cf48bce0729b8e29b834524` |
+| `risk_control.add_consumer(SYWrapper)` | `b7e4a1d0736facb67b5d496dbe582f11a5005c413a9637cc9467bd2afd1778a2` |
+| `risk_control.add_consumer(PrincipalManager)` | `430b3c8d1c7b48509b1d3956bfce380111eb001e934d995e7841f74b90c1cfdc` |
+| `router.register_market` | `715cdb37837ce0bb00bed7531cffbfa2ca3387ff32924f50cd5ecb0a674d3591` |
+
+**Compliance grants** (account-level `grant_account` for SY/Manager/Pool/Escrow, plus per-asset
+`grant_asset` for Pool/Escrow on PT/YT): 6 transactions,
+`207a7aa6c9a6d0def8d01a6a3b2cd909d61a56ca1fa7eba22f0cebbc1461603e` through
+`32a010f8eb1049a240a5eb40ebe99346298116f33c92234e9b8fa023e4e70d43` (see the manifest's
+`transactions` array, steps `market2:compliance_grant_1..6`, for the exact mapping). The oracle
+needed a second genesis refresh immediately before this market's `create_tokens` (same
+`OracleStale` pattern as Market 1 — real elapsed time between funding/upload steps keeps outrunning
+`max_stale_seconds`).
+
+### Real transaction testing (both markets) — 2026-11-17/18
+
+The first real end-to-end flows run against Principal Protocol on Stellar mainnet. All with a
+fresh test account (`mainnet-test-a`,
+`GCOMBIYWZ3HIMAS7FLFERQMVZIDVIMFZAAV7A2KMCDV3RAKP5NL5R5BM`), minted real MOCKUSDY, real
+signatures, real on-chain state — nothing simulated or assumed.
+
+**Permission gap found and fixed live:** `PTToken::mint`/`YTToken::mint` each call
+`Permissioning.is_allowed` (account-level) **and** `is_allowed_for_asset(account, this_token)`
+(per-asset) on the *recipient*, not just on the market's own contracts. Granting only the market's
+four contracts (as the factory-adjacent compliance step does) is not sufficient for a human trading
+account to ever hold PT/YT — it also needs its own per-asset grant for every PT/YT token it will
+hold. First attempt at `PrincipalManager.mint` on Market 2 reverted `Error(Contract, #7)`
+(`PermissionDenied`, confirmed by reading `contracts/pt_token/src/lib.rs`'s `Error` enum) until
+`mainnet-test-a` was separately `grant_asset`'d for `PT2`/`YT2` (and later `PT1`/`YT1`). Not a bug —
+this is the two-layer compliance design working as intended — but worth recording: **every real
+trading account needs its own per-asset grant, separate from the market's own contract-level
+grants**, and the self-service tooling's README already says this explicitly (§6) for exactly this
+reason.
+
+| # | Action | Market | Tx hash | Result |
+|---|---|---|---|---|
+| 1 | `Permissioning.grant_account(test-a)` | — | `358bb2753923e9413a78907df7a5fb08af1f5b2adec8f5c400a0b22f7d3369c9` | granted |
+| 2 | Mint 1000 MOCKUSDY to test-a | — | `2add04a0d80106971726147966a9d85d561beff8b75cedffe418b3b366ba83a4` | 1000.0000000 MOCKUSDY (a first attempt at `--amount 1000` sent 0.0001000 — the CLI's classic-asset `--amount` is in stroops, not decimal units; corrected) |
+| 3 | `SYWrapper2.deposit(500 MOCKUSDY)` | 2 | `f3fcba50d1f2605cbe153ef9454f7119ed931d5ca0ecbea63c727d2adaea5726` | 500 SY shares minted |
+| 4 | `Permissioning.grant_asset(test-a, PT2)` | 2 | `9db32a368b5c14f1862bbd8268d5c060ba177f28747361473a69bddac6e6822d` | granted (fix for the gap above) |
+| 5 | `Permissioning.grant_asset(test-a, YT2)` | 2 | `a89a068720391c4ba3b623d91bb32a27b7650cc6364db3d05f9f2071b01159ee` | granted |
+| 6 | `PrincipalManager2.mint(500 SY)` | 2 | `12f90a7b41736bceb318d13e4a413f92eedf34823f24900db492512a0375fee3` | 5,764.487814 PT2 + 5,764.487814 YT2 minted, fee 2.5 SY withheld |
+| 7 | `PrincipalManager2.claim_yield(test-a)` (pre-maturity) | 2 | `5686cbee284613a5a3be9392ee51518e8686a194640acb3df3fef58962fb6754` | `0` — correct, no yield has accrued yet (oracle price unchanged, seconds since mint) |
+| 8 | `Permissioning.grant_asset(test-a, PT1)` | 1 | `fc64092f20768394e142a64bbba1a4a89add3622af79a71ffff4fa1be6a237fc` | granted |
+| 9 | `Permissioning.grant_asset(test-a, YT1)` | 1 | `71dbd9e12b298ba3c8990abcb1faa74bf16cb5d5008a38a2ba5ccb1d8360fe48` | granted |
+| 10 | `SYWrapper1.deposit(200 MOCKUSDY)` | 1 | `972727f72064f9acd6955339a84c544157bcb5ebc113c19ee3cd25a325ef0776` | 200 SY shares minted |
+| 11 | `PrincipalManager1.mint(100 SY)` | 1 | `ddbdd13683ffd9b93509d9c223556aaa04d57c2d0870195db304580b8e2b4906` | 1,152.897562 PT1 + 1,152.897562 YT1 minted, fee 0.5 SY withheld |
+| 12 | `MarketPool1.add_liquidity(60 PT, 50 SY)` | 1 | `516490ef54181d4ca2b65c6ceed1e3596499efcd4d04b658249b1b8ed4b9b7a9` | **first AMM liquidity ever seeded for this protocol on mainnet** — 54.7721557 LP minted |
+| 13 | `MarketPool1.swap_pt_for_sy(5 PT)` | 1 | `1bff923cff8eb97a2c810bc4a22e38b4c12f4f8ef69c41fd0799da62215c8afa` | **first real AMM swap on mainnet** — 4.3005615 SY out, fee 0.0010605 SY |
+
+Every result above was read back from the real transaction's own emitted events (`sy_xfer`,
+`mint`, `add_liq`, `sell_pt`), not assumed from a successful exit code.
+
+Market 2's maturity (`1794946266`) was tracked live. Once it passed:
+
+| # | Action | Tx hash | Result |
+|---|---|---|---|
+| 14 | `PrincipalManager2.settle_all()` (1st attempt) | `6def077f8f172846ab4488964153e33ae87fa904ad09119933181081542a457b` | `transaction submission timeout` — confirmed via Horizon 404 that it never actually landed, so safely resubmitted identically |
+| 15 | `PrincipalManager2.settle_all()` (resubmit) | `d3b8edd47628d50c90e8a275e492e19ec86b8e088decdcf93da1f130d7aa3ac8` | settlement rate frozen at `11534743` |
+| 16 | `PrincipalManager2.redeem(test-a, 5764.487814 PT2, 5764.487814 YT2)` | `b3a0f1a55fea5a959535590181250951ac0e78e44fbd26220ffe708a1b9c8e04` | `499.7499999` MOCKUSDY from the PT leg, `0` from the YT leg (no yield had accrued — consistent with step 7's pre-maturity `claim_yield` also returning `0`, since the real USDY price never moved during this market's 30-minute life) |
+
+Final `mainnet-test-a` MOCKUSDY balance: `799.7500999` (1000 minted − 500 into Market 2 − 200 into
+Market 1 + 499.7499999 redeemed back from Market 2 ≈ matches, modulo the tiny tokenization fee and
+the original 0.0001 MOCKUSDY stroops/decimal mix-up in step 2).
+
+**This is the first complete, real, on-chain Principal Protocol market lifecycle — deposit → split
+into PT/YT → mature → settle → redeem — proven end to end on Stellar mainnet**, mirroring the
+equivalent testnet proof exactly, with every step read back from real emitted contract events.
+
 ## 6. Self-service tester tooling
 
 *(filled in once built)*
@@ -369,43 +472,33 @@ hash (captured at upload time) is cross-checked against this table.
 
 *(filled in once contract addresses are finalized and handed off)*
 
-## 10. Resume checklist (next steps now that Market 1 is live)
+## 10. Resume checklist (next steps now that both markets are live and tested)
 
-**Shared infrastructure (§4) and Market 1 (§5) are both done.** Next steps, in priority order:
+**Shared infrastructure (§4), Market 1, Market 2, and a full real deposit→split→AMM/trade→
+mature→settle→redeem cycle on both markets (§5) are all done.** Next steps, in priority order:
 
-1. **Create Market 2** (30-minute internal flow-test market for the same asset), directly via
-   `scripts/create_market_via_factory.sh` — **not** `deploy.sh` (which would just detect and
-   reuse the existing Market 1 per its own idempotency check, never creating a second one).
-   Reuse the already-deployed shared infra IDs (§4) and the same 7 already-uploaded per-market
-   WASM hashes (§5's table) — no re-upload needed, confirmed cheap and correct on testnet
-   (`TESTNET_MOCKUSDY_DEPLOYMENT_EVIDENCE_2026_11_17.md` §5 "Market 2"). At current balances
-   (≈78.29 XLM total), this is very likely affordable: the mainnet equivalent of testnet's
-   Market 2 only needs deploy+init for 7 contracts (confirmed cheap on mainnet too — e.g.
-   `principal_manager`'s own deploy+init in §4 cost a combined ~0.1 XLM) plus the three cheap
-   `create_*` calls (confirmed 0.3665618 XLM for `create_tokens` alone) plus wiring/grants
-   (confirmed ~1 XLM total). **Refresh the oracle first** (`set_reference_value`) if it has aged
-   past `max_stale_seconds` since the last push — this bit twice during Market 1's creation and
-   will keep recurring until the relay (§7) actually runs on a schedule.
-2. **A `transaction submission timeout` on any single operation is not necessarily a real
-   failure** — confirmed multiple times this deployment: resubmitting the identical
-   already-signed transaction (same source, same sequence number) either confirms the original
-   succeeded, or genuinely resubmits if it didn't (check the tx hash on Horizon first either way:
-   a 404 means it never landed and is safe to retry; `successful: true` means it already did and
-   must not be redone). `deploy.sh` itself does not yet handle this automatically — the known
-   `upload_wasm`/`deploy_from_hash` `set -e`-blind-spot bug (doesn't stop the script cleanly on a
-   real failure, and also doesn't retry a mere timeout) is still open; worth fixing properly
-   before relying on this script unattended for a future deployment.
-3. **Mint MOCKUSDY and exercise a real deposit→mint→trade→redeem cycle** on Market 1, same as
-   was already done on testnet (`TESTNET_MOCKUSDY_DEPLOYMENT_EVIDENCE_2026_11_17.md` §5) — not
-   yet done on mainnet. `MarketPool` has no seeded liquidity yet, so a trade specifically needs
-   `add_liquidity`/`add_liquidity_single_sy` run first.
-4. Self-service tester tooling (`scripts/self_service/`) and the oracle relay
-   (`services/oracle-relay/relay.sh`) are already built and proven on testnet — both apply
-   directly to this mainnet deployment now that a real market exists; neither needs to be
-   rebuilt, only pointed at the mainnet contract IDs in §4/§5 above.
-5. Remaining mock assets from the original plan (USTRY, GILTS, CETES, XAUM) each need their own
+1. Remaining mock assets from the original plan (USTRY, GILTS, CETES, XAUM) each need their own
    `OracleAdapter` (new asset ⇒ new price feed ⇒ genuinely new upload, ~55 XLM at this session's
    real rate) but reuse every already-uploaded per-market contract — budget accordingly per §4's
-   own breakdown of what's asset-specific vs. protocol-wide shared infrastructure.
-6. Reproducible-build sign-off and dApp handoff (§8/§9) can now reference this market's real,
-   live mainnet addresses.
+   own breakdown of what's asset-specific vs. protocol-wide shared infrastructure. Not yet started
+   mainnet-side; confirm with the user before spending further on wholly new assets.
+2. Self-service tester tooling (`scripts/self_service/`) and the oracle relay
+   (`services/oracle-relay/relay.sh`) are already built and proven on testnet, and the manual
+   grant/mint/deposit/mint/settle/redeem steps they automate are now also proven by hand on
+   mainnet (§5's testing table) — both apply directly to this deployment now; neither needs to be
+   rebuilt, only pointed at the mainnet contract IDs in §4/§5 and run on a real schedule (the
+   oracle going stale twice during Market 1's creation and again before Market 2's is a direct,
+   repeated demonstration of why the relay needs to actually run, not just exist).
+3. Reproducible-build sign-off and dApp handoff (§8/§9) can now reference two real, live,
+   fully-exercised mainnet markets' addresses.
+4. **Permission-gap finding to carry forward**: a human trading account needs its own
+   `Permissioning.grant_asset` for every PT/YT token it will hold, separate from the market's own
+   contract-level grants — found live during this round's testing (§5), not previously hit on
+   testnet because the earlier testnet proof only exercised the self-service tooling's own
+   market-level grants. Any future testing checklist or self-service doc should call this out
+   explicitly as a required step for a *new human tester*, not just a new market.
+5. `deploy.sh`'s known `upload_wasm`/`deploy_from_hash` `set -e`-blind-spot bug (a real failure
+   inside a `$(...)` substitution doesn't stop the script cleanly, and a mere submission timeout
+   isn't distinguished from a real failure) is still open — not hit this round since Market 2 was
+   created via `create_market_via_factory.sh` directly, but still worth fixing before relying on
+   `deploy.sh` unattended for the next asset.

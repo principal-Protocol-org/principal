@@ -310,6 +310,186 @@
       "step": "router.register_market",
       "tx": "66739eb5acd1cfc255f7b44667a9de19e3deec92231506fc6e97d28c278d8282",
       "at": "2026-11-17T19:33:15Z"
+    },
+    {
+      "step": "market2:create_tokens",
+      "tx": "9ef56e0fecfda733cfab952127b82b0c1332bd0fad8923c8a0ae7b305f50fd8b",
+      "at": "2026-11-17T19:41:00Z"
+    },
+    {
+      "step": "market2:create_engine",
+      "tx": "5afc1deab6787694cca25c7880d956fcc0ec3150e595d6b8e667ae57f52b9c78",
+      "at": "2026-11-17T19:41:10Z"
+    },
+    {
+      "step": "market2:create_pool_and_escrow",
+      "tx": "698240cba79b7f6b3f31eac3956a29dbae13b91a7cf48bce0729b8e29b834524",
+      "at": "2026-11-17T19:41:20Z"
+    },
+    {
+      "step": "market2:risk_control.add_consumer(SYWrapper)",
+      "tx": "b7e4a1d0736facb67b5d496dbe582f11a5005c413a9637cc9467bd2afd1778a2",
+      "at": "2026-11-17T19:41:42Z"
+    },
+    {
+      "step": "market2:risk_control.add_consumer(PrincipalManager)",
+      "tx": "430b3c8d1c7b48509b1d3956bfce380111eb001e934d995e7841f74b90c1cfdc",
+      "at": "2026-11-17T19:41:47Z"
+    },
+    {
+      "step": "market2:router.register_market",
+      "tx": "715cdb37837ce0bb00bed7531cffbfa2ca3387ff32924f50cd5ecb0a674d3591",
+      "at": "2026-11-17T19:41:57Z"
+    },
+    {
+      "step": "market2:compliance_grant_1",
+      "tx": "207a7aa6c9a6d0def8d01a6a3b2cd909d61a56ca1fa7eba22f0cebbc1461603e",
+      "at": "2026-11-17T19:43:42Z"
+    },
+    {
+      "step": "market2:compliance_grant_2",
+      "tx": "cd56246055cb8db5ff1eb07071d40adb4c20b906b7f4341f0d71ca71f8706a1c",
+      "at": "2026-11-17T19:44:02Z"
+    },
+    {
+      "step": "market2:compliance_grant_3",
+      "tx": "a8f02ffda130749ac97bcdc9e53d43ba4a3061648364eeb3e518ff711bab7437",
+      "at": "2026-11-17T19:44:17Z"
+    },
+    {
+      "step": "market2:compliance_grant_4",
+      "tx": "c20c441d1c10c71491f250c76c383812390964e51d89a567ef00fcd30d2dd52d",
+      "at": "2026-11-17T19:44:27Z"
+    },
+    {
+      "step": "market2:compliance_grant_5_asset_pt",
+      "tx": "508b459344baa0ea61c80f122e468aca545518fb4d41bec4ff6c917608a9e6f2",
+      "at": "2026-11-17T19:44:37Z"
+    },
+    {
+      "step": "market2:compliance_grant_6_asset_yt",
+      "tx": "32a010f8eb1049a240a5eb40ebe99346298116f33c92234e9b8fa023e4e70d43",
+      "at": "2026-11-17T19:44:47Z"
+    },
+    {
+      "step": "testing:permissioning.grant_account(test-a)",
+      "tx": "358bb2753923e9413a78907df7a5fb08af1f5b2adec8f5c400a0b22f7d3369c9",
+      "at": "2026-11-17T19:49:37Z"
+    },
+    {
+      "step": "testing:mint_mockusdy_to_test-a",
+      "tx": "2add04a0d80106971726147966a9d85d561beff8b75cedffe418b3b366ba83a4",
+      "at": "2026-11-17T19:52:00Z"
+    },
+    {
+      "step": "testing:market2.deposit(test-a,500 MOCKUSDY)",
+      "tx": "f3fcba50d1f2605cbe153ef9454f7119ed931d5ca0ecbea63c727d2adaea5726",
+      "at": "2026-11-17T19:53:00Z"
+    },
+    {
+      "step": "testing:permissioning.grant_asset(test-a,PT2)",
+      "tx": "9db32a368b5c14f1862bbd8268d5c060ba177f28747361473a69bddac6e6822d",
+      "at": "2026-11-17T19:55:12Z"
+    },
+    {
+      "step": "testing:permissioning.grant_asset(test-a,YT2)",
+      "tx": "a89a068720391c4ba3b623d91bb32a27b7650cc6364db3d05f9f2071b01159ee",
+      "at": "2026-11-17T19:55:22Z"
+    },
+    {
+      "step": "testing:market2.mint(test-a,500 SY -> PT2/YT2)",
+      "tx": "12f90a7b41736bceb318d13e4a413f92eedf34823f24900db492512a0375fee3",
+      "at": "2026-11-17T19:55:40Z"
+    },
+    {
+      "step": "testing:permissioning.grant_asset(test-a,PT1)",
+      "tx": "fc64092f20768394e142a64bbba1a4a89add3622af79a71ffff4fa1be6a237fc",
+      "at": "2026-11-17T19:56:27Z"
+    },
+    {
+      "step": "testing:permissioning.grant_asset(test-a,YT1)",
+      "tx": "71dbd9e12b298ba3c8990abcb1faa74bf16cb5d5008a38a2ba5ccb1d8360fe48",
+      "at": "2026-11-17T19:56:37Z"
+    },
+    {
+      "step": "testing:market1.deposit(test-a,200 MOCKUSDY)",
+      "tx": "972727f72064f9acd6955339a84c544157bcb5ebc113c19ee3cd25a325ef0776",
+      "at": "2026-11-17T19:57:00Z"
+    },
+    {
+      "step": "testing:market1.mint(test-a,100 SY -> PT1/YT1)",
+      "tx": "ddbdd13683ffd9b93509d9c223556aaa04d57c2d0870195db304580b8e2b4906",
+      "at": "2026-11-17T19:57:30Z"
+    },
+    {
+      "step": "testing:market1.pool.add_liquidity(60 PT,50 SY)",
+      "tx": "516490ef54181d4ca2b65c6ceed1e3596499efcd4d04b658249b1b8ed4b9b7a9",
+      "at": "2026-11-17T19:58:00Z"
+    },
+    {
+      "step": "testing:market1.pool.swap_pt_for_sy(5 PT -> 4.3005615 SY)",
+      "tx": "1bff923cff8eb97a2c810bc4a22e38b4c12f4f8ef69c41fd0799da62215c8afa",
+      "at": "2026-11-17T19:58:30Z"
+    },
+    {
+      "step": "testing:settle_all_tx_timeout_never_landed",
+      "tx": "6def077f8f172846ab4488964153e33ae87fa904ad09119933181081542a457b",
+      "at": "2026-11-18T00:04:51Z"
+    },
+    {
+      "step": "testing:market2.settle_all",
+      "tx": "d3b8edd47628d50c90e8a275e492e19ec86b8e088decdcf93da1f130d7aa3ac8",
+      "at": "2026-11-18T00:05:00Z"
+    },
+    {
+      "step": "testing:market2.redeem(test-a,5764.487814 PT2+YT2 -> 499.7499999 MOCKUSDY)",
+      "tx": "b3a0f1a55fea5a959535590181250951ac0e78e44fbd26220ffe708a1b9c8e04",
+      "at": "2026-11-18T00:05:30Z"
     }
-  ]
+  ],
+  "market2": {
+    "market_id": "mainnet-CDQYZU-CA74VH",
+    "maturity": 1794946266,
+    "salt": "d5cf4691e6c18b70ec6abad0cef0d7ae8f91c3f9adb7f441ea32c63e3101a7e4",
+    "purpose": "30-minute internal flow-test market (same MOCKUSDY underlying as market/Market 1), reusing all 7 already-uploaded per-market WASM hashes from Market 1 -- no new uploads needed.",
+    "tokenization_fee_bps": 5,
+    "yt_fee_bps": 1000,
+    "swap_fee_tier_bps": 10,
+    "protocol_share_bps": 2000,
+    "settled_rate": "11534743",
+    "status": "matured, settled, and redeemed -- full lifecycle proven on mainnet"
+  },
+  "contracts2": {
+    "sy_wrapper": {
+      "id": "CA74VHFDP5G6TQK274OW7S7UUDDBUASXTJUYZ5H2RAJVNJJKYJOY6S55"
+    },
+    "pt_token": {
+      "id": "CAKNYWZCBZZML3Y7MZVFVVUAIDVB6EV6MR2MMDPDBYIGFE56ONMKR6JW"
+    },
+    "yt_token": {
+      "id": "CCT6H57QP2YYDAES6OPTWJJOKI5SGLFFMK2G2TXGS4UMPJNCSPLYJWXS"
+    },
+    "market_config": {
+      "id": "CAYOF3S5NBBK4XVHHFIKJQPWDZSMYX7OZ26MWLPQAT2EKWPVL44VN336"
+    },
+    "principal_manager": {
+      "id": "CB7VVJJNU44HPGOEVLH5D7E4BVAHUP5MAFXZUVC4RS34F5TSXSUUV3SV"
+    },
+    "market_pool": {
+      "id": "CC3HM3YGRMJ4QHHZQCF2Q7XVMO3MIAJGZNBEYTOQSSGE76HCP25MMULV"
+    },
+    "recovery_escrow": {
+      "id": "CAET3XI5BM75DOABUEG5RTTNXXYADLTTM7EHTC2IJEDU5DR4BL4CVAGW"
+    }
+  },
+  "wiring2": {
+    "router_registered_pool": true,
+    "pt_minter": "CB7VVJJNU44HPGOEVLH5D7E4BVAHUP5MAFXZUVC4RS34F5TSXSUUV3SV",
+    "yt_minter": "CB7VVJJNU44HPGOEVLH5D7E4BVAHUP5MAFXZUVC4RS34F5TSXSUUV3SV",
+    "recovery_escrow": "CAET3XI5BM75DOABUEG5RTTNXXYADLTTM7EHTC2IJEDU5DR4BL4CVAGW",
+    "risk_consumers": [
+      "CA74VHFDP5G6TQK274OW7S7UUDDBUASXTJUYZ5H2RAJVNJJKYJOY6S55",
+      "CB7VVJJNU44HPGOEVLH5D7E4BVAHUP5MAFXZUVC4RS34F5TSXSUUV3SV"
+    ]
+  }
 }
