@@ -6,15 +6,16 @@ the security review documents (`INTERNAL_SECURITY_AUDIT_2026_11_16.md` and its c
 each can be updated independently — this one grows with every deployment action; those are closed
 findings records.
 
-**Status: PAUSED (2026-11-17).** Mainnet deployment is on hold after discovering that current
-mainnet Soroban WASM-upload resource fees (~0.0012 XLM/byte, confirmed on two independent RPC
-endpoints) make finishing even the first planned market cost roughly 550-600 XLM beyond what was
-already spent — far more than the treasury was funded with. The user chose to pause mainnet
-spending and continue the rest of the Tranche 3 plan (self-service tooling, oracle relay backend,
-full end-to-end flow proof) on testnet, which is free, and revisit mainnet funding separately
-later. **Nothing below this point is abandoned** — the MOCKUSDY issuer, SAC, and `permissioning`
-contract deployed here remain live on mainnet and reusable when deployment resumes. See
-"Resume checklist" at the end of this document for exactly what's needed to pick this back up.
+**Status (2026-11-17, updated): shared infrastructure COMPLETE; market creation PAUSED pending
+further funding.** Mainnet deployment first paused after discovering that current mainnet
+Soroban WASM-upload resource fees (~0.0012-0.0015 XLM/byte, confirmed on two independent RPC
+endpoints) make the full first deployment cost far more than the treasury was initially funded
+with. The treasury was then topped up to ≈452 XLM total across the three working keys — enough
+to finish all of shared infrastructure but not also the first market — so by explicit user
+choice, shared infrastructure (§4) was completed in full and verified, and market creation (§5)
+was deliberately paused there rather than risk stalling mid-creation again. ≈271 XLM remains
+across the three keys. See §10 (Resume checklist) for exactly what's needed to finish the first
+market once more funding arrives.
 
 Entries below are added only after the corresponding on-chain transaction has actually been
 submitted and its hash confirmed — nothing in this document is planned-but-not-yet-done unless
@@ -188,11 +189,68 @@ submission with no funds debited (confirmed via Horizon balance checks after eac
 
 ## 4. Shared protocol infrastructure
 
-*(filled in as deployment proceeds — OracleAdapter, Permissioning, RiskControl, Router)*
+**Status: COMPLETE** as of 2026-11-17, resumed after the funding pause (§3.1 above), using
+`scripts/deploy/deploy.sh`'s new `STOP_AFTER_SHARED_INFRA=true` flag (added this round,
+backward-compatible, default off) to stop cleanly before the market phase. The run itself hit
+the same two issues already on file from the first attempt — a `TxInsufficientBalance`-adjacent
+client timeout on `router`'s and `market_factory`'s uploads, and the pre-existing `deploy.sh`
+manifest-misattribution bug this document already flagged (§3.1) — both worked around by hand
+(resubmitting the identical already-signed transaction, which succeeded the second time; the
+manifest was corrected directly). Full verification:
+`MANIFEST=deployments/mainnet-mockusdy/deployment-manifest.json
+./scripts/deploy/verify-deployment.sh` → **19 passed, 1 failed** (the expected `git_tree_dirty`
+flag only).
+
+| Contract | ID | Key transactions |
+|---|---|---|
+| `OracleAdapter` | `CCKXG4HSVH57AQTYJDNNXHQBCGNH6KRFNMCMATTMYFUX2TDQ7GD5K7IT` | deploy `7fbf805d54ef08a332dd58a620606ca82dd36d25b31070fa9f9eff11ee1c8ed5`, init `a8e39609fb856d5818fb178f28a56c0c95d0141f816e5216190536866452241d` |
+| `Permissioning` | `CBCWU57AILKFDOYQAESFRPH57Q6UK66E7RBYV4ICZHNNGWIWFAHVRTXJ` | (from the first, pre-pause attempt — see §3.1) |
+| `RiskControl` | `CBHCRRLWHS7KRQNAXYY3OMNDTSXDNJKCDK6KPUUJPFGDBSN76JEWWQ5G` | deploy `05e79d4da2dc06e7a25e0b381923e886926802ecb1a09d2ea991856a0b9e9b40`, init `f4274c9a83bb0c2653a7685fbae310877ad3de3fa44123c7fc0911bf700691c3` |
+| `Router` | `CCM4QQUKTD2CUTRSNNI6OO4JHYEF7MHKBMKSM5JYJNFLKSTAZBQD7QF5` | upload `d9cd44116ca70b67a11d1503d9f3c352c70c4926495edf23de4d8008efccfa4b`, deploy `cc24f84c48a703a68f0f16373250a1a4ddf388df2cb88494168144812f620921`, init `4cc9172b0a24c4f566bee43193bf98a613e6f65422e0f7139e61128d3d6614dc` |
+| `MarketFactory` (stateless) | `CDYH7UV24XS7G7MDRTBJUS4PJNKKUXTLUUTL67MR5CYJAXSPPHNWS65T` | upload `67363c8020a4609f9bf4808f2dd8faabd6d0b45ea0049dc71b25f390a9469e85`, deploy `7ab8f3ca627588608ca54d70a7232ecffa0714e3c9294f09b90f284331beb7af` |
+
+**Oracle genesis + real SEP-40 feed wiring** (done by hand after the automated run stopped
+short of this step, since the mid-run failures above prevented `deploy.sh` from reaching it):
+manual genesis push of `11,534,743` (real USDY price re-checked live at this point — unchanged
+from §2/§3's earlier reading) — tx `f186c699affbc6267112a166cb37b0c4bb611433ce598ea2e2820ac148d19434`;
+`set_feed_source` to the real RedStone feed / real USDY SAC — tx
+`cfc891dea1cec242f442c9b585a9b69fa0b64842331bc4671a4023559f1e9d1d`; the zero-then-restore
+throttle bootstrap (`set_feed_min_interval` → 0, `sync_from_feed`, `set_feed_min_interval` → 300)
+— tx `ef2cf87e51f316877a2dd982c8ddcee141bd67f26f99b8d54386a6d6eca87ae7`,
+`9a78fad9a8e48609e178d564db2ecf1bb1f40c144913b551f81e6e28e745d9b0` (correctly rejected
+`stale_ts` — the real feed's own last tick is older than this genesis push, exactly as seen on
+testnet §6; the manual value remains in effect), `e49b979a04f4b915970b085adf7e7f57bd5bbf01bd8a39429eeb0ef6b7568360`.
+
+### Real cost data from this round (useful for the next phase's budgeting)
+
+Two transactions genuinely never landed on-chain the first time (`transaction submission
+timeout` — confirmed via a 404 on Horizon, unlike an earlier payment this document records that
+*had* actually succeeded despite the same client-side symptom) and were resubmitted identically,
+succeeding the second time with no double charge. Real charged fees for the two contracts fully
+measured this round came in **~13% below** the pre-upload `simulateTransaction` quote (e.g.
+`risk_control`'s combined deploy+init cost only `0.076 XLM`, not the several XLM a flat per-byte
+model would suggest) — the per-byte upload quote is a conservative ceiling, not the exact charge.
+Balances before this round: `mainnet-admin` 240.6898814, `mainnet-mockusdy-issuer` 24.9176668,
+`principal-mainnet-treasury` (unchanged at the time) XLM. After completing all of shared infra
+(including the two retried uploads and the full oracle bootstrap): `mainnet-admin` 60.0045044,
+`mainnet-mockusdy-issuer` 24.9176668 (untouched this round), `principal-mainnet-treasury`
+186.3511731 XLM — **≈ 271 XLM remaining across all three keys**, consumed **≈ 181 XLM** to finish
+all of shared infrastructure (lower than the ~215 XLM upper-bound estimate given when funding
+was requested).
+
+### `scripts/deploy/deploy.sh` changes made this round
+
+- Added `STOP_AFTER_SHARED_INFRA=true` (default off, fully backward-compatible): exits cleanly
+  right after shared infrastructure is deployed and recorded, before the market-creation phase.
+  Added specifically to let this deployment be funded and executed in two safe, independently
+  budgeted stages rather than risking a stall mid-market-creation again.
 
 ## 5. Markets
 
-*(filled in as deployment proceeds)*
+**Not yet created — paused here by explicit user decision**, pending further funding. ~271 XLM
+remains across the three working keys; completing the first (90-day) market's 7 remaining
+contracts was estimated at ~431 XLM (upper bound) at the time funding was requested, though real
+costs have so far run below quoted estimates. See §10 (Resume checklist) for exact next steps.
 
 ## 6. Self-service tester tooling
 
@@ -236,27 +294,39 @@ hash (captured at upload time) is cross-checked against this table.
 
 *(filled in once contract addresses are finalized and handed off)*
 
-## 10. Resume checklist (when mainnet deployment picks back up)
+## 10. Resume checklist (when mainnet market creation picks back up)
 
-1. **Fund the treasury** (`GBUVAHYJNCXZWUK3NIOVJ6EYQRSXMVT2XOUEASS3VAG4EWIXXWYSVSXW`) with
-   enough XLM for the remaining work — budget at least **600 XLM** for the rest of the first
-   market (4 remaining shared-infra contracts + 7 per-market contracts), plus headroom for a
-   second market and any other mock assets. Re-check the live resource fee first
-   (`simulateTransaction` against a built-only upload XDR, as done in §3 above) in case network
-   fee conditions have changed since 2026-11-17.
-2. **Re-run** `ENV_FILE=.env.mainnet-mockusdy ./scripts/deploy/deploy.sh` from the repository
-   root. It is idempotent: `permissioning` (already live) will be detected and reused; the three
-   contracts whose upload failed (`oracle_adapter`, `risk_control`, and whatever came after) will
-   be retried fresh. The manifest at `deployments/mainnet-mockusdy/deployment-manifest.json`
-   already has backups from both prior attempts.
-3. Before resuming, fix the robustness gap noted above: `upload_wasm`'s failure inside a
-   `hash="$(upload_wasm ...)"` assignment does not stop the script via `set -e`, producing
-   confusing cascade errors instead of a clean abort. Worth patching `scripts/deploy/deploy.sh`
-   to check `upload_wasm`'s/`deploy_from_hash`'s exit status explicitly before continuing.
+**Shared infrastructure is done** (§4) — nothing further needed there; only the first market
+itself remains.
+
+1. **Fund `mainnet-admin`** (`GDZN5WVOUBRTZKADUULRXJOGVGNK4WWXJPSALTVOORLSU5NFOZ2P5NCB`, which
+   signs every per-market WASM upload) and **`mainnet-mockusdy-issuer`**
+   (`GB3SOEMQVYBLMHPV3AK64PV4FJTOMQ2XUJLOZSVDJLP2LT42EU3XLE4P`, which signs the factory's
+   `create_*` calls and compliance grants) with enough XLM for the remaining 7 per-market
+   contracts — budget **~400-430 XLM** (the §4 experience this round ran ~13% below quoted
+   upper-bound estimates, so the real number may come in under this). ≈271 XLM already sits
+   across the three working keys (`mainnet-admin` 60.00, `mainnet-mockusdy-issuer` 24.92,
+   `principal-mainnet-treasury` 186.35 XLM as of this update) — top up from there first before
+   asking for more. Re-check the live resource fee first (`simulateTransaction` against a
+   built-only upload XDR, as done in §3/§4 above) in case network fee conditions have changed.
+2. **Re-run** `ENV_FILE=.env.mainnet-mockusdy ./scripts/deploy/deploy.sh` (no
+   `STOP_AFTER_SHARED_INFRA`) from the repository root. It will detect and reuse every shared
+   infra contract (all `deploy_or_reuse`/`is_alive` checks will pass) and proceed straight to
+   creating the first market via `scripts/create_market_via_factory.sh`.
+3. **A `transaction submission timeout` on any single upload is not necessarily a real
+   failure** — confirmed twice this round: resubmitting the identical already-signed transaction
+   (same source, same sequence number) either confirms the original succeeded, or genuinely
+   resubmits if it didn't (check the tx hash on Horizon first either way: a 404 means it never
+   landed and is safe to retry; `successful: true` means it already did and must not be
+   redone). `deploy.sh` itself does not yet handle this automatically -- the known
+   `upload_wasm`/`deploy_from_hash` `set -e`-blind-spot bug (doesn't stop the script cleanly on a
+   real failure, and also doesn't retry a mere timeout) is still open; worth fixing properly
+   before relying on this script unattended.
 4. Once the first market is live, create the second (30-minute) market for the same asset
    directly via `scripts/create_market_via_factory.sh` (not a second `deploy.sh` run, which would
    just reuse the existing market per its own idempotency check) — reusing the already-deployed
-   `oracle_adapter`/`permissioning`/`risk_control`/`router`/`market_factory` IDs.
+   shared infra IDs and the same 7 per-market WASM hashes (no re-upload needed — confirmed cheap
+   and correct on testnet §5 "Market 2").
 5. Everything else in the Tranche 3 plan (self-service tester tooling, oracle relay/alerting
    backend, reproducible-build sign-off, dApp handoff) is being proven out on testnet in the
    meantime per the user's explicit decision on 2026-11-17 — see the existing `TESTNET_*` evidence

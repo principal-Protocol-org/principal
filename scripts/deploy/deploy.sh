@@ -363,6 +363,15 @@ if [ -n "${ORACLE_FEED_ADDRESS:-}" ]; then
   manifest_log_tx "oracle_adapter:set_feed_min_interval" "$LAST_TX"
 fi
 
+if [ "${STOP_AFTER_SHARED_INFRA:-false}" = "true" ]; then
+  echo
+  echo "== STOP_AFTER_SHARED_INFRA=true -- shared infrastructure deployed and recorded in"
+  echo "   $MANIFEST. Not creating a market this run. Re-run (with STOP_AFTER_SHARED_INFRA unset"
+  echo "   or false) later to create one -- the shared infra above will be detected and reused,"
+  echo "   not redeployed. =="
+  exit 0
+fi
+
 echo
 echo "-- Market (via MarketFactory, maturity $MARKET_MATURITY_UNIX) --"
 

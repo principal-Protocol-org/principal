@@ -4,8 +4,8 @@
   "network_passphrase": "Public Global Stellar Network ; September 2015",
   "rpc_url": "https://soroban-rpc.mainnet.stellar.gateway.fm",
   "horizon_url": "https://horizon.stellar.org",
-  "source_commit": "4b5bc2bd5238c06c900aa79b0382cae914c5386a",
-  "built_at": "2026-11-17T11:24:58Z",
+  "source_commit": "3af938853e5818aa8d56bd35670b9a19cfa55a78",
+  "built_at": "2026-11-17T15:54:11Z",
   "wasm_target": "wasm32v1-none",
   "git_tree_dirty": true,
   "oracle_abi_version": 2,
@@ -17,11 +17,11 @@
   "market": {},
   "contracts": {
     "oracle_adapter": {
-      "id": "",
+      "id": "CCKXG4HSVH57AQTYJDNNXHQBCGNH6KRFNMCMATTMYFUX2TDQ7GD5K7IT",
       "wasm_path": "target/wasm32v1-none/release/principal_oracle_adapter.wasm",
-      "wasm_sha256": "",
-      "deploy_tx": "",
-      "init_tx": "",
+      "wasm_sha256": "8581bbba82bb57f5c5c9c00adf98b1691ad20821840e55a67ad8d7ecace0c1b0",
+      "deploy_tx": "7fbf805d54ef08a332dd58a620606ca82dd36d25b31070fa9f9eff11ee1c8ed5",
+      "init_tx": "a8e39609fb856d5818fb178f28a56c0c95d0141f816e5216190536866452241d",
       "admin_address": "GDZN5WVOUBRTZKADUULRXJOGVGNK4WWXJPSALTVOORLSU5NFOZ2P5NCB"
     },
     "permissioning": {
@@ -33,11 +33,27 @@
       "admin_address": "GDZN5WVOUBRTZKADUULRXJOGVGNK4WWXJPSALTVOORLSU5NFOZ2P5NCB"
     },
     "risk_control": {
-      "id": "",
+      "id": "CBHCRRLWHS7KRQNAXYY3OMNDTSXDNJKCDK6KPUUJPFGDBSN76JEWWQ5G",
       "wasm_path": "target/wasm32v1-none/release/principal_risk_control.wasm",
-      "wasm_sha256": "",
-      "deploy_tx": "d92625d1c63ae551d716e70aa1fcf1ffb8ca454a2392a8402f571f626608cd64",
-      "init_tx": "d92625d1c63ae551d716e70aa1fcf1ffb8ca454a2392a8402f571f626608cd64",
+      "wasm_sha256": "ac75508d24c5457de7db1106bf8b5e9b62ea436f3dfd1a309fda5138110c2526",
+      "deploy_tx": "05e79d4da2dc06e7a25e0b381923e886926802ecb1a09d2ea991856a0b9e9b40",
+      "init_tx": "f4274c9a83bb0c2653a7685fbae310877ad3de3fa44123c7fc0911bf700691c3",
+      "admin_address": "GDZN5WVOUBRTZKADUULRXJOGVGNK4WWXJPSALTVOORLSU5NFOZ2P5NCB"
+    },
+    "router": {
+      "id": "CCM4QQUKTD2CUTRSNNI6OO4JHYEF7MHKBMKSM5JYJNFLKSTAZBQD7QF5",
+      "wasm_path": "target/wasm32v1-none/release/principal_router.wasm",
+      "wasm_sha256": "2a0997317651edb0f7e2bd753570b03a88462aa6d216c14b06ebec246bb3c1c2",
+      "deploy_tx": "cc24f84c48a703a68f0f16373250a1a4ddf388df2cb88494168144812f620921",
+      "init_tx": "4cc9172b0a24c4f566bee43193bf98a613e6f65422e0f7139e61128d3d6614dc",
+      "admin_address": "GDZN5WVOUBRTZKADUULRXJOGVGNK4WWXJPSALTVOORLSU5NFOZ2P5NCB"
+    },
+    "market_factory": {
+      "id": "CDYH7UV24XS7G7MDRTBJUS4PJNKKUXTLUUTL67MR5CYJAXSPPHNWS65T",
+      "wasm_path": "target/wasm32v1-none/release/principal_market_factory.wasm",
+      "wasm_sha256": "6c21fc0e78f3064f67ae30924b8f9ca0223fbb61a20ac640cceca7b152456759",
+      "deploy_tx": "7ab8f3ca627588608ca54d70a7232ecffa0714e3c9294f09b90f284331beb7af",
+      "init_tx": "",
       "admin_address": "GDZN5WVOUBRTZKADUULRXJOGVGNK4WWXJPSALTVOORLSU5NFOZ2P5NCB"
     }
   },
@@ -62,6 +78,96 @@
       "step": "init:risk_control",
       "tx": "d92625d1c63ae551d716e70aa1fcf1ffb8ca454a2392a8402f571f626608cd64",
       "at": "2026-11-17T11:25:40Z"
+    },
+    {
+      "step": "deploy:oracle_adapter",
+      "tx": "7fbf805d54ef08a332dd58a620606ca82dd36d25b31070fa9f9eff11ee1c8ed5",
+      "at": "2026-11-17T15:54:30Z"
+    },
+    {
+      "step": "init:oracle_adapter",
+      "tx": "a8e39609fb856d5818fb178f28a56c0c95d0141f816e5216190536866452241d",
+      "at": "2026-11-17T15:54:42Z"
+    },
+    {
+      "step": "deploy:risk_control",
+      "tx": "05e79d4da2dc06e7a25e0b381923e886926802ecb1a09d2ea991856a0b9e9b40",
+      "at": "2026-11-17T15:55:05Z"
+    },
+    {
+      "step": "init:risk_control",
+      "tx": "f4274c9a83bb0c2653a7685fbae310877ad3de3fa44123c7fc0911bf700691c3",
+      "at": "2026-11-17T15:55:19Z"
+    },
+    {
+      "step": "risk_control:set_asset_limit",
+      "tx": "48092ae35da2001aa8d277b4fecd5e254c18a4604df3398aa37783a3533df372",
+      "at": "2026-11-17T15:55:40Z"
+    },
+    {
+      "step": "deploy:router",
+      "tx": "48092ae35da2001aa8d277b4fecd5e254c18a4604df3398aa37783a3533df372",
+      "at": "2026-11-17T15:56:30Z"
+    },
+    {
+      "step": "init:router",
+      "tx": "48092ae35da2001aa8d277b4fecd5e254c18a4604df3398aa37783a3533df372",
+      "at": "2026-11-17T15:56:30Z"
+    },
+    {
+      "step": "deploy:router",
+      "tx": "d9cd44116ca70b67a11d1503d9f3c352c70c4926495edf23de4d8008efccfa4b",
+      "at": "2026-11-17T16:03:55Z"
+    },
+    {
+      "step": "deploy:router:instance",
+      "tx": "cc24f84c48a703a68f0f16373250a1a4ddf388df2cb88494168144812f620921",
+      "at": "2026-11-17T16:03:55Z"
+    },
+    {
+      "step": "init:router",
+      "tx": "4cc9172b0a24c4f566bee43193bf98a613e6f65422e0f7139e61128d3d6614dc",
+      "at": "2026-11-17T16:03:55Z"
+    },
+    {
+      "step": "deploy:market_factory:upload",
+      "tx": "67363c8020a4609f9bf4808f2dd8faabd6d0b45ea0049dc71b25f390a9469e85",
+      "at": "2026-11-17T16:03:55Z"
+    },
+    {
+      "step": "deploy:market_factory:instance",
+      "tx": "7ab8f3ca627588608ca54d70a7232ecffa0714e3c9294f09b90f284331beb7af",
+      "at": "2026-11-17T16:03:55Z"
+    },
+    {
+      "step": "oracle_adapter:set_sources",
+      "tx": "c4fadb1054ba7cb26a8bbb1284ef121bf3cd1e890622a82c330bc75df3f3b765",
+      "at": "2026-11-17T16:06:06Z"
+    },
+    {
+      "step": "oracle_adapter:set_reference_value",
+      "tx": "f186c699affbc6267112a166cb37b0c4bb611433ce598ea2e2820ac148d19434",
+      "at": "2026-11-17T16:06:06Z"
+    },
+    {
+      "step": "oracle_adapter:set_feed_source",
+      "tx": "cfc891dea1cec242f442c9b585a9b69fa0b64842331bc4671a4023559f1e9d1d",
+      "at": "2026-11-17T16:06:06Z"
+    },
+    {
+      "step": "oracle_adapter:set_feed_min_interval:bootstrap",
+      "tx": "ef2cf87e51f316877a2dd982c8ddcee141bd67f26f99b8d54386a6d6eca87ae7",
+      "at": "2026-11-17T16:06:06Z"
+    },
+    {
+      "step": "oracle_adapter:sync_from_feed",
+      "tx": "9a78fad9a8e48609e178d564db2ecf1bb1f40c144913b551f81e6e28e745d9b0",
+      "at": "2026-11-17T16:06:06Z"
+    },
+    {
+      "step": "oracle_adapter:set_feed_min_interval",
+      "tx": "e49b979a04f4b915970b085adf7e7f57bd5bbf01bd8a39429eeb0ef6b7568360",
+      "at": "2026-11-17T16:06:06Z"
     }
   ]
 }
