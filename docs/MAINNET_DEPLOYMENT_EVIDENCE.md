@@ -4,7 +4,10 @@
 contract, and transaction created for Tranche 3's internal-testing deployment. Kept separate from
 the security review documents (`INTERNAL_SECURITY_AUDIT_2026_11_16.md` and its coverage report) so
 each can be updated independently — this one grows with every deployment action; those are closed
-findings records.
+findings records. For the exhaustive, independently reconciled list of every single real
+transaction on every account this deployment used (276 as of 2026-11-18, cross-checked directly
+against Horizon), see [`docs/MAINNET_TRANSACTION_LEDGER.md`](./MAINNET_TRANSACTION_LEDGER.md) and
+§11 below — this document stays the narrative record of what happened and why.
 
 **Status (2026-11-18): All five planned mock assets (MOCKUSDY ×2 markets, MOCKUSTRY, MOCKGILTS,
 MOCKCETES, MOCKXAUM) are COMPLETE AND LIVE on mainnet, with real end-to-end transaction testing
@@ -156,6 +159,29 @@ in this deployment round; tracked as a follow-up to `scripts/deploy/deploy.sh`.
 
 Balances immediately before the retried deployment: `mainnet-admin` 26.6576618 XLM,
 `mainnet-mockusdy-issuer` 24.9176668 XLM, `principal-mainnet-treasury` 44.7001300 XLM.
+
+**Further funding found during the 2026-11-18 transaction-ledger reconciliation (§11)** — real,
+successful, but not previously individually listed in this section:
+
+| When | From → To | Amount | Tx hash | Note |
+|---|---|---|---|---|
+| 2026-11-16 | `mainnet-admin` → `principal-mainnet-treasury` | 15.5 XLM | `6b41f3e2626bf007e3c4be4bb70e9ec44e6bfd442959fab7b09b5d1283036b17` | create-account; opened treasury the day before deployment work began |
+| 2026-11-16 | `mainnet-deployer` → treasury | 36.5 XLM | `e8d4b80751efab6567b2285630b1843e789574834129497d960876139c82c877` | pre-deployment consolidation: sweeping leftover balances from previously-used keys into treasury |
+| 2026-11-16 | `mainnet-manager` → treasury | 17.3 XLM | `27e3ee8fb5ef14e38a440b10239a930c92445d9b7b2a4260fd1c481fa7103d76` | same consolidation round |
+| 2026-11-16 | `mainnet-test-a` → treasury | 11.3 XLM | `ab748aa5c3f1affd0085b6357966e71351cccce7c93d70a74ecd504b024c8150` | same consolidation round |
+| 2026-11-16 | `mainnet-test-b` → treasury | 1.8 XLM | `0392987f95db455151bef8ec73cd58f8d9532e22dd6ac55f9907cefeb6f7b260` | same consolidation round |
+| 2026-11-16 | `mainnet-test-c` → treasury | 1.3 XLM | `7b901266914f40c0d23c50c75b182f08dedcf261bbd04fffa3323ba67da695e0` | same consolidation round |
+| 2026-11-17 15:49 | **external wallet** `GDUQXQAR4ECNAYCTGZAS4TH4KJJIZDLXPR5V2YYRFRGGQ3LTXBFTBVW6` → treasury | **391.6510631 XLM** | `63de0c4798398569874a59404f171ef70e673f72ec9520120447f89c9449ed01` | real funding received from outside Principal's own key set — this is the largest single inflow of the whole deployment. The sending address is not one of Principal's own aliases; it currently holds ~107,000 XLM + ~2,279 USDC, consistent with it being the external wallet the person funded this deployment from earlier in the session ("je t'ai envoyé les fonds") |
+| 2026-11-17 16:13 | treasury → `mainnet-mockusdy-issuer` | 180 XLM | `217ac1a442801c8cd97e471971ee96f2a56a4c4d9c9b1ee293091c8a89102d1e` | redistributing the 391 XLM inflow above |
+| 2026-11-17 16:24 | `mainnet-admin` → `mainnet-mockusdy-issuer` | 55 XLM | `c0dee868c77de06c0ea8d6783297faf63124ac06eaaff9e7eb83f4093dfedde6` | further redistribution |
+| 2026-11-17 19:20 | **external wallet** `GAQZU7Y7GB3E4XOA3ZXEZDOTIEIWQRYOAIVJ6STY2YTUQAGZL3GYJCXG` → treasury | **170 XLM** | `add9c10448cc1048f77ae2d0f9d10fae8b4d2c6d8b76396c69792f73a1f427d4` | a second real external funding round, source address not one of Principal's own aliases |
+| 2026-11-17 19:26 | treasury → `mainnet-mockusdy-issuer` | 170 XLM | `804225bdb97fd30282ffed0277c1ea87eff9b9fed3578e5f73cb4b0a6e4e299d` | redistributing the second external inflow |
+| 2026-11-17 15:53 | treasury → `mainnet-admin` | 230 XLM | `95ea0ad5b760dd813056717db88463fbea89d78e6256c75031d8c582905d1585` | funding admin ahead of the shared-infra resource-fee pause and retry (§4) |
+
+These account for essentially all of the real XLM that moved through this deployment beyond what
+was already itemized above and in §5's per-asset "Setup" paragraphs — see §11 for how this was
+found and the full transaction ledger (`docs/MAINNET_TRANSACTION_LEDGER.md`) for the complete,
+reconciled record of every real transaction, including the ones that were already cited here.
 
 ### CRITICAL FINDING: mainnet Soroban WASM-upload resource fees are far higher than assumed — deployment paused
 
@@ -398,7 +424,7 @@ reason.
 | # | Action | Market | Tx hash | Result |
 |---|---|---|---|---|
 | 1 | `Permissioning.grant_account(test-a)` | — | `358bb2753923e9413a78907df7a5fb08af1f5b2adec8f5c400a0b22f7d3369c9` | granted |
-| 2 | Mint 1000 MOCKUSDY to test-a | — | `2add04a0d80106971726147966a9d85d561beff8b75cedffe418b3b366ba83a4` | 1000.0000000 MOCKUSDY (a first attempt at `--amount 1000` sent 0.0001000 — the CLI's classic-asset `--amount` is in stroops, not decimal units; corrected) |
+| 2 | Mint 1000 MOCKUSDY to test-a | — | `2add04a0d80106971726147966a9d85d561beff8b75cedffe418b3b366ba83a4` (corrected amount); first attempt `a2c3bef0baae7d11b7f396f348dfd8abe9034fdb777a6abd7de2f4b9df4199d0` | 1000.0000000 MOCKUSDY (a first attempt at `--amount 1000` sent 0.0001000 — the CLI's classic-asset `--amount` is in stroops, not decimal units; corrected) |
 | 3 | `SYWrapper2.deposit(500 MOCKUSDY)` | 2 | `f3fcba50d1f2605cbe153ef9454f7119ed931d5ca0ecbea63c727d2adaea5726` | 500 SY shares minted |
 | 4 | `Permissioning.grant_asset(test-a, PT2)` | 2 | `9db32a368b5c14f1862bbd8268d5c060ba177f28747361473a69bddac6e6822d` | granted (fix for the gap above) |
 | 5 | `Permissioning.grant_asset(test-a, YT2)` | 2 | `a89a068720391c4ba3b623d91bb32a27b7650cc6364db3d05f9f2071b01159ee` | granted |
@@ -810,3 +836,48 @@ Next steps, in priority order:
    round and hit again for every subsequent asset. Any future testing checklist or self-service
    doc should call both out explicitly as required steps for a *new human tester* against a *new
    asset*, not just a new market on an already-tested asset.
+
+## 11. Transaction ledger reconciliation (2026-11-18)
+
+Run in response to a direct request to verify this document is complete and reports every real
+mainnet transaction. Method: pulled the **complete** real transaction history (not just the ones
+already cited here) for every account this deployment used —
+`mainnet-admin`, `mainnet-mockusdy-issuer`, `mainnet-ustry-issuer`, `mainnet-gilts-issuer`,
+`mainnet-cetes-issuer`, `mainnet-xaum-issuer`, `mainnet-test-a`, `principal-mainnet-treasury` —
+directly from Horizon, then cross-referenced every hash against every tx hash cited anywhere in
+this document and in all five `deployment-manifest.json` files.
+
+**Result: zero fabricated or incorrect transaction hashes.** Of the 174 hex strings this document
+and the manifests cite that look like transaction hashes, 154 are real, verified, successful
+on-chain transactions; the other 20 are not transaction hashes at all but WASM SHA-256 hashes and
+`MarketFactory` salts, which share the same 64-hex-character shape and were correctly not found in
+any account's transaction history (as expected — they're not transactions) once checked by hand.
+One of the 154 (`6def077...457`, Market 2's first `settle_all` attempt) is correctly documented as
+a `transaction submission timeout` that never landed — also confirmed absent from Horizon, exactly
+as this document already says.
+
+**Gap found: 122 additional real, successful transactions existed on-chain that this document
+had not individually cited.** Breakdown:
+- **94 compliance-grant calls** (`set_authorized`, `grant_account`, `grant_asset` on
+  `Permissioning` or the underlying SAC) across Market 1, Market 2, and all four new mock assets.
+  Most of these rounds were already *described* here (e.g. "6 transactions, see the manifest" or
+  "see background task output"), but not every individual call's own hash had been pulled into
+  the permanent record — in several cases there were also genuinely more real calls than the
+  number originally quoted (extra `set_authorized` retries, etc.).
+- **12 funding/consolidation payments**, now added to §3 above — most significantly, **two real
+  external-wallet fundings (391.65 XLM and 170 XLM) that were not mentioned anywhere in this
+  document at all**, despite being the two largest single XLM inflows of the entire deployment.
+- **~16 incidental dust payments of exactly 0.0001 XLM**, to and from addresses that match none of
+  Principal's own key aliases, landing on several of this deployment's accounts (including every
+  freshly-created mock-asset issuer, right around when each one became active on mainnet). These
+  are not part of Principal's own operations — most likely automated dust/spam targeting newly
+  active mainnet accounts, a known pattern on public ledgers — and are recorded in the full ledger
+  only so that "every real transaction on these accounts" is genuinely complete, not because they
+  are part of this deployment's own story.
+
+**The complete, reconciled record of all 276 real transactions — every one already cited here
+plus all 122 found by this audit, each with its real on-chain timestamp and a decoded summary of
+what it actually did — is in [`docs/MAINNET_TRANSACTION_LEDGER.md`](./MAINNET_TRANSACTION_LEDGER.md).**
+This document remains the narrative source of truth for *what happened and why*; the ledger is
+the exhaustive, machine-cross-checked record of *every transaction*, for whenever the two need to
+be reconciled again.
