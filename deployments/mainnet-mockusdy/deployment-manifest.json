@@ -13,8 +13,20 @@
   "stellar_cli_version": "stellar 26.0.0 (60f7458e7ecffddf2f2d91dc6d0d2db4fab03ecc)",
   "soroban_sdk_version": "26.0.1",
   "release_tag": "",
-  "underlying": {},
-  "market": {},
+  "underlying": {
+    "kind": "sac",
+    "sac": "CDQYZUYQF7TRQ7BX6YBSCU3HLWBDS3E2VSP7AUE7C3E2D2U2IBBQOBGF",
+    "decimals": 7
+  },
+  "market": {
+    "market_id": "mainnet-CDQYZU-CCY5P6CC",
+    "maturity": 1802719669,
+    "tokenization_fee_bps": 5,
+    "yt_fee_bps": 1000,
+    "swap_fee_tier_bps": 10,
+    "protocol_share_bps": 2000,
+    "double_reported_wrap_and_mint_capacity": true
+  },
   "contracts": {
     "oracle_adapter": {
       "id": "CCKXG4HSVH57AQTYJDNNXHQBCGNH6KRFNMCMATTMYFUX2TDQ7GD5K7IT",
@@ -55,9 +67,74 @@
       "deploy_tx": "7ab8f3ca627588608ca54d70a7232ecffa0714e3c9294f09b90f284331beb7af",
       "init_tx": "",
       "admin_address": "GDZN5WVOUBRTZKADUULRXJOGVGNK4WWXJPSALTVOORLSU5NFOZ2P5NCB"
+    },
+    "sy_wrapper": {
+      "id": "CCY5P6CCHIPX7ND3HSIHFLD57756WWILI4UQLSZ2UIF5CVGYN6XJGJ7Q",
+      "wasm_path": "target/wasm32v1-none/release/principal_sy_wrapper.wasm",
+      "wasm_sha256": "be4b12cf3c16461b7e71fa225ed2363aba62bdc42c1ea5c08c98d7ede6a27c9a",
+      "deploy_tx": "",
+      "init_tx": "",
+      "admin_address": "GB3SOEMQVYBLMHPV3AK64PV4FJTOMQ2XUJLOZSVDJLP2LT42EU3XLE4P"
+    },
+    "pt_token": {
+      "id": "CASF4U23SQ6XPCKPVNQ273OM3ILZRJFNHTHW6KGZRXQD4QK65PWWLEFE",
+      "wasm_path": "target/wasm32v1-none/release/principal_pt_token.wasm",
+      "wasm_sha256": "db025340887ef9d92922e2444da24edab5fec125460e9adc373a5f77b26578b2",
+      "deploy_tx": "",
+      "init_tx": "",
+      "admin_address": "GB3SOEMQVYBLMHPV3AK64PV4FJTOMQ2XUJLOZSVDJLP2LT42EU3XLE4P"
+    },
+    "yt_token": {
+      "id": "CCQ2VU23X5GY7ZBTYNKWGLXRQVODSNSCNJVOLXG7NHLEXT37FDAKKPGC",
+      "wasm_path": "target/wasm32v1-none/release/principal_yt_token.wasm",
+      "wasm_sha256": "c83a2a8d2a4a79ff5348675581a27d48e52a920d83dc887672840d4a79c02654",
+      "deploy_tx": "",
+      "init_tx": "",
+      "admin_address": "GB3SOEMQVYBLMHPV3AK64PV4FJTOMQ2XUJLOZSVDJLP2LT42EU3XLE4P"
+    },
+    "market_config": {
+      "id": "CAV62P3JRTBVBOCCZ4GW3X7AAW4NJ35LP7KVM5TY6Q6OXROMOKI4WAQL",
+      "wasm_path": "target/wasm32v1-none/release/principal_market_config.wasm",
+      "wasm_sha256": "11b0cbdf10a8d204fcb568c54529801747feac05208c5bcbfaefd822ad0c79a8",
+      "deploy_tx": "",
+      "init_tx": "",
+      "admin_address": "GB3SOEMQVYBLMHPV3AK64PV4FJTOMQ2XUJLOZSVDJLP2LT42EU3XLE4P"
+    },
+    "principal_manager": {
+      "id": "CBBKUZJWZDA7YLA6GHSXVLV62QJ6DLKCO4GXUWF43FXLPN5S3XVNUKCC",
+      "wasm_path": "target/wasm32v1-none/release/principal_manager.wasm",
+      "wasm_sha256": "e2d04b45b867d0dbc41660ac0d97d3e705005ddfb10350bb030d25b1aff86115",
+      "deploy_tx": "",
+      "init_tx": "",
+      "admin_address": "GB3SOEMQVYBLMHPV3AK64PV4FJTOMQ2XUJLOZSVDJLP2LT42EU3XLE4P"
+    },
+    "market_pool": {
+      "id": "CAON3FAQU5W6SGZFWOM22GONNKZEIN4AGVTKMCWCC6PI43QWB27MGW4I",
+      "wasm_path": "target/wasm32v1-none/release/principal_market_pool.wasm",
+      "wasm_sha256": "52285a25bbf372d0e5d22ba565b76af6a7e832422df83b6a4809de8adf3aa112",
+      "deploy_tx": "",
+      "init_tx": "",
+      "admin_address": "GB3SOEMQVYBLMHPV3AK64PV4FJTOMQ2XUJLOZSVDJLP2LT42EU3XLE4P"
+    },
+    "recovery_escrow": {
+      "id": "CBHHRTTRTXQM3OFDOBL6QORP6JS5RVIRXSF5B3C4TMOVSIQBDKKA67SJ",
+      "wasm_path": "target/wasm32v1-none/release/principal_recovery_escrow.wasm",
+      "wasm_sha256": "dadea71fcfb84adcfb4691f472551f490cf440c5aaae5c6b5e5d4bb6f61441e8",
+      "deploy_tx": "",
+      "init_tx": "",
+      "admin_address": "GB3SOEMQVYBLMHPV3AK64PV4FJTOMQ2XUJLOZSVDJLP2LT42EU3XLE4P"
     }
   },
-  "wiring": {},
+  "wiring": {
+    "router_registered_pool": true,
+    "pt_minter": "CBBKUZJWZDA7YLA6GHSXVLV62QJ6DLKCO4GXUWF43FXLPN5S3XVNUKCC",
+    "yt_minter": "CBBKUZJWZDA7YLA6GHSXVLV62QJ6DLKCO4GXUWF43FXLPN5S3XVNUKCC",
+    "recovery_escrow": "CBHHRTTRTXQM3OFDOBL6QORP6JS5RVIRXSF5B3C4TMOVSIQBDKKA67SJ",
+    "risk_consumers": [
+      "CCY5P6CCHIPX7ND3HSIHFLD57756WWILI4UQLSZ2UIF5CVGYN6XJGJ7Q",
+      "CBBKUZJWZDA7YLA6GHSXVLV62QJ6DLKCO4GXUWF43FXLPN5S3XVNUKCC"
+    ]
+  },
   "transactions": [
     {
       "step": "deploy:permissioning",
@@ -168,6 +245,71 @@
       "step": "oracle_adapter:set_feed_min_interval",
       "tx": "e49b979a04f4b915970b085adf7e7f57bd5bbf01bd8a39429eeb0ef6b7568360",
       "at": "2026-11-17T16:06:06Z"
+    },
+    {
+      "step": "upload:sy_wrapper",
+      "tx": "abe8ed52023709c790716f02688a8e3363e3a5b895e53b8faa7fd1cb43e6d174",
+      "at": "2026-11-17T19:33:15Z"
+    },
+    {
+      "step": "upload:pt_token",
+      "tx": "5e90ef46a93fc20f9150c9d3c95e1129397738d07fe006ffa086f4a130c7233a",
+      "at": "2026-11-17T19:33:15Z"
+    },
+    {
+      "step": "upload:yt_token",
+      "tx": "233514e0ebab444e40ce11e3845ffa4b5285cac3ec94c5fde1bee581aebb5268",
+      "at": "2026-11-17T19:33:15Z"
+    },
+    {
+      "step": "upload:market_config",
+      "tx": "22432394de18898744edc16571eedea3ad42612042b4e8786c620bea50f3e5df",
+      "at": "2026-11-17T19:33:15Z"
+    },
+    {
+      "step": "upload:principal_manager",
+      "tx": "3dcaca908ae2dceb2200679c05d2a0c0b1a3e0ad4f8fc33465d5a80eb5dd52a2",
+      "at": "2026-11-17T19:33:15Z"
+    },
+    {
+      "step": "upload:market_pool",
+      "tx": "773f9908fe82d1043e0e5a25929501cd04b9cc4334f4c69f8f131b86315ec9e4",
+      "at": "2026-11-17T19:33:15Z"
+    },
+    {
+      "step": "upload:recovery_escrow",
+      "tx": "84cfb2485b906f6601c3e4b827e6c49f3ab6b35837ea7683bfe9800f7070e2f0",
+      "at": "2026-11-17T19:33:15Z"
+    },
+    {
+      "step": "factory.create_tokens",
+      "tx": "f6300538c4967d298e102dd86d17b37c20270e347590c934a536d9f660668fd1",
+      "at": "2026-11-17T19:33:15Z"
+    },
+    {
+      "step": "factory.create_engine",
+      "tx": "802e13bf669b923efeeb5ebc3b444460e6e72a912ea7d548c3b7d04991b75071",
+      "at": "2026-11-17T19:33:15Z"
+    },
+    {
+      "step": "factory.create_pool_and_escrow",
+      "tx": "d0599af33679a18ac1304ebd5c66b886bef9717b951be8a532eb1015ed1e1078",
+      "at": "2026-11-17T19:33:15Z"
+    },
+    {
+      "step": "risk_control.add_consumer(SYWrapper)",
+      "tx": "2e1715687a5e5fcf0983f80f9785af7c29b06e44917f5a1cbd3c89bdc0e7abbc",
+      "at": "2026-11-17T19:33:15Z"
+    },
+    {
+      "step": "risk_control.add_consumer(PrincipalManager)",
+      "tx": "a1ae25fb627589ad5c636e630c35edd74009b20bbd73ffc193e74b1d91dc359a",
+      "at": "2026-11-17T19:33:15Z"
+    },
+    {
+      "step": "router.register_market",
+      "tx": "66739eb5acd1cfc255f7b44667a9de19e3deec92231506fc6e97d28c278d8282",
+      "at": "2026-11-17T19:33:15Z"
     }
   ]
 }
