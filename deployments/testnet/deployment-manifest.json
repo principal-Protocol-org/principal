@@ -4,8 +4,8 @@
   "network_passphrase": "Test SDF Network ; September 2015",
   "rpc_url": "https://soroban-testnet.stellar.org",
   "horizon_url": "https://horizon-testnet.stellar.org",
-  "source_commit": "aae6cf81346a51f600393e4267be45e65524ae4e",
-  "built_at": "2026-11-13T23:44:06Z",
+  "source_commit": "2c8891586f78337978913786766f01e45f86cbc8",
+  "built_at": "2026-11-17T20:50:30Z",
   "wasm_target": "wasm32v1-none",
   "git_tree_dirty": true,
   "oracle_abi_version": 2,
@@ -345,6 +345,11 @@
       "step": "compliance:grant_asset_yt:GBPDLO73W2BQJ3F755ZZZKVFKP2FPVEIFW5THYANGDWEYJ5QQYDCMGET",
       "tx": "83b248bebebc3ae176a2aca7604edd113447aec915bdee7b074b01f374f196c1",
       "at": "2026-11-13T23:46:10Z"
+    },
+    {
+      "step": "oracle_adapter:set_reference_value",
+      "tx": "b3eb8a0ce6cb6edf12a37827b51d327fac0a4f620c875fefe7b512b52b8f9a83",
+      "at": "2026-11-17T20:51:13Z"
     }
   ],
   "evidence_reconciliation": {

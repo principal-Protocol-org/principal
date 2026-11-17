@@ -6,12 +6,13 @@ the security review documents (`INTERNAL_SECURITY_AUDIT_2026_11_16.md` and its c
 each can be updated independently — this one grows with every deployment action; those are closed
 findings records.
 
-**Status (2026-11-18): Markets 1 AND 2 both COMPLETE AND LIVE on mainnet, with real end-to-end
-transaction testing performed on both.** Shared infrastructure (§4), the 90-day market (§5 Market
-1), and the 30-minute flow-test market (§5 Market 2) are all fully deployed, wired,
-compliance-granted, and independently verified (78/79 real checks pass on Market 1 — the one
+**Status (2026-11-18): Markets 1 AND 2 (MOCKUSDY) plus a new MOCKUSTRY market are all COMPLETE AND
+LIVE on mainnet, with real end-to-end transaction testing performed on all three.** Shared
+infrastructure (§4), the 90-day MOCKUSDY market (§5 Market 1), the 30-minute MOCKUSDY flow-test
+market (§5 Market 2), and the 90-day MOCKUSTRY market (§5) are all fully deployed, wired,
+compliance-granted, and independently verified (78/79 real checks pass on each — the one
 "failure" is the expected `git_tree_dirty` flag). Real mint→deposit→split→trade cycles were run
-against both markets with real MOCKUSDY and real signatures — see §5's "Real transaction testing"
+against all three markets with real signatures — see §5's "Real transaction testing"
 subsection for the full record. Mainnet deployment had paused twice along the way on funding (current
 mainnet Soroban WASM-upload resource fees, ~0.0012-0.0015 XLM/byte confirmed on two independent
 RPC endpoints, made the real cost far higher than first assumed) — each pause left nothing
@@ -430,6 +431,91 @@ the original 0.0001 MOCKUSDY stroops/decimal mix-up in step 2).
 into PT/YT → mature → settle → redeem — proven end to end on Stellar mainnet**, mirroring the
 equivalent testnet proof exactly, with every step read back from real emitted contract events.
 
+### MOCKUSTRY market — second mock asset — **STATUS: COMPLETE AND LIVE** — 2026-11-17/18
+
+First of the remaining mock assets (USTRY, GILTS, CETES, XAUM) from the original Tranche 3 plan.
+Tracks real USTRY (Ondo's tokenized short-term treasuries, per §2's RedStone feed lookup) the same
+way MOCKUSDY tracks real USDY: own classic asset + SAC, same issuer flags
+(`auth_revocable`/`auth_clawback_enabled`), priced via a **new, dedicated `OracleAdapter`
+instance** keyed to the real USTRY SAC (`CBLV4ATSIWU67CFSQU2NVRKINQIKUZ2ODSZBUJTJ43VJVRSBTZYOPNUR`).
+
+**Correction confirmed by this round's real costs**: contrary to §10's earlier (now-corrected)
+estimate, a new mock asset's `OracleAdapter` does **not** need a new WASM upload — the code is
+already installed on mainnet, so only a cheap new *instance* (`deploy_from_hash` + `initialize`)
+is needed. All 7 per-market contracts likewise reused their already-uploaded hashes from Market 1.
+`Permissioning`/`RiskControl`/`Router`/`MarketFactory` were reused as-is from §4 — never
+redeployed; only the fresh manifest (`deployments/mainnet-ustry/deployment-manifest.json`) was
+pre-populated with their existing IDs so `deploy.sh`'s own idempotency check would detect and
+reuse them rather than creating duplicates.
+
+**Funding**: treasury topped up by 20 XLM from `mainnet-mockusdy-issuer`'s surplus (payment tx
+`f9fc5e03e80629410e93fe727df4e4b0ab2bb906abac6c8e403c7679bcc80a7d`) — that issuer never needed
+anywhere near its original funding once uploads turned out to be mostly reuse — then a new
+`mainnet-ustry-issuer` (`GDM2Q2F5KC2ECQZ5C3TIPTM7UTZJ775G4UZCLLGYULZUMBI6VEQERK4K`) was
+created and funded with 3 XLM from treasury (tx
+`b22bfdc532c9ff02ac394a2ff163a47f764e99376669081790dc30a1ad298cda`), flags set to match real
+USTRY's issuer (tx `201b32a7aada1a2b9e8c084de5ea458c6970558b95840534e0e4a25bc4e8f025`,
+live-verified `auth_revocable: true, auth_clawback_enabled: true`), and the SAC deployed (tx
+`07b4a96d80ef4b81423a8277ec36307211bc70aa44b1c861cc9342252f3c115d`) →
+**`MOCKUSTRY` SAC: `CDHQ4B6U3D5O6PGAWAO22K45ASD2BAGD25IHITRIIUHXA3GBABZTYBA5`**.
+
+**Real incident, found and recovered live**: `scripts/deploy/deploy.sh` was run via
+`ENV_FILE=.env.mainnet-ustry`, which deployed a fresh `OracleAdapter` instance
+(`CBHAWS6B4YCNRLYRP2HUP77P4IRP3PZYPSYVPV4OMZNU2ZNKSAQQ2GXU`, genesis value `108065700` = real
+USTRY price) and then called `MarketFactory.create_tokens` successfully — but the shell process
+running `deploy.sh` was killed (host-side, exit 137) before `create_engine`/
+`create_pool_and_escrow` could run, leaving a real, orphaned `SYWrapper`/`PTToken`/`YTToken` triple
+on mainnet with no `MarketConfig`/`PrincipalManager`/`MarketPool`/`RecoveryEscrow` and nothing in
+the manifest. **Recovered without creating a second, duplicate market**: `MarketFactory`'s
+`create_tokens` event (`mkt_tok`) was queried directly (`stellar events --id <factory>`,
+decoded with the same `stellar_sdk` approach as `scripts/self_service/decode_mkt_new.py`) to
+recover the exact `salt` (`1d998d8b76f8afe73b3f773a89890805e5313ed42f0ccb8ef8d0002b4901d6b7`) and
+`sy_wrapper` address already created; `predict_market` with that salt confirmed the deterministic
+addresses for the remaining five contracts; the real `maturity`/`decimals` were read back live
+from the already-initialized `PTToken` rather than guessed. `create_engine` and
+`create_pool_and_escrow` were then called by hand with that exact salt, completing the same market
+`create_tokens` had already started — verified by `predict_market` returning the same addresses
+both before and after. **Lesson for future asset rounds**: run `deploy.sh` with a longer
+foreground timeout (or `run_in_background`) for the per-market phase specifically, and recover via
+the factory's own events (deterministic salts make this always possible) rather than ever
+re-running `create_tokens` with a fresh random salt, which would silently create a second,
+unrelated, equally-real set of contracts.
+
+**Deployed contracts:**
+
+| Contract | ID |
+|---|---|
+| `OracleAdapter` (USTRY-specific) | `CBHAWS6B4YCNRLYRP2HUP77P4IRP3PZYPSYVPV4OMZNU2ZNKSAQQ2GXU` |
+| `SYWrapper` | `CA4EMPWQ3NBUHRA75DXCGRTSGROD6YNFFPXUEEKVC262P5GKK6EPVTSX` |
+| `PTToken` | `CAYXXH7ZY54CENRIJFDGYIBIJJDNUOV2TUNFKO6QVUZYYDFGQGXI4HH7` |
+| `YTToken` | `CCUDPECIHOJK2RLFIDF7K2NM4H77V3JUAUZODU6OMT5QWVVYUMXXVKZG` |
+| `MarketConfig` | `CBWIVLMDZCV7USXM7TVUF4KW6HJUVDXMXMOKIVCVHEC2DN6GTPHFSYHP` |
+| `PrincipalManager` | `CAB6LHML2KZH4SRV5NLTDFIX5PLM6F7R54WFOTLK5XXJ6TVDL7MNRD44` |
+| `MarketPool` | `CBJGWQ7BJ7AND2MNG4RCA626PPX4RTDKLJGNG6UVXFTOYF6GGQ7T5GZ6` |
+| `RecoveryEscrow` | `CC5AFSYUTYVYYLZID64UE7L74TW2JMONZGOAWDGPBQSWA6ANEOOII2RE` |
+
+Maturity: `1802724716` (90 days). `market_id` = `mainnet-CDHQ4B-CA4EMPWQ`. PT/YT token names were
+left at their generic defaults (`"Principal Token"`/`"PT"`, `"Yield Token"`/`"YT"`) since
+`PT_NAME`/`PT_SYMBOL`/`YT_NAME`/`YT_SYMBOL` weren't set before `create_tokens` ran — cosmetic only,
+immutable now, harmless.
+
+**Verification**: `MANIFEST=deployments/mainnet-ustry/deployment-manifest.json
+./scripts/deploy/verify-deployment.sh` → **78 passed, 1 failed** (expected `git_tree_dirty` only).
+
+**Real smoke test** (same `mainnet-test-a` account, after establishing its own `MOCKUSTRY`
+trustline — tx `8981e8a4976262855aed9c98666622dfe900b00e2016b03efa038f1937b75545` — and a
+`set_authorized` retry once that trustline existed, tx
+`90c24dffed12b1edba1e289fb76043dd14dcb726c77468d28d2b535437ccaa05`): minted 1000 MOCKUSTRY (tx
+`fb9b93f3ec98795196ea7dcffeea792852125e24288ee4c1ec81e0c5f1e94f41`), deposited 500 into
+`SYWrapper` (tx `bef5117ea188a5389642b4ed78cac0b4cec412d7bbf3a27269ce22212427e9fd`), minted PT/YT
+from the resulting 500 SY (tx `d3691d05aa26e440fdbde785a1d68811c8eef80af53d37374908ab668c489298`,
+first attempt timed out but 404'd on Horizon and was safely resubmitted) → `54005.833575` PT and
+YT minted, fee `2.5` SY withheld.
+
+Balances after this round: `mainnet-admin` 3.5252852, `mainnet-ustry-issuer` 1.8018105,
+`mainnet-mockusdy-issuer` 46.2218571, `principal-mainnet-treasury` ≈20.35 XLM — comfortably enough
+for GILTS, CETES, and XAUM to follow the same pattern.
+
 ## 6. Self-service tester tooling
 
 *(filled in once built)*
@@ -472,33 +558,48 @@ hash (captured at upload time) is cross-checked against this table.
 
 *(filled in once contract addresses are finalized and handed off)*
 
-## 10. Resume checklist (next steps now that both markets are live and tested)
+## 10. Resume checklist (next steps now that three markets are live and tested)
 
-**Shared infrastructure (§4), Market 1, Market 2, and a full real deposit→split→AMM/trade→
-mature→settle→redeem cycle on both markets (§5) are all done.** Next steps, in priority order:
+**Shared infrastructure (§4), MOCKUSDY Markets 1 & 2, MOCKUSTRY's market, and a full real
+deposit→split→AMM/trade→mature→settle→redeem cycle (§5) are all done.** Next steps, in priority
+order:
 
-1. Remaining mock assets from the original plan (USTRY, GILTS, CETES, XAUM) each need their own
-   `OracleAdapter` (new asset ⇒ new price feed ⇒ genuinely new upload, ~55 XLM at this session's
-   real rate) but reuse every already-uploaded per-market contract — budget accordingly per §4's
-   own breakdown of what's asset-specific vs. protocol-wide shared infrastructure. Not yet started
-   mainnet-side; confirm with the user before spending further on wholly new assets.
-2. Self-service tester tooling (`scripts/self_service/`) and the oracle relay
+1. **GILTS, CETES, XAUM remain** from the original plan. Confirmed cost model (see MOCKUSTRY's
+   write-up in §5): no genuinely new WASM upload needed for any of them — `oracle_adapter` and
+   all 7 per-market WASMs are already installed on mainnet; each asset only needs new, cheap
+   *instances* plus its own classic asset/SAC. Real prices already captured live from the RedStone
+   feed (§2 cross-reference): GILTS `141972700`, CETES `6469400` (feed's 8-decimal scale). XAUM's
+   real token (`CC2RBGYNCFBCVENIDL5BFBWPH4OUZM2UA3OD2K2N54GLMWCC4KWPVAGO`, symbol `XAUM`, 9
+   decimals) is a native Soroban token, not a classic-asset SAC like the others (confirmed: it has
+   no `admin()`) — doesn't change Principal's own mock-asset approach (still issue
+   `MOCKXAUM` as a classic asset + SAC the usual way), only means there's no real G-account issuer
+   to mirror flags from; use the same `auth_revocable`/`auth_clawback_enabled` pair as the others
+   for consistency. Real XAUM price: `386575800000` (8-decimal scale, ≈$3865.76).
+2. **Operational lesson from MOCKUSTRY's near-miss** (its own write-up in §5 has the full story):
+   when running `scripts/deploy/deploy.sh` for a new asset, give the per-market phase a long
+   foreground timeout or run it with `run_in_background` — it was killed mid-flight this round,
+   leaving `create_tokens`-only orphaned contracts that had to be recovered by hand via the
+   factory's own `mkt_tok` event (salt + `predict_market`). This recovery path always works
+   (salts are caller-chosen and deterministic), so a kill is recoverable, but it costs real time;
+   better to avoid it. Never re-run `create_tokens` with a fresh random salt to "retry" after a
+   partial failure — check the factory's events for an existing `mkt_tok`/`mkt_new` first.
+3. Self-service tester tooling (`scripts/self_service/`) and the oracle relay
    (`services/oracle-relay/relay.sh`) are already built and proven on testnet, and the manual
    grant/mint/deposit/mint/settle/redeem steps they automate are now also proven by hand on
-   mainnet (§5's testing table) — both apply directly to this deployment now; neither needs to be
+   mainnet (§5's testing tables) — both apply directly to this deployment now; neither needs to be
    rebuilt, only pointed at the mainnet contract IDs in §4/§5 and run on a real schedule (the
-   oracle going stale twice during Market 1's creation and again before Market 2's is a direct,
+   oracle going stale repeatedly across Market 1, Market 2, and MOCKUSTRY's creation is a direct,
    repeated demonstration of why the relay needs to actually run, not just exist).
-3. Reproducible-build sign-off and dApp handoff (§8/§9) can now reference two real, live,
+4. Reproducible-build sign-off and dApp handoff (§8/§9) can now reference three real, live,
    fully-exercised mainnet markets' addresses.
-4. **Permission-gap finding to carry forward**: a human trading account needs its own
+5. **Permission-gap finding to carry forward**: a human trading account needs its own
    `Permissioning.grant_asset` for every PT/YT token it will hold, separate from the market's own
-   contract-level grants — found live during this round's testing (§5), not previously hit on
-   testnet because the earlier testnet proof only exercised the self-service tooling's own
-   market-level grants. Any future testing checklist or self-service doc should call this out
-   explicitly as a required step for a *new human tester*, not just a new market.
-5. `deploy.sh`'s known `upload_wasm`/`deploy_from_hash` `set -e`-blind-spot bug (a real failure
+   contract-level grants — found live during MOCKUSDY's testing round (§5), and hit again
+   identically for MOCKUSTRY (test-a's `set_authorized` also needs its own classic-asset trustline
+   established first, a related but distinct gap — found live there too). Any future testing
+   checklist or self-service doc should call both out explicitly as required steps for a *new
+   human tester* against a *new asset*, not just a new market on an already-tested asset.
+6. `deploy.sh`'s known `upload_wasm`/`deploy_from_hash` `set -e`-blind-spot bug (a real failure
    inside a `$(...)` substitution doesn't stop the script cleanly, and a mere submission timeout
-   isn't distinguished from a real failure) is still open — not hit this round since Market 2 was
-   created via `create_market_via_factory.sh` directly, but still worth fixing before relying on
-   `deploy.sh` unattended for the next asset.
+   isn't distinguished from a real failure) is still open — still worth fixing before relying on
+   `deploy.sh` fully unattended for the next asset.
