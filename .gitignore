@@ -1,10 +1,13 @@
 # Rust / Cargo build artifacts
 target/
 
-# scripts/deploy/deploy.sh's own local config -- copy .env.example to .env and fill it in;
-# .env itself must never be committed (it names local `stellar keys` identities and, on a real
-# mainnet run, would be adjacent to signer material).
+# scripts/deploy/deploy.sh's own local config -- copy .env.example to .env (or a named variant,
+# e.g. .env.mainnet-mockusdy, for a specific deployment run) and fill it in; none of these must
+# ever be committed (they name local `stellar keys` identities and, on a real mainnet run, would
+# be adjacent to signer material).
 .env
+.env.*
+!.env.example
 # Note: Cargo.lock is committed for smart contracts to guarantee reproducible WASM builds.
 
 # Grant and business documents — not part of the public technical release
