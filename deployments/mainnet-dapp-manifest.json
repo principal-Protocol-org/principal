@@ -1,0 +1,210 @@
+{
+  "schemaVersion": 2,
+  "network": "mainnet",
+  "networkPassphrase": "Public Global Stellar Network ; September 2015",
+  "rpcUrl": "https://soroban-rpc.mainnet.stellar.gateway.fm",
+  "horizonUrl": "https://horizon.stellar.org",
+  "generatedAt": "2026-11-17T23:41:25Z",
+  "sourceCommit": "3af938853e5818aa8d56bd35670b9a19cfa55a78",
+  "shared": {
+    "router": "CCM4QQUKTD2CUTRSNNI6OO4JHYEF7MHKBMKSM5JYJNFLKSTAZBQD7QF5",
+    "oracle": "CCKXG4HSVH57AQTYJDNNXHQBCGNH6KRFNMCMATTMYFUX2TDQ7GD5K7IT",
+    "permissioning": "CBCWU57AILKFDOYQAESFRPH57Q6UK66E7RBYV4ICZHNNGWIWFAHVRTXJ",
+    "riskControl": "CBHCRRLWHS7KRQNAXYY3OMNDTSXDNJKCDK6KPUUJPFGDBSN76JEWWQ5G",
+    "factory": "CDYH7UV24XS7G7MDRTBJUS4PJNKKUXTLUUTL67MR5CYJAXSPPHNWS65T"
+  },
+  "wasmHashes": {
+    "oracle": "8581bbba82bb57f5c5c9c00adf98b1691ad20821840e55a67ad8d7ecace0c1b0",
+    "permissioning": "4437468dbbda6d86a115f188de877135b0b5a400b69ad7e9444cf269c54f969c",
+    "riskControl": "ac75508d24c5457de7db1106bf8b5e9b62ea436f3dfd1a309fda5138110c2526",
+    "sy": "be4b12cf3c16461b7e71fa225ed2363aba62bdc42c1ea5c08c98d7ede6a27c9a",
+    "pt": "db025340887ef9d92922e2444da24edab5fec125460e9adc373a5f77b26578b2",
+    "yt": "c83a2a8d2a4a79ff5348675581a27d48e52a920d83dc887672840d4a79c02654",
+    "config": "11b0cbdf10a8d204fcb568c54529801747feac05208c5bcbfaefd822ad0c79a8",
+    "manager": "e2d04b45b867d0dbc41660ac0d97d3e705005ddfb10350bb030d25b1aff86115",
+    "pool": "52285a25bbf372d0e5d22ba565b76af6a7e832422df83b6a4809de8adf3aa112",
+    "recoveryEscrow": "dadea71fcfb84adcfb4691f472551f490cf440c5aaae5c6b5e5d4bb6f61441e8",
+    "router": "2a0997317651edb0f7e2bd753570b03a88462aa6d216c14b06ebec246bb3c1c2",
+    "factory": "6c21fc0e78f3064f67ae30924b8f9ca0223fbb61a20ac640cceca7b152456759"
+  },
+  "routerFunctions": [
+    "unwrap",
+    "recombine",
+    "claim_yield",
+    "add_liquidity",
+    "flash_mint_yt",
+    "wrap_and_mint",
+    "swap_pt_for_sy",
+    "swap_sy_for_pt",
+    "swap_sy_for_yt",
+    "swap_yt_for_sy",
+    "remove_liquidity",
+    "redeem_at_maturity",
+    "add_liquidity_keep_yt",
+    "swap_pt_for_underlying",
+    "swap_underlying_for_pt",
+    "swap_underlying_for_yt",
+    "swap_yt_for_underlying",
+    "add_liquidity_single_sy",
+    "flash_mint_yt_from_underlying",
+    "remove_liquidity_to_underlying",
+    "add_liquidity_single_underlying"
+  ],
+  "markets": [
+    {
+      "marketId": "mainnet-CDQYZU-CCY5P6CC",
+      "displayName": "MOCKUSDY (90-day)",
+      "underlying": {
+        "code": "MOCKUSDY",
+        "issuer": "GB3SOEMQVYBLMHPV3AK64PV4FJTOMQ2XUJLOZSVDJLP2LT42EU3XLE4P",
+        "sac": "CDQYZUYQF7TRQ7BX6YBSCU3HLWBDS3E2VSP7AUE7C3E2D2U2IBBQOBGF",
+        "decimals": 7
+      },
+      "maturity": 1802719669,
+      "contracts": {
+        "router": "CCM4QQUKTD2CUTRSNNI6OO4JHYEF7MHKBMKSM5JYJNFLKSTAZBQD7QF5",
+        "oracle": "CCKXG4HSVH57AQTYJDNNXHQBCGNH6KRFNMCMATTMYFUX2TDQ7GD5K7IT",
+        "sy": "CCY5P6CCHIPX7ND3HSIHFLD57756WWILI4UQLSZ2UIF5CVGYN6XJGJ7Q",
+        "pt": "CASF4U23SQ6XPCKPVNQ273OM3ILZRJFNHTHW6KGZRXQD4QK65PWWLEFE",
+        "yt": "CCQ2VU23X5GY7ZBTYNKWGLXRQVODSNSCNJVOLXG7NHLEXT37FDAKKPGC",
+        "config": "CAV62P3JRTBVBOCCZ4GW3X7AAW4NJ35LP7KVM5TY6Q6OXROMOKI4WAQL",
+        "manager": "CBBKUZJWZDA7YLA6GHSXVLV62QJ6DLKCO4GXUWF43FXLPN5S3XVNUKCC",
+        "pool": "CAON3FAQU5W6SGZFWOM22GONNKZEIN4AGVTKMCWCC6PI43QWB27MGW4I",
+        "recoveryEscrow": "CBHHRTTRTXQM3OFDOBL6QORP6JS5RVIRXSF5B3C4TMOVSIQBDKKA67SJ"
+      },
+      "wasmHashes": {
+        "sy": "be4b12cf3c16461b7e71fa225ed2363aba62bdc42c1ea5c08c98d7ede6a27c9a",
+        "pt": "db025340887ef9d92922e2444da24edab5fec125460e9adc373a5f77b26578b2",
+        "yt": "c83a2a8d2a4a79ff5348675581a27d48e52a920d83dc887672840d4a79c02654",
+        "config": "11b0cbdf10a8d204fcb568c54529801747feac05208c5bcbfaefd822ad0c79a8",
+        "manager": "e2d04b45b867d0dbc41660ac0d97d3e705005ddfb10350bb030d25b1aff86115",
+        "pool": "52285a25bbf372d0e5d22ba565b76af6a7e832422df83b6a4809de8adf3aa112",
+        "recoveryEscrow": "dadea71fcfb84adcfb4691f472551f490cf440c5aaae5c6b5e5d4bb6f61441e8"
+      }
+    },
+    {
+      "marketId": "mainnet-CDHQ4B-CA4EMPWQ",
+      "displayName": "MOCKUSTRY (90-day)",
+      "underlying": {
+        "code": "MOCKUSTRY",
+        "issuer": "GDM2Q2F5KC2ECQZ5C3TIPTM7UTZJ775G4UZCLLGYULZUMBI6VEQERK4K",
+        "sac": "CDHQ4B6U3D5O6PGAWAO22K45ASD2BAGD25IHITRIIUHXA3GBABZTYBA5",
+        "decimals": 7
+      },
+      "maturity": 1802724716,
+      "contracts": {
+        "router": "CCM4QQUKTD2CUTRSNNI6OO4JHYEF7MHKBMKSM5JYJNFLKSTAZBQD7QF5",
+        "oracle": "CBHAWS6B4YCNRLYRP2HUP77P4IRP3PZYPSYVPV4OMZNU2ZNKSAQQ2GXU",
+        "sy": "CA4EMPWQ3NBUHRA75DXCGRTSGROD6YNFFPXUEEKVC262P5GKK6EPVTSX",
+        "pt": "CAYXXH7ZY54CENRIJFDGYIBIJJDNUOV2TUNFKO6QVUZYYDFGQGXI4HH7",
+        "yt": "CCUDPECIHOJK2RLFIDF7K2NM4H77V3JUAUZODU6OMT5QWVVYUMXXVKZG",
+        "config": "CBWIVLMDZCV7USXM7TVUF4KW6HJUVDXMXMOKIVCVHEC2DN6GTPHFSYHP",
+        "manager": "CAB6LHML2KZH4SRV5NLTDFIX5PLM6F7R54WFOTLK5XXJ6TVDL7MNRD44",
+        "pool": "CBJGWQ7BJ7AND2MNG4RCA626PPX4RTDKLJGNG6UVXFTOYF6GGQ7T5GZ6",
+        "recoveryEscrow": "CC5AFSYUTYVYYLZID64UE7L74TW2JMONZGOAWDGPBQSWA6ANEOOII2RE"
+      },
+      "wasmHashes": {
+        "sy": "be4b12cf3c16461b7e71fa225ed2363aba62bdc42c1ea5c08c98d7ede6a27c9a",
+        "pt": "db025340887ef9d92922e2444da24edab5fec125460e9adc373a5f77b26578b2",
+        "yt": "c83a2a8d2a4a79ff5348675581a27d48e52a920d83dc887672840d4a79c02654",
+        "config": "11b0cbdf10a8d204fcb568c54529801747feac05208c5bcbfaefd822ad0c79a8",
+        "manager": "e2d04b45b867d0dbc41660ac0d97d3e705005ddfb10350bb030d25b1aff86115",
+        "pool": "52285a25bbf372d0e5d22ba565b76af6a7e832422df83b6a4809de8adf3aa112",
+        "recoveryEscrow": "dadea71fcfb84adcfb4691f472551f490cf440c5aaae5c6b5e5d4bb6f61441e8"
+      }
+    },
+    {
+      "marketId": "mainnet-CBBF4H-CDXXRJJS",
+      "displayName": "MOCKGILTS (90-day)",
+      "underlying": {
+        "code": "MOCKGILTS",
+        "issuer": "GA5KXEPU7FLWKNG255WKYSYQ5U3G7WHFKD7HTTK2DR37KYJJ7V6GOR3G",
+        "sac": "CBBF4H2ZNMJKULJEOMZDMVQP27LD7HRTHEHETD647P3SCBTAWRGVJG4O",
+        "decimals": 7
+      },
+      "maturity": 1802727891,
+      "contracts": {
+        "router": "CCM4QQUKTD2CUTRSNNI6OO4JHYEF7MHKBMKSM5JYJNFLKSTAZBQD7QF5",
+        "oracle": "CDZS34JFW7D24MONUKQDVJZKGBPOMIEVEWQQAHTEG3LYR2VFI4XNFNSZ",
+        "sy": "CDXXRJJS2HFJBYF344ZGIC4DDRC7HAM4TJBTOM3ISFWE42KNRVAM3ZBQ",
+        "pt": "CCHWW2AZ7JJQKMVNB2XFJ4SKZCCMSANLVBUZLGRCT46SVENVWD4B4LAN",
+        "yt": "CADNGBDYZIRG2L6PPRSER6DSMIJFFAAIV25KE4F5KZIO7QGAF4LLIGXZ",
+        "config": "CCG7TK57WPPBJ2OP3YJLCGK6HOANGUPNVFAFBXJHJSWNRSDOKKZFH2VO",
+        "manager": "CBOJIJBR477VTPSE6VB7W4ZEQZKNJ3NEVI4FPORAEC4OMXQBIGLBMUJG",
+        "pool": "CDWVSTG3UZXZOEF2FGKJXFZFGEYEO3HUH7IFZNHOEFSQYZ575GAUYQH4",
+        "recoveryEscrow": "CAOYAMW4FFHLL7BYBMDLLWIN4LIRZFZA2Z4ZUNDBYCROC2U7JJMC2CUK"
+      },
+      "wasmHashes": {
+        "sy": "be4b12cf3c16461b7e71fa225ed2363aba62bdc42c1ea5c08c98d7ede6a27c9a",
+        "pt": "db025340887ef9d92922e2444da24edab5fec125460e9adc373a5f77b26578b2",
+        "yt": "c83a2a8d2a4a79ff5348675581a27d48e52a920d83dc887672840d4a79c02654",
+        "config": "11b0cbdf10a8d204fcb568c54529801747feac05208c5bcbfaefd822ad0c79a8",
+        "manager": "e2d04b45b867d0dbc41660ac0d97d3e705005ddfb10350bb030d25b1aff86115",
+        "pool": "52285a25bbf372d0e5d22ba565b76af6a7e832422df83b6a4809de8adf3aa112",
+        "recoveryEscrow": "dadea71fcfb84adcfb4691f472551f490cf440c5aaae5c6b5e5d4bb6f61441e8"
+      }
+    },
+    {
+      "marketId": "mainnet-CBVSL3-CCSETNMX",
+      "displayName": "MOCKCETES (90-day)",
+      "underlying": {
+        "code": "MOCKCETES",
+        "issuer": "GBB6TITJASKDTNBA6XEU7IM3VVMM3JLSQRTPQBBHZM4KJELPQGECVSCZ",
+        "sac": "CBVSL37VLX4Z362AETPZVM65EZGETM2ROT7K56MIURXJU4LZDIJ4IATP",
+        "decimals": 7
+      },
+      "maturity": 1802728835,
+      "contracts": {
+        "router": "CCM4QQUKTD2CUTRSNNI6OO4JHYEF7MHKBMKSM5JYJNFLKSTAZBQD7QF5",
+        "oracle": "CBJK32UY5UYP764MWWOVQ37NGZNVU5CKPGKN24RW4PV64MG3VGDBPBWC",
+        "sy": "CCSETNMX4V64HGQNPM7OTRDOSJPVVJCXLL7LDHXHINPLVHMQKBEHLHOD",
+        "pt": "CDURP3PATO5D2XEGCZCZVHNSQHD35MYJJNS2Z3GUZA5DZBMM6XWNXB3C",
+        "yt": "CAVPRJG2E4XVALMYAAO6BHLVPKMV53M47YZ6WFMZCAA4GLXXYBEE5MAD",
+        "config": "CBLXJEY7UNUNNPQQTCLHCLPRY37X2W7NDP4IIABZB4CT4FHBQ4DUYBPK",
+        "manager": "CDOZH7ZRYGYQ5EATPSHTSVJOIWGN67UJNAUHK7T64CCRCMHPG2IX2ANR",
+        "pool": "CCK4MLG4GMOMFSOIBR45LKXSXZRIONMPGSUERU2E6TMGL663OMKPM3TJ",
+        "recoveryEscrow": "CCW4HQCKNG7PAPC67IBCMCCKUVDL2HBMS6BXSVRRIX4ISVTPVBDYBQGF"
+      },
+      "wasmHashes": {
+        "sy": "be4b12cf3c16461b7e71fa225ed2363aba62bdc42c1ea5c08c98d7ede6a27c9a",
+        "pt": "db025340887ef9d92922e2444da24edab5fec125460e9adc373a5f77b26578b2",
+        "yt": "c83a2a8d2a4a79ff5348675581a27d48e52a920d83dc887672840d4a79c02654",
+        "config": "11b0cbdf10a8d204fcb568c54529801747feac05208c5bcbfaefd822ad0c79a8",
+        "manager": "e2d04b45b867d0dbc41660ac0d97d3e705005ddfb10350bb030d25b1aff86115",
+        "pool": "52285a25bbf372d0e5d22ba565b76af6a7e832422df83b6a4809de8adf3aa112",
+        "recoveryEscrow": "dadea71fcfb84adcfb4691f472551f490cf440c5aaae5c6b5e5d4bb6f61441e8"
+      }
+    },
+    {
+      "marketId": "mainnet-CBAJVV-CB7KQ4O6",
+      "displayName": "MOCKXAUM (90-day)",
+      "underlying": {
+        "code": "MOCKXAUM",
+        "issuer": "GC6VP3LK7JWQRRLZVTHMPYYNN3ZRUJ7KSZGMV4AJTYETICNISI4I7AMN",
+        "sac": "CBAJVVTBBR6XXAK4N32WHVOALDRMQ27YMQNS6PBLGNWJIBFWOYS6AVVD",
+        "decimals": 7
+      },
+      "maturity": 1802729865,
+      "contracts": {
+        "router": "CCM4QQUKTD2CUTRSNNI6OO4JHYEF7MHKBMKSM5JYJNFLKSTAZBQD7QF5",
+        "oracle": "CCLB6RTJOG24TMIZ74IMVEMBLKYCD6ERDPBNL5IB4L6AGQCKOKGR6IS7",
+        "sy": "CB7KQ4O6QFJRFBVXV2AZB6WW6JCWK5OP5RXRDBK6E2AAPAMD2GSBOAMR",
+        "pt": "CC6HX7M5PNFWAFIVINN6ZKPFFBSHPN3AKBCANKTIA5JHFOEZC6ETMXVA",
+        "yt": "CAZ6SBSSIPYE55EOF2YGUYEVJV32X4LC6EDMZHYGP6W37I5HAW7VXAT3",
+        "config": "CCAIOFZUD3YGFFOTUCVZVZR2CFCH4WQ4U2XBHLLUVGQVD5J7TK2KL5LO",
+        "manager": "CAR65MVWLRPIOAYAY54RYLWS6AOOPMQ4M3LADAAA72NFVLFXOR33AFR6",
+        "pool": "CDRJJMQZ7XDTOWIW64BELMID2SNTRLZ2KBS5ZLY62ECQIYTR5W3TGLCI",
+        "recoveryEscrow": "CBP46WKLXNJ5ESU5YEOOH3VLG7J7RRPQLQAFXHP26EQRY5OJTMZG6AD4"
+      },
+      "wasmHashes": {
+        "sy": "be4b12cf3c16461b7e71fa225ed2363aba62bdc42c1ea5c08c98d7ede6a27c9a",
+        "pt": "db025340887ef9d92922e2444da24edab5fec125460e9adc373a5f77b26578b2",
+        "yt": "c83a2a8d2a4a79ff5348675581a27d48e52a920d83dc887672840d4a79c02654",
+        "config": "11b0cbdf10a8d204fcb568c54529801747feac05208c5bcbfaefd822ad0c79a8",
+        "manager": "e2d04b45b867d0dbc41660ac0d97d3e705005ddfb10350bb030d25b1aff86115",
+        "pool": "52285a25bbf372d0e5d22ba565b76af6a7e832422df83b6a4809de8adf3aa112",
+        "recoveryEscrow": "dadea71fcfb84adcfb4691f472551f490cf440c5aaae5c6b5e5d4bb6f61441e8"
+      }
+    }
+  ]
+}

@@ -791,7 +791,16 @@ hash (captured at upload time) is cross-checked against this table.
 
 ## 9. dApp handoff
 
-*(filled in once contract addresses are finalized and handed off)*
+**Done — 2026-11-18.** All contract addresses across all five mock assets and six markets are
+final (barring a future additional-asset round). The full handoff to the `principal-Protocol-org/dapp`
+team is [`docs/MAINNET_DAPP_INTEGRATION_GUIDE.md`](MAINNET_DAPP_INTEGRATION_GUIDE.md): the exact
+code change needed in `lib/protocol/manifest-source.ts` to support `NEXT_PUBLIC_PRINCIPAL_NETWORK=mainnet`,
+a ready-to-copy `config/manifests/mainnet.json` (checked out at
+[`deployments/mainnet-dapp-manifest.json`](../deployments/mainnet-dapp-manifest.json) and
+independently validated against the dApp's own zod schema), a self-service walkthrough for the
+dApp team to deploy and test their own mock asset end to end on mainnet, and a table of real
+mainnet transaction hashes for every flow (mint, deposit, split, AMM liquidity/swap, settle,
+redeem, compliance grants) to validate their own transaction-building code against.
 
 ## 10. Resume checklist (next steps now that all five mock assets are live and tested)
 
