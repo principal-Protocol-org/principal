@@ -579,6 +579,69 @@ Balances after this round: `mainnet-admin` topped up to `7.9884018` XLM (5 XLM t
 `d11e29aba04c6b67d9a4bf706effd21d1c3cbf28d3601ed9295f8c2b19fd5c09`), `mainnet-gilts-issuer`
 `1.8330390` XLM — comfortably enough for CETES and XAUM to follow.
 
+### MOCKCETES market — fourth mock asset — **STATUS: COMPLETE AND LIVE** — 2026-11-18
+
+Same pattern as MOCKGILTS. Tracks real CETES (per §2's RedStone feed lookup,
+`CAL6ER2TI6CTRAY6BFXWNWA7WTYXUXTQCHUBCIBU5O6KM3HJFG6Z6VXV`, real price `6469400` at the feed's
+8-decimal scale).
+
+**Setup**: issuer `mainnet-cetes-issuer` (`GBB6TITJASKDTNBA6XEU7IM3VVMM3JLSQRTPQBBHZM4KJELPQGECVSCZ`)
+funded (tx `146832cad201a8a250b15d1245a7769ceb09160960a281bf8cfe45eaca9e0e14`), flags set (tx
+`10f82a6c8bf3b3b002bfc25bdd21e412f1dd06ee9fed4648cd9574cd66d0fa4b`), SAC deployed (tx
+`58d6f13747133e5371cde8248525f0db4f6a955c5cf1971509c2dfbdefd995a8`) →
+**`MOCKCETES` SAC: `CBVSL37VLX4Z362AETPZVM65EZGETM2ROT7K56MIURXJU4LZDIJ4IATP`**. New
+`OracleAdapter` instance (deploy tx `58273814dfe9e3efbdc49f493a8190ce68641ac04f341175699f1385d3678e9f`,
+init tx `c179f69b9e8019c779b703b8a5ea8959368cadd51355f642c2ca9fe48c2019af`) →
+**`CBJK32UY5UYP764MWWOVQ37NGZNVU5CKPGKN24RW4PV64MG3VGDBPBWC`**, genesis `6469400` pushed (tx
+`d58d1321e00b415b6ad8020a32c1caec3b937b7af4cd413f68c6a06552213f2d`).
+
+**Deployed contracts** (`"Principal Token MOCKCETES"`/`"PT-MCETES"`,
+`"Yield Token MOCKCETES"`/`"YT-MCETES"`):
+
+| Contract | ID |
+|---|---|
+| `OracleAdapter` (CETES-specific) | `CBJK32UY5UYP764MWWOVQ37NGZNVU5CKPGKN24RW4PV64MG3VGDBPBWC` |
+| `SYWrapper` | `CCSETNMX4V64HGQNPM7OTRDOSJPVVJCXLL7LDHXHINPLVHMQKBEHLHOD` |
+| `PTToken` (`PT-MCETES`) | `CDURP3PATO5D2XEGCZCZVHNSQHD35MYJJNS2Z3GUZA5DZBMM6XWNXB3C` |
+| `YTToken` (`YT-MCETES`) | `CAVPRJG2E4XVALMYAAO6BHLVPKMV53M47YZ6WFMZCAA4GLXXYBEE5MAD` |
+| `MarketConfig` | `CBLXJEY7UNUNNPQQTCLHCLPRY37X2W7NDP4IIABZB4CT4FHBQ4DUYBPK` |
+| `PrincipalManager` | `CDOZH7ZRYGYQ5EATPSHTSVJOIWGN67UJNAUHK7T64CCRCMHPG2IX2ANR` |
+| `MarketPool` | `CCK4MLG4GMOMFSOIBR45LKXSXZRIONMPGSUERU2E6TMGL663OMKPM3TJ` |
+| `RecoveryEscrow` | `CCW4HQCKNG7PAPC67IBCMCCKUVDL2HBMS6BXSVRRIX4ISVTPVBDYBQGF` |
+
+Maturity: `1802728835` (90 days). `market_id` = `mainnet-CBVSL3-CCSETNMX`. Salt
+`15e101c4013b89501123c1d5d562e197438f3cc35518a74037e02a0c14fff35e`.
+
+**Factory + wiring**: `create_tokens` tx `5c75aef144d7c9fa5d8a5c7f8d3ae44fb0bd2d539939da100e9f3ad53c8559dc`,
+`create_engine` tx `ecc70bfd4a4d26c6cbec13c10e6d92ca1fa762ccedf3d65304767f9fe596eb44`,
+`create_pool_and_escrow` tx `a1b8dfdc0bdba9eda44b5418945c084547c4ebba3e4a67dd3716793cca306329`,
+`risk_control.add_consumer` ×2 (tx `6959a626a6ca63210118e22f75a658820273db5853238e5213805f86b301b9dd`,
+`48d5ddeea0d1b7168e1ee4d2b38091a58651030b63ba3ea581eec8e8146406ab`), `router.register_market`
+tx `c39581d79b602e3847a9a62f6a1c5d24218672452d68fe0fe13d3e733b7614d7`.
+
+**Real gap found and fixed live**: `PrincipalManager`'s own `Permissioning.grant_account` call
+hit `transaction submission timeout` during the compliance-grant batch; the loop moved on without
+checking the result (same class of issue `deploy.sh` itself has — see §10's open item). Confirmed
+via Horizon 404 that it never landed, then confirmed via `verify-deployment.sh` (77/79, "Manager
+has Permissioning account-level standing" failing) and `is_allowed(Manager) == false` directly —
+retried (tx `cfec0e95a4e9bc4d35d8ca79abaeb23ce39b43815d8008fbda72c7129e8280da`), re-verified clean.
+**Lesson**: a bare `invoke ... | tail -N` loop over several addresses can silently drop one
+submission-timeout failure in the middle; always re-run `verify-deployment.sh` after a grants
+batch rather than trusting the batch's own exit code alone.
+
+**Verification**: `MANIFEST=deployments/mainnet-cetes/deployment-manifest.json
+./scripts/deploy/verify-deployment.sh` → **78 passed, 1 failed** (expected `git_tree_dirty`),
+after the fix above.
+
+**Real smoke test**: minted 1000 MOCKCETES (tx
+`e36f43cff1e2ba4d3a2187ec05d95af7f35e4e0ec5addbea6ef21a8d9c86cd10`), deposited 500 into
+`SYWrapper` (tx `172ad551eaa0e61f5c11d09cad8b423a3adbeee15f9a78eb271d2b94943861e9`), minted PT/YT
+from the resulting 500 SY (tx `20ad9b9a233c71c80339050091a47cff1bd87dd7458cedb0e4f8e6a4fb271fcb`)
+→ `3233.08265` PT and YT minted, fee `2.5` SY withheld.
+
+Balances after this round: `mainnet-admin` `7.4515064` XLM, `mainnet-cetes-issuer` `1.7951000`
+XLM — comfortably enough for XAUM, the last remaining asset.
+
 ## 6. Self-service tester tooling
 
 *(filled in once built)*
