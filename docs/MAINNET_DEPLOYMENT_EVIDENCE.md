@@ -516,6 +516,69 @@ Balances after this round: `mainnet-admin` 3.5252852, `mainnet-ustry-issuer` 1.8
 `mainnet-mockusdy-issuer` 46.2218571, `principal-mainnet-treasury` ≈20.35 XLM — comfortably enough
 for GILTS, CETES, and XAUM to follow the same pattern.
 
+### MOCKGILTS market — third mock asset — **STATUS: COMPLETE AND LIVE** — 2026-11-18
+
+Same pattern as MOCKUSTRY, done cleanly this time (manual phase-by-phase factory calls from the
+start, applying both lessons from MOCKUSTRY: no monolithic `deploy.sh` run subject to a host-side
+kill, and `mainnet-test-a`'s classic-asset trustline established *before* its `set_authorized`
+call, not after). Tracks real GILTS (per §2's RedStone feed lookup,
+`CCQNEBGX5RJQGNLQ25C67DZLOSNM4NFQBANUS3ASALF2X552BSIQ6XCE`, real price `141972700` at the feed's
+8-decimal scale). Zero transaction timeouts this round.
+
+**Setup**: new issuer `mainnet-gilts-issuer`
+(`GA5KXEPU7FLWKNG255WKYSYQ5U3G7WHFKD7HTTK2DR37KYJJ7V6GOR3G`) funded with 3 XLM from treasury (tx
+`6c34224e2d22892fcc44bc7dd1953a613cff9e418334823aa00cbcd0730cf1d7`), flags set to match the real
+GILTS issuer (tx `b7ede1c47a17e53178c68f0049fbe244ced2d681ce44a6ff00279f4c3dcccd79`, confirmed
+`auth_revocable: true, auth_clawback_enabled: true`), SAC deployed (tx
+`ca114f96670387e3741016db4a451dbb6d2dde4dbb5479ebebee2614b9d6fe6b`) →
+**`MOCKGILTS` SAC: `CBBF4H2ZNMJKULJEOMZDMVQP27LD7HRTHEHETD647P3SCBTAWRGVJG4O`**. New
+`OracleAdapter` instance deployed from the already-installed hash (tx
+`60143de045ced4f69741ad4ca4133d6aa387c6c677aba5383f404e73deb274ff`, init tx
+`0a3febe495a1e2656e097a8a498e04ba05780302090f71342fe72706c15f26bd`) →
+**`CDZS34JFW7D24MONUKQDVJZKGBPOMIEVEWQQAHTEG3LYR2VFI4XNFNSZ`**, genesis value `141972700` pushed
+(tx `ed8b732c22702b8772ee270da7e4e20e9fb775e322d79329cf9287b2c5c3c421`).
+
+**Deployed contracts** (PT/YT given real names this time —
+`"Principal Token MOCKGILTS"`/`"PT-MGILTS"`, `"Yield Token MOCKGILTS"`/`"YT-MGILTS"`):
+
+| Contract | ID |
+|---|---|
+| `OracleAdapter` (GILTS-specific) | `CDZS34JFW7D24MONUKQDVJZKGBPOMIEVEWQQAHTEG3LYR2VFI4XNFNSZ` |
+| `SYWrapper` | `CDXXRJJS2HFJBYF344ZGIC4DDRC7HAM4TJBTOM3ISFWE42KNRVAM3ZBQ` |
+| `PTToken` (`PT-MGILTS`) | `CCHWW2AZ7JJQKMVNB2XFJ4SKZCCMSANLVBUZLGRCT46SVENVWD4B4LAN` |
+| `YTToken` (`YT-MGILTS`) | `CADNGBDYZIRG2L6PPRSER6DSMIJFFAAIV25KE4F5KZIO7QGAF4LLIGXZ` |
+| `MarketConfig` | `CCG7TK57WPPBJ2OP3YJLCGK6HOANGUPNVFAFBXJHJSWNRSDOKKZFH2VO` |
+| `PrincipalManager` | `CBOJIJBR477VTPSE6VB7W4ZEQZKNJ3NEVI4FPORAEC4OMXQBIGLBMUJG` |
+| `MarketPool` | `CDWVSTG3UZXZOEF2FGKJXFZFGEYEO3HUH7IFZNHOEFSQYZ575GAUYQH4` |
+| `RecoveryEscrow` | `CAOYAMW4FFHLL7BYBMDLLWIN4LIRZFZA2Z4ZUNDBYCROC2U7JJMC2CUK` |
+
+Maturity: `1802727891` (90 days). `market_id` = `mainnet-CBBF4H-CDXXRJJS`. Salt
+`485b2d22039af0f6ddcc7dddd63e470aca222aeed8c4f537856d7e546f17713d`.
+
+**Factory + wiring**: `create_tokens` tx
+`5b4e44362c4e8a57fd9f088a5799015a65fe926eaf5bcd8111139f841ab48ced`, `create_engine` tx
+`876e6b39a9e45afb6f6e828f31b725667e81236a5f3107eaf4e6e74ac4ac52d2`,
+`create_pool_and_escrow` tx `f4b70aa5a5143b4cea46080d9db8b7a8b1364376fcfb26198ce00adbdcedb1d7`,
+`risk_control.add_consumer` ×2 (tx `32d0f018fb32a8e93deefc73c4cdeedfc5fb2f82cda488f9bc3a1e1e86467107`,
+`5f927ebdc77cd4f029eb9b5e551c09253ed8b5e3ad4287e5ebdc00b06fb6af85`), `router.register_market` tx
+`14de3a4a963f42bdfeed171e072249733385c3db1399cd7b07f96895049d6f9f`.
+
+**Verification**: `MANIFEST=deployments/mainnet-gilts/deployment-manifest.json
+./scripts/deploy/verify-deployment.sh` → **78 passed, 1 failed** (expected `git_tree_dirty`).
+
+**Real smoke test**: `mainnet-test-a` established its `MOCKGILTS` trustline first (tx
+`e3758479c2ac652c12f7615625ae435a098483a842eaadeddc0b99002979171d`), then compliance grants
+landed clean on the first attempt — minted 1000 MOCKGILTS (tx
+`ef6e4ed5f9f5e7bd9f6f66c586285c3ae6296aa63ac11cd9fdb22868de8c37b6`), deposited 500 into
+`SYWrapper` (tx `ce0a3dda55836e5fa84f5c30ecbd0f4539e1bc2af7d3d655ecee57e156d63927`), minted PT/YT
+from the resulting 500 SY (tx `3536b1d5483e71bacdd72534e1cb8b709ea558e2f000cafffac60abd6aab0670`)
+→ `70950.856825` PT and YT minted, fee `2.5` SY withheld.
+
+Balances after this round: `mainnet-admin` topped up to `7.9884018` XLM (5 XLM transferred in from
+`mainnet-mockusdy-issuer`'s surplus, tx
+`d11e29aba04c6b67d9a4bf706effd21d1c3cbf28d3601ed9295f8c2b19fd5c09`), `mainnet-gilts-issuer`
+`1.8330390` XLM — comfortably enough for CETES and XAUM to follow.
+
 ## 6. Self-service tester tooling
 
 *(filled in once built)*
