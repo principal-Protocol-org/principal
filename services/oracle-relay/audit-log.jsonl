@@ -11,3 +11,42 @@
   "previous_onchain_value": 11500000,
   "tx": "59451eaf5e0749897185c241c5899020e9f07a55b61f2182efea7675b2119317"
 }
+{
+  "at": "2026-11-17T12:04:52Z",
+  "source_preimage": "principal-oracle-source:testnet:USDY:RedStone:USDY/USD-SEP40",
+  "source_id": "23fb5799272c7c27070ba0d0cd8d2bf92f6ba155c4b018508d10218db75c65d6",
+  "decision": "skipped",
+  "reason": "feed_fetch_failed",
+  "raw_source_value": "",
+  "scaled_value": "",
+  "source_timestamp": null,
+  "ledger_timestamp": null,
+  "previous_onchain_value": null,
+  "tx": null
+}
+{
+  "at": "2026-11-17T12:06:25Z",
+  "source_preimage": "principal-oracle-source:testnet:USDY:RedStone:USDY/USD-SEP40",
+  "source_id": "23fb5799272c7c27070ba0d0cd8d2bf92f6ba155c4b018508d10218db75c65d6",
+  "decision": "rejected",
+  "reason": "source_stale",
+  "raw_source_value": "115347432",
+  "scaled_value": "",
+  "source_timestamp": 1794912290,
+  "ledger_timestamp": null,
+  "previous_onchain_value": null,
+  "tx": null
+}
+{
+  "at": "2026-11-17T12:06:53Z",
+  "source_preimage": "principal-oracle-source:testnet:USDY:RedStone:USDY/USD-SEP40",
+  "source_id": "23fb5799272c7c27070ba0d0cd8d2bf92f6ba155c4b018508d10218db75c65d6",
+  "decision": "skipped",
+  "reason": "policy_rejected",
+  "raw_source_value": "115347432",
+  "scaled_value": "11534743",
+  "source_timestamp": 1794912290,
+  "ledger_timestamp": 1794917204,
+  "previous_onchain_value": 11534743,
+  "tx": "50b816a7fdabb9137332569215ed122496c0d62361707216a651c2b05781da27"
+}

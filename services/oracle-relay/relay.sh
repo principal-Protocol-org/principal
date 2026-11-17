@@ -20,6 +20,11 @@ set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")"
 
 NETWORK="${NETWORK:-testnet}"
+# The feed being relayed and the OracleAdapter being updated are not always on the same network
+# -- e.g. a testnet deployment of a mock asset tracking a real asset's price, where the real
+# SEP-40 feed only exists on mainnet. Defaults to NETWORK (the original, same-network case) so
+# every existing caller is unaffected; set FEED_NETWORK explicitly for a cross-network relay.
+FEED_NETWORK="${FEED_NETWORK:-$NETWORK}"
 RELAY_STATE_FILE="${RELAY_STATE_FILE:-./relay-state.json}"
 AUDIT_LOG="${AUDIT_LOG:-./audit-log.jsonl}"
 RELAY_MAX_SOURCE_STALE_SECONDS="${RELAY_MAX_SOURCE_STALE_SECONDS:-900}" # 15 min, independent of OracleAdapter's own 3600s
@@ -71,10 +76,54 @@ retry() { # <description> <command...>
 }
 
 view() { stellar contract invoke --id "$1" --source "$ORACLE_CALLER_KEY" --network "$NETWORK" --send=no -- "${@:2}"; }
+# Read-only simulation against the feed's own network, which may differ from $NETWORK (see
+# FEED_NETWORK above). $ORACLE_CALLER_KEY is used only as the simulated source account here --
+# no signature is produced or submitted, so it need not exist or be funded on $FEED_NETWORK.
+view_feed() { stellar contract invoke --id "$1" --source "$ORACLE_CALLER_KEY" --network "$FEED_NETWORK" --send=no -- "${@:2}"; }
 raw_json() { printf '%s' "$1" | tr -d '\n'; }
 
+# The installed `stellar` CLI's own JSON pretty-printer cannot render a real SEP-40 feed's
+# `lastprice()` return value (its `Sep40PriceData` struct) -- confirmed live against RedStone's
+# real mainnet feed contract: the simulation itself succeeds (the actual decoded price and
+# timestamp are right there in the CLI's own error text), but the CLI exits 1 trying to format
+# it, e.g.:
+#   error: cannot print result Map(Some(ScMap(VecM([ScMapEntry { key: ... price ...,
+#     val: I128(Int128Parts { hi: 0, lo: 115347432 }) }, ScMapEntry { key: ... timestamp ...,
+#     val: U64(1794912290) }])))): Missing Entry Sep40PriceData
+# This does not reproduce against the mock SEP-40 feed this script's own tests have used, which
+# is presumably why it was never caught before this script was pointed at a genuinely live feed.
+# Worked around here by falling back to parsing that same error text with a regex when this
+# specific message is seen, rather than depending on an upstream CLI fix. If the CLI's normal
+# JSON path ever does succeed for this return type (a future CLI version, or a feed/call whose
+# result type the printer already supports), that path is tried first and preferred.
+fetch_lastprice() { # <feed_id> <asset_json> -> prints {"price": N, "timestamp": N} or "null"
+  local feed="$1" asset="$2" err out
+  err="$(mktemp)"
+  if out="$(stellar contract invoke --id "$feed" --source "$ORACLE_CALLER_KEY" --network "$FEED_NETWORK" --send=no -- lastprice --asset "$asset" 2>"$err")"; then
+    rm -f "$err"
+    printf '%s' "$out"
+    return 0
+  fi
+  if grep -q 'Missing Entry Sep40PriceData' "$err"; then
+    python3 -c "
+import re, sys, json
+text = open('$err').read()
+price_m = re.search(r'StringM\(price\).*?hi: (-?\d+), lo: (\d+)', text, re.DOTALL)
+ts_m = re.search(r'StringM\(timestamp\).*?U64\((\d+)\)', text, re.DOTALL)
+if not price_m or not ts_m:
+    sys.exit(1)
+hi, lo = int(price_m.group(1)), int(price_m.group(2))
+print(json.dumps({'price': hi * (2 ** 64) + lo, 'timestamp': int(ts_m.group(1))}))
+" && { rm -f "$err"; return 0; }
+  fi
+  echo "fetch_lastprice: unrecognized failure, not the known CLI formatting bug:" >&2
+  cat "$err" >&2
+  rm -f "$err"
+  return 1
+}
+
 # -------------------------------------------------------------------------- 1. fetch the feed
-FEED_RESULT="$(retry "fetch lastprice" view "$RELAY_FEED_ID" lastprice --asset "{\"$RELAY_FEED_ASSET_KIND\":\"$RELAY_FEED_ASSET_VALUE\"}")" \
+FEED_RESULT="$(retry "fetch lastprice" fetch_lastprice "$RELAY_FEED_ID" "{\"$RELAY_FEED_ASSET_KIND\":\"$RELAY_FEED_ASSET_VALUE\"}")" \
   || { log_attempt skipped feed_fetch_failed "" "" "" "" "" ""; exit 1; }
 if [ "$(raw_json "$FEED_RESULT")" = "null" ]; then
   echo "feed returned no data for this asset" >&2
@@ -83,7 +132,7 @@ if [ "$(raw_json "$FEED_RESULT")" = "null" ]; then
 fi
 SOURCE_VALUE="$(echo "$FEED_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['price'])")"
 SOURCE_TS="$(echo "$FEED_RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin)['timestamp'])")"
-FEED_DECIMALS="$(retry "fetch decimals" view "$RELAY_FEED_ID" decimals | tr -d '"')"
+FEED_DECIMALS="$(retry "fetch decimals" view_feed "$RELAY_FEED_ID" decimals | tr -d '"')"
 
 # ------------------------------------------------------------ 2. replay / staleness (local)
 LAST_SOURCE_TS=0
