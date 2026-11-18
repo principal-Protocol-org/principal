@@ -7,7 +7,8 @@ each can be updated independently — this one grows with every deployment actio
 findings records. For the exhaustive, independently reconciled list of every single real
 transaction on every account this deployment used (276 as of 2026-11-18, cross-checked directly
 against Horizon), see [`docs/MAINNET_TRANSACTION_LEDGER.md`](./MAINNET_TRANSACTION_LEDGER.md) and
-§11 below — this document stays the narrative record of what happened and why.
+§11 below — this document stays the narrative record of what happened and why. For every address
+on one page with no narrative, see [`docs/MAINNET_ADDRESSES.md`](./MAINNET_ADDRESSES.md).
 
 **Status (2026-11-18): All five planned mock assets (MOCKUSDY ×2 markets, MOCKUSTRY, MOCKGILTS,
 MOCKCETES, MOCKXAUM) are COMPLETE AND LIVE on mainnet, with real end-to-end transaction testing

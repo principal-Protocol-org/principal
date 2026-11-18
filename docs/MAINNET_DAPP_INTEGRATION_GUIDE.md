@@ -7,7 +7,9 @@ real, verified Stellar mainnet transaction, not an assumption. **Status of mainn
 real-transaction tested. Zero fabricated data — see
 [`docs/MAINNET_DEPLOYMENT_EVIDENCE.md`](MAINNET_DEPLOYMENT_EVIDENCE.md) for the full narrative and
 [`docs/MAINNET_TRANSACTION_LEDGER.md`](MAINNET_TRANSACTION_LEDGER.md) for the complete,
-Horizon-cross-checked list of all 276 real transactions behind this deployment.
+Horizon-cross-checked list of all 276 real transactions behind this deployment, and
+[`docs/MAINNET_ADDRESSES.md`](MAINNET_ADDRESSES.md) for every address on one page with no
+narrative.
 
 This mirrors the structure of the dApp's own testnet integration story (its README's "Network
 selection" and "Manifest" sections, and `config/manifests/testnet.json`) — but for mainnet, and
@@ -501,6 +503,8 @@ blocking the dApp code change itself):
   mock assets, the real oracle feed, every market's creation story, every real finding.
 - [`docs/MAINNET_TRANSACTION_LEDGER.md`](MAINNET_TRANSACTION_LEDGER.md) — all 276 real transactions,
   reconciled against Horizon.
+- [`docs/MAINNET_ADDRESSES.md`](MAINNET_ADDRESSES.md) — every address in §2 above, on one page,
+  no narrative.
 - [`deployments/mainnet-dapp-manifest.json`](../deployments/mainnet-dapp-manifest.json) — the
   ready-to-copy `config/manifests/mainnet.json`.
 - [`scripts/self_service/README.md`](../scripts/self_service/README.md) — the self-service tooling
