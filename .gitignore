@@ -45,3 +45,9 @@ contracts/market_factory/test_snapshots/
 /book/
 deployments/*/deployment-manifest.json.*.bak
 __pycache__/
+
+# mainnet registration_watcher.sh operational state -- updates every 15 min via cron, not meant
+# to be committed (unlike the one-time testnet proof's watcher-state.json/watcher-log.jsonl)
+scripts/self_service/watcher-state.mainnet.json
+scripts/self_service/watcher-log.mainnet.jsonl
+scripts/self_service/watcher-cron.mainnet.log

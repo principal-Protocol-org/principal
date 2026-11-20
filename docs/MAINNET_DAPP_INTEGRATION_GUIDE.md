@@ -360,12 +360,15 @@ later replaced per §12 of the evidence doc:**
 
 ### 3.5 Wait for registration
 
-Principal runs `registration_watcher.sh` on a schedule against mainnet (ask the contracts team how
-often, or deploy your own instance of it against your own test market if you want to self-serve
-this step too — it needs no Principal key, only the admin credentials for whichever
-`RiskControl`/`Router`/`Permissioning` you point it at). Once it has run against your market:
-`RiskControl.is_consumer` is `true` for your `SYWrapper` and `PrincipalManager`, and
-`Router.market()` returns your pool's real topology.
+**Confirmed running, 2026-11-21: `registration_watcher.sh` is now on a real cron job against
+mainnet, every 15 minutes** (not just "proven once on testnet" as earlier drafts of this guide
+said) — so a market you create via the self-service path above is picked up automatically within
+15 minutes, no manual step or message to the contracts team needed. Once it has run against your
+market: `RiskControl.is_consumer` is `true` for your `SYWrapper` and `PrincipalManager`, and
+`Router.market()` returns your pool's real topology. (You can still deploy your own instance of
+this script against your own test market if you want full control over timing instead of waiting
+on the shared schedule — it needs no Principal key, only the admin credentials for whichever
+`RiskControl`/`Router`/`Permissioning` you point it at.)
 
 ### 3.6 Grant yourself (or any test wallet) permission to actually trade
 

@@ -773,7 +773,29 @@ smoke-tested on Stellar mainnet.**
 
 ## 6. Self-service tester tooling
 
-*(filled in once built)*
+Built and proven on testnet (`scripts/self_service/README.md`), and used for real on mainnet
+throughout this document (every mock asset in §3/§5/§12 was issued and every v2 market created
+with these same scripts, `NETWORK=mainnet`). **`registration_watcher.sh` is now running
+continuously against mainnet**, installed as a real cron job on 2026-11-21:
+
+```
+*/15 * * * * cd /home/mohamed/principal/scripts/self_service && ... ./registration_watcher.sh
+```
+
+(full command, including the shared-infra IDs it's pointed at, in `crontab -l` on the operator's
+machine) — state and audit log at `scripts/self_service/watcher-state.mainnet.json` and
+`watcher-log.mainnet.jsonl` (both gitignored; separate from the one-time testnet proof's
+`watcher-state.json`/`watcher-log.jsonl`, which stay committed as historical record and must not
+be reused for mainnet's live cursor). First real run, 2026-11-21: 0 `mkt_new` events found (no
+self-service tester market exists yet) — confirmed working against real mainnet state, not just
+simulated.
+
+This means a third party (e.g. the dApp team, for their own independent testing — see
+`MAINNET_DAPP_INTEGRATION_GUIDE.md` §3) can now deploy their own mock asset and market on mainnet
+through `create_mock_asset.sh` + `create_market_via_factory.sh` (`SKIP_WIRING=1`), with **no
+Principal key required for either step**, and have the admin-gated wiring
+(`RiskControl.add_consumer` ×2, `Router.register_market`) happen automatically within 15 minutes,
+with no message to the contracts team needed.
 
 ## 7. Oracle relay / alerting backend
 
@@ -852,13 +874,12 @@ Next steps, in priority order:
    - Never re-run `create_tokens` with a fresh random salt to "retry" after a partial failure —
      check the factory's own events (`mkt_tok`/`mkt_eng`/`mkt_new`) for an already-created market
      at that salt first; salts are caller-chosen and deterministic, so recovery is always possible.
-3. Self-service tester tooling (`scripts/self_service/`) and the oracle relay
-   (`services/oracle-relay/relay.sh`) are already built and proven on testnet, and the manual
-   grant/mint/deposit/mint/settle/redeem steps they automate are now also proven by hand on
-   mainnet across all five assets (§5's testing tables) — both apply directly to this deployment
-   now; neither needs to be rebuilt, only pointed at the mainnet contract IDs in §4/§5 and run on
-   a real schedule (the oracle going stale repeatedly across every market's creation this
-   deployment is a direct, repeated demonstration of why the relay needs to actually run).
+3. ~~Self-service tester tooling needs a real schedule~~ — **`registration_watcher.sh` done,
+   2026-11-21** (§6: real cron, every 15 minutes, confirmed running against mainnet). **The oracle
+   relay (`services/oracle-relay/relay.sh`) still does not** — it remains built and proven on
+   testnet only; §12's incident (the oracle going stale repeatedly, independent of the scale bug)
+   is a second, separate, direct demonstration of why it needs to actually run on mainnet too,
+   not just the self-service watcher.
 4. Reproducible-build sign-off and dApp handoff (§8/§9) can now reference six real, live,
    fully-exercised mainnet markets' addresses across five distinct mock assets.
 5. **Permission-gap finding to carry forward**: a human trading account needs its own
