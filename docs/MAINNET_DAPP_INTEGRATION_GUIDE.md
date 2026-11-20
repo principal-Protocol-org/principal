@@ -1,10 +1,18 @@
 # dApp Integration Guide — Switching to Stellar Mainnet
 
+> **Update, 2026-11-21 — if you already pulled `deployments/mainnet-dapp-manifest.json` before
+> this date, re-pull it now.** Your own team's live checks caught a real, permanent bug this guide
+> had not: the USTRY/GILTS/CETES/XAUM `OracleAdapter`s were off by 10x (and three had no feed
+> wired at all). They have been redeployed end to end ("v2") with new contract addresses — the
+> manifest file in this repo is already updated; the copy you have is not. Full incident writeup:
+> `MAINNET_DEPLOYMENT_EVIDENCE.md` §12. Thank you for catching this.
+
 **Audience:** the Principal dApp team (`principal-Protocol-org/dapp`). **Written by:** the
 contracts/deployment side, as a senior-auditor-grade handoff — every claim below is backed by a
 real, verified Stellar mainnet transaction, not an assumption. **Status of mainnet contracts as of
-2026-11-18:** five mock assets, six markets, all live, wired, compliance-granted, and
-real-transaction tested. Zero fabricated data — see
+2026-11-21:** five mock assets, six markets, all live, wired, compliance-granted, and
+real-transaction tested (four of the five assets are on their "v2" contracts — see the update
+notice above). Zero fabricated data — see
 [`docs/MAINNET_DEPLOYMENT_EVIDENCE.md`](MAINNET_DEPLOYMENT_EVIDENCE.md) for the full narrative and
 [`docs/MAINNET_TRANSACTION_LEDGER.md`](MAINNET_TRANSACTION_LEDGER.md) for the complete,
 Horizon-cross-checked list of all 276 real transactions behind this deployment, and
@@ -219,15 +227,18 @@ Every address below is live on Stellar Public mainnet right now, independently v
 
 **Per-asset `OracleAdapter`** — one instance *per mock asset* (not shared — see
 `MAINNET_DEPLOYMENT_EVIDENCE.md` §4 for why), each tracking the real RWA's price via the same
-shared RedStone SEP-40 feed (`CBMGLKUQZVSAIL5CPDDAWSUY7MAKXISHMOZEVLMBUWBMFGHRJSR4WYRF`):
+shared RedStone SEP-40 feed (`CBMGLKUQZVSAIL5CPDDAWSUY7MAKXISHMOZEVLMBUWBMFGHRJSR4WYRF`).
+**USTRY/GILTS/CETES/XAUM are "v2" instances, redeployed 2026-11-21 — see the update notice at the
+top of this guide and `MAINNET_DEPLOYMENT_EVIDENCE.md` §12 before using any address you may have
+cached from before that date:**
 
 | Asset | `OracleAdapter` | Tracks real price of |
 |---|---|---|
 | MOCKUSDY | `CCKXG4HSVH57AQTYJDNNXHQBCGNH6KRFNMCMATTMYFUX2TDQ7GD5K7IT` | USDY (Ondo) |
-| MOCKUSTRY | `CBHAWS6B4YCNRLYRP2HUP77P4IRP3PZYPSYVPV4OMZNU2ZNKSAQQ2GXU` | USTRY |
-| MOCKGILTS | `CDZS34JFW7D24MONUKQDVJZKGBPOMIEVEWQQAHTEG3LYR2VFI4XNFNSZ` | GILTS |
-| MOCKCETES | `CBJK32UY5UYP764MWWOVQ37NGZNVU5CKPGKN24RW4PV64MG3VGDBPBWC` | CETES |
-| MOCKXAUM | `CCLB6RTJOG24TMIZ74IMVEMBLKYCD6ERDPBNL5IB4L6AGQCKOKGR6IS7` | XAUM (Matrixdock Gold) |
+| MOCKUSTRY v2 | `CBTW7CU46PMCPKZQ3VX6OBELOEC7HHQXJSAX535VW3EK34MVS7UWPFR7` | USTRY |
+| MOCKGILTS v2 | `CD22HNREJHKTATZMFKALCTHJVKC35MHO2SAUSTG4M6PWLJZPS724J6X7` | GILTS |
+| MOCKCETES v2 | `CBK2GO7UPMES2B7LZYZXNO3JP5JPNIIE74E4PUUJGSZZKD4FZ47QMUZK` | CETES |
+| MOCKXAUM v2 | `CDFI7IXUTGLV2EQE3VCHPCYOEBX2LSLXDKNU7ELJFZH726VDF73SOPFD` | XAUM (Matrixdock Gold) |
 
 **Markets** — five mock assets, six markets (MOCKUSDY has two: a 90-day one and a since-matured
 30-minute flow-test one). Full per-market contract addresses (SY/PT/YT/Config/Manager/Pool/Escrow)
@@ -238,10 +249,14 @@ not repeated here to avoid a second place these can drift out of sync.
 |---|---|---|---|
 | MOCKUSDY 90-day | `CDQYZUYQF7TRQ7BX6YBSCU3HLWBDS3E2VSP7AUE7C3E2D2U2IBBQOBGF` | `1802719669` | **open**, AMM liquidity seeded, real swap proven |
 | MOCKUSDY 30-min | same SAC | `1794946266` | **matured and fully redeemed** — read-only/demo value now, like the old testnet market this guide's structure mirrors |
-| MOCKUSTRY 90-day | `CDHQ4B6U3D5O6PGAWAO22K45ASD2BAGD25IHITRIIUHXA3GBABZTYBA5` | `1802724716` | **open** |
-| MOCKGILTS 90-day | `CBBF4H2ZNMJKULJEOMZDMVQP27LD7HRTHEHETD647P3SCBTAWRGVJG4O` | `1802727891` | **open** |
-| MOCKCETES 90-day | `CBVSL37VLX4Z362AETPZVM65EZGETM2ROT7K56MIURXJU4LZDIJ4IATP` | `1802728835` | **open** |
-| MOCKXAUM 90-day | `CBAJVVTBBR6XXAK4N32WHVOALDRMQ27YMQNS6PBLGNWJIBFWOYS6AVVD` | `1802729865` | **open** |
+| MOCKUSTRY v2 90-day | `CDHQ4B6U3D5O6PGAWAO22K45ASD2BAGD25IHITRIIUHXA3GBABZTYBA5` | `1802984619` | **open**, AMM liquidity seeded, real swap proven |
+| MOCKGILTS v2 90-day | `CBBF4H2ZNMJKULJEOMZDMVQP27LD7HRTHEHETD647P3SCBTAWRGVJG4O` | `1802986133` | **open**, AMM liquidity seeded, real swap proven |
+| MOCKCETES v2 90-day | `CBVSL37VLX4Z362AETPZVM65EZGETM2ROT7K56MIURXJU4LZDIJ4IATP` | `1802986873` | **open**, AMM liquidity seeded, real swap proven |
+| MOCKXAUM v2 90-day | `CBAJVVTBBR6XXAK4N32WHVOALDRMQ27YMQNS6PBLGNWJIBFWOYS6AVVD` | `1802987509` | **open**, AMM liquidity seeded, real swap proven |
+
+The v1 USTRY/GILTS/CETES/XAUM markets (different maturities, different per-market contract
+addresses, same underlying SACs) are **abandoned — do not route traffic at them.** See
+`MAINNET_DEPLOYMENT_EVIDENCE.md` §12 if you need their old addresses for the historical record.
 
 The 30-minute MOCKUSDY market is included in the manifest's lineage but **deliberately left out**
 of `deployments/mainnet-dapp-manifest.json`'s `markets[]` array — same reasoning your own
@@ -332,10 +347,16 @@ Every one of those `*_WASM` hashes is **already installed on mainnet** — this 
 (cheap: confirmed via `simulateTransaction`, re-uploading an already-installed hash costs
 **0.0120674 XLM**, not a fresh ~50-110 XLM upload). `SKIP_WIRING=1` because you don't hold
 `RiskControl`/`Router` admin rights — that's `registration_watcher.sh`'s job next.
-**Real example, the exact same three calls, MOCKUSTRY's actual market creation:**
+**Real example, the exact same three calls, MOCKUSTRY's (v1, now-abandoned) market creation —
+still a real, successful, representative response shape, even though that specific market was
+later replaced per §12 of the evidence doc:**
 `create_tokens` tx [`eaeecc87878b8d289e8036e9eacffc234d83e5bc5391184988ec2e09621ecadb`](https://stellar.expert/explorer/public/tx/eaeecc87878b8d289e8036e9eacffc234d83e5bc5391184988ec2e09621ecadb),
 `create_engine` tx [`c77e3f1567388ac98882d69bcade313671d7a8155c3fbf8f1ade3afee80e1b09`](https://stellar.expert/explorer/public/tx/c77e3f1567388ac98882d69bcade313671d7a8155c3fbf8f1ade3afee80e1b09),
 `create_pool_and_escrow` tx [`8f02b4f8a60d3efe9296f6b86b6ce4082b07ff6a8fc09db4e53883bd18ed0535`](https://stellar.expert/explorer/public/tx/8f02b4f8a60d3efe9296f6b86b6ce4082b07ff6a8fc09db4e53883bd18ed0535).
+(A clean v2 equivalent, correctly oracle-wired from the start: GILTS v2's three calls,
+`887db2b0f0611638b1efc7c37a9da82f610c45806e3d70b2c4a2b625ece741b9` /
+`69270210810abce59d37e4afb0e1e4b2e8ab3a47051006ae0d1d71626284bf30` /
+`cb76ae4ea7b96e8807c105a3ebaa2be1f1b5d024b8556466bcaf7b5e55c4699a`.)
 
 ### 3.5 Wait for registration
 
@@ -417,7 +438,11 @@ from the dApp's own transaction-building code.
 Every hash below is independently verified on Horizon as `successful: true`
 (see `docs/MAINNET_TRANSACTION_LEDGER.md` for the complete cross-check). Use these to validate your
 dApp's transaction-building and result-parsing code against real mainnet responses before trusting
-it with a real user.
+it with a real user. **The first nine rows below are from the original (now-abandoned, per §12 of
+the evidence doc) USTRY v1 and MOCKUSDY markets** — still real, still valid as examples of what a
+successful response looks like (the bug was in one oracle genesis value, not in how any of these
+calls behave), but don't treat their contract addresses as currently live. The last four rows are
+from the corrected v2 markets.
 
 | Flow | Contract.function | Real tx hash | What happened |
 |---|---|---|---|
@@ -431,7 +456,11 @@ it with a real user.
 | `PrincipalManager.redeem` | post-maturity redemption | [`b3a0f1a55fea5a959535590181250951ac0e78e44fbd26220ffe708a1b9c8e04`](https://stellar.expert/explorer/public/tx/b3a0f1a55fea5a959535590181250951ac0e78e44fbd26220ffe708a1b9c8e04) | 5,764.487814 PT + YT → 499.7499999 underlying |
 | `Permissioning.grant_account` | account-level compliance grant | [`358bb2753923e9413a78907df7a5fb08af1f5b2adec8f5c400a0b22f7d3369c9`](https://stellar.expert/explorer/public/tx/358bb2753923e9413a78907df7a5fb08af1f5b2adec8f5c400a0b22f7d3369c9) | a test wallet granted account-level standing |
 | `Permissioning.grant_asset` | per-asset (PT/YT) compliance grant | [`9db32a368b5c14f1862bbd8268d5c060ba177f28747361473a69bddac6e6822d`](https://stellar.expert/explorer/public/tx/9db32a368b5c14f1862bbd8268d5c060ba177f28747361473a69bddac6e6822d) | the same wallet granted PT-specific standing |
-| `MarketFactory.create_tokens` (phase 1/3 of market creation) | | [`eaeecc87878b8d289e8036e9eacffc234d83e5bc5391184988ec2e09621ecadb`](https://stellar.expert/explorer/public/tx/eaeecc87878b8d289e8036e9eacffc234d83e5bc5391184988ec2e09621ecadb) | deploys SY/PT/YT atomically |
+| `MarketFactory.create_tokens` (v1, abandoned) | | [`eaeecc87878b8d289e8036e9eacffc234d83e5bc5391184988ec2e09621ecadb`](https://stellar.expert/explorer/public/tx/eaeecc87878b8d289e8036e9eacffc234d83e5bc5391184988ec2e09621ecadb) | deploys SY/PT/YT atomically |
+| `OracleAdapter.set_feed_source` + correctly-scaled genesis (v2, GILTS) | | [`e0dad98e3b0c78a68224d046d2c9aa9e3246dd8fb79e157ecd517c4a733c1d28`](https://stellar.expert/explorer/public/tx/e0dad98e3b0c78a68224d046d2c9aa9e3246dd8fb79e157ecd517c4a733c1d28) / [`e45355779815189cb115fdab763e5426eefa76c031936594b4ac84d526dc7f08`](https://stellar.expert/explorer/public/tx/e45355779815189cb115fdab763e5426eefa76c031936594b4ac84d526dc7f08) | real feed wired, value `14065740` (correctly ÷10 from the feed's 8-decimal `140657400`) |
+| `MarketFactory.create_tokens` (v2, GILTS) | | [`887db2b0f0611638b1efc7c37a9da82f610c45806e3d70b2c4a2b625ece741b9`](https://stellar.expert/explorer/public/tx/887db2b0f0611638b1efc7c37a9da82f610c45806e3d70b2c4a2b625ece741b9) | deploys SY/PT/YT atomically, this time with a correct oracle from the start |
+| `MarketPool.add_liquidity` (v2, GILTS) | | [`f1896a51206eb982702f206bc4f009bb62174e5eb5804348a34f954d952c0c75`](https://stellar.expert/explorer/public/tx/f1896a51206eb982702f206bc4f009bb62174e5eb5804348a34f954d952c0c75) | 180 PT + 125 SY → 149.9999 LP — note the PT:SY ratio differs from USTRY's because it's sized against GILTS's own (higher) oracle rate, see §12's finding on `InvalidInitialRatio` |
+| `MarketPool.swap_pt_for_sy` (v2, GILTS) | | [`329489f7da68539005adb4ce01dd74c6a97b138e35e98089f6f9f42c4418512e`](https://stellar.expert/explorer/public/tx/329489f7da68539005adb4ce01dd74c6a97b138e35e98089f6f9f42c4418512e) | 1 PT → 0.7082269 SY |
 
 For the full set — every compliance grant, every funding transfer, every retry, with real
 timestamps — see `docs/MAINNET_TRANSACTION_LEDGER.md` (276 entries, independently reconciled
@@ -488,12 +517,13 @@ real mainnet *support*:
       mainnet by this deployment (every real mainnet flow in §3/§4 was single-step), but mainnet's
       real trading activity is exactly the condition that would trigger it.
 
-**Open items from the contracts side** (tracked in `MAINNET_DEPLOYMENT_EVIDENCE.md` §10, not
+**Open items from the contracts side** (tracked in `MAINNET_DEPLOYMENT_EVIDENCE.md` §10/§12, not
 blocking the dApp code change itself):
 
-- [ ] `principal-mainnet-treasury` still needs a classic-asset trustline to MOCKUSTRY, MOCKGILTS
-      and MOCKCETES before any UI flow that pays it directly in those classic assets (as opposed to
-      SY shares via `claim_protocol_fees`) is exercised.
+- [x] ~~`principal-mainnet-treasury` trustline gap~~ — closed 2026-11-21. All five classic-asset
+      trustlines (MOCKUSDY, MOCKUSTRY, MOCKGILTS, MOCKCETES, MOCKXAUM) now exist.
+- [ ] `accessContact` — Principal still needs to name a contact and determine where it belongs;
+      no matching field was found anywhere in this repo's code, schema, or migrations.
 
 ---
 

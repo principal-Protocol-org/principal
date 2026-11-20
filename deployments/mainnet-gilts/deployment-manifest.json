@@ -19,13 +19,14 @@
     "decimals": 7
   },
   "market": {
-    "market_id": "mainnet-CBBF4H-CDXXRJJS",
-    "maturity": 1802727891,
+    "market_id": "mainnet-CBBF4H-CBYNXSR3",
+    "maturity": 1802986133,
     "tokenization_fee_bps": 5,
     "yt_fee_bps": 1000,
     "swap_fee_tier_bps": 10,
     "protocol_share_bps": 2000,
-    "salt": "485b2d22039af0f6ddcc7dddd63e470aca222aeed8c4f537856d7e546f17713d"
+    "salt": "b46cb59b3dddb3c5c4a0309148db8c24eb6c4c3065b62d038f3c2a17e9bf49a4",
+    "note": "v2 market -- replaces v1 (see deployment-manifest-v1-broken.json), whose OracleAdapter had a permanent 10x-too-high value and no feed_source configured. v1 contracts are abandoned."
   },
   "contracts": {
     "permissioning": {
@@ -61,57 +62,57 @@
       "admin_address": "GDZN5WVOUBRTZKADUULRXJOGVGNK4WWXJPSALTVOORLSU5NFOZ2P5NCB"
     },
     "oracle_adapter": {
-      "id": "CDZS34JFW7D24MONUKQDVJZKGBPOMIEVEWQQAHTEG3LYR2VFI4XNFNSZ",
+      "id": "CD22HNREJHKTATZMFKALCTHJVKC35MHO2SAUSTG4M6PWLJZPS724J6X7",
       "wasm_path": "target/wasm32v1-none/release/principal_oracle_adapter.wasm",
       "wasm_sha256": "8581bbba82bb57f5c5c9c00adf98b1691ad20821840e55a67ad8d7ecace0c1b0",
-      "deploy_tx": "60143de045ced4f69741ad4ca4133d6aa387c6c677aba5383f404e73deb274ff",
-      "init_tx": "0a3febe495a1e2656e097a8a498e04ba05780302090f71342fe72706c15f26bd",
+      "deploy_tx": "1bb1e9c4f084fa3e5542f3cdcf1613fdcebd14688a41a34e22ba2a935ceb3971",
+      "init_tx": "2a72f9ef797288936fa4f357b0897eb6274e0bb48ad1dd50ad1ee2d5fcfa64d9",
       "admin_address": "GDZN5WVOUBRTZKADUULRXJOGVGNK4WWXJPSALTVOORLSU5NFOZ2P5NCB"
     },
     "sy_wrapper": {
-      "id": "CDXXRJJS2HFJBYF344ZGIC4DDRC7HAM4TJBTOM3ISFWE42KNRVAM3ZBQ",
+      "id": "CBYNXSR3C76RF77HM6M25X3XZMYQAVCU5BHZCU2LLQIP2XLKUU5TJMP4",
       "wasm_sha256": "be4b12cf3c16461b7e71fa225ed2363aba62bdc42c1ea5c08c98d7ede6a27c9a",
       "wasm_path": "target/wasm32v1-none/release/principal_sy_wrapper.wasm"
     },
     "pt_token": {
-      "id": "CCHWW2AZ7JJQKMVNB2XFJ4SKZCCMSANLVBUZLGRCT46SVENVWD4B4LAN",
+      "id": "CBI74V5Q4HHRAKQW7KEER4GCSANPYRDWKIBO3ALZMMSVIMW3DW3NPHUY",
       "wasm_sha256": "db025340887ef9d92922e2444da24edab5fec125460e9adc373a5f77b26578b2",
       "wasm_path": "target/wasm32v1-none/release/principal_pt_token.wasm"
     },
     "yt_token": {
-      "id": "CADNGBDYZIRG2L6PPRSER6DSMIJFFAAIV25KE4F5KZIO7QGAF4LLIGXZ",
+      "id": "CBHMXXPLQHP2FSHMEJVKHBKECB755WVQFYWG5ZBBCLMNHGLTIGAPBP32",
       "wasm_sha256": "c83a2a8d2a4a79ff5348675581a27d48e52a920d83dc887672840d4a79c02654",
       "wasm_path": "target/wasm32v1-none/release/principal_yt_token.wasm"
     },
     "market_config": {
-      "id": "CCG7TK57WPPBJ2OP3YJLCGK6HOANGUPNVFAFBXJHJSWNRSDOKKZFH2VO",
+      "id": "CA4ZQ7DEC73AGG2UTCCM4TXLGOUZPN3QCJZ6QMV677CYT54C67ZEHOON",
       "wasm_sha256": "11b0cbdf10a8d204fcb568c54529801747feac05208c5bcbfaefd822ad0c79a8",
       "wasm_path": "target/wasm32v1-none/release/principal_market_config.wasm"
     },
     "principal_manager": {
-      "id": "CBOJIJBR477VTPSE6VB7W4ZEQZKNJ3NEVI4FPORAEC4OMXQBIGLBMUJG",
+      "id": "CCDSONMQBNS4LNKKUBLG5XLNDNNDU4PQPWKJK2KQCVQHJ3AW5GNN7GBS",
       "wasm_sha256": "e2d04b45b867d0dbc41660ac0d97d3e705005ddfb10350bb030d25b1aff86115",
       "wasm_path": "target/wasm32v1-none/release/principal_manager.wasm"
     },
     "market_pool": {
-      "id": "CDWVSTG3UZXZOEF2FGKJXFZFGEYEO3HUH7IFZNHOEFSQYZ575GAUYQH4",
+      "id": "CD5ADNE76FY2D722LMQJFD7AG74UU3OYQVXSNQNI33EYPSEEUZY4QILK",
       "wasm_sha256": "52285a25bbf372d0e5d22ba565b76af6a7e832422df83b6a4809de8adf3aa112",
       "wasm_path": "target/wasm32v1-none/release/principal_market_pool.wasm"
     },
     "recovery_escrow": {
-      "id": "CAOYAMW4FFHLL7BYBMDLLWIN4LIRZFZA2Z4ZUNDBYCROC2U7JJMC2CUK",
+      "id": "CAI25QPLB7KYSRNXJHCXAZVHI36PAEZJET5PJJKC326KVDDGUURUKL7N",
       "wasm_sha256": "dadea71fcfb84adcfb4691f472551f490cf440c5aaae5c6b5e5d4bb6f61441e8",
       "wasm_path": "target/wasm32v1-none/release/principal_recovery_escrow.wasm"
     }
   },
   "wiring": {
     "router_registered_pool": true,
-    "pt_minter": "CBOJIJBR477VTPSE6VB7W4ZEQZKNJ3NEVI4FPORAEC4OMXQBIGLBMUJG",
-    "yt_minter": "CBOJIJBR477VTPSE6VB7W4ZEQZKNJ3NEVI4FPORAEC4OMXQBIGLBMUJG",
-    "recovery_escrow": "CAOYAMW4FFHLL7BYBMDLLWIN4LIRZFZA2Z4ZUNDBYCROC2U7JJMC2CUK",
+    "pt_minter": "CCDSONMQBNS4LNKKUBLG5XLNDNNDU4PQPWKJK2KQCVQHJ3AW5GNN7GBS",
+    "yt_minter": "CCDSONMQBNS4LNKKUBLG5XLNDNNDU4PQPWKJK2KQCVQHJ3AW5GNN7GBS",
+    "recovery_escrow": "CAI25QPLB7KYSRNXJHCXAZVHI36PAEZJET5PJJKC326KVDDGUURUKL7N",
     "risk_consumers": [
-      "CDXXRJJS2HFJBYF344ZGIC4DDRC7HAM4TJBTOM3ISFWE42KNRVAM3ZBQ",
-      "CBOJIJBR477VTPSE6VB7W4ZEQZKNJ3NEVI4FPORAEC4OMXQBIGLBMUJG"
+      "CBYNXSR3C76RF77HM6M25X3XZMYQAVCU5BHZCU2LLQIP2XLKUU5TJMP4",
+      "CCDSONMQBNS4LNKKUBLG5XLNDNNDU4PQPWKJK2KQCVQHJ3AW5GNN7GBS"
     ]
   },
   "transactions": [
@@ -169,6 +170,91 @@
       "step": "compliance:batch_grants(SY/Manager/Pool/Escrow/treasury/test-a account+asset)",
       "tx": "see background task bowdt6zp4 output -- all Success",
       "at": "2026-11-18T00:03:00Z"
+    },
+    {
+      "step": "v2:deploy:oracle_adapter",
+      "tx": "1bb1e9c4f084fa3e5542f3cdcf1613fdcebd14688a41a34e22ba2a935ceb3971",
+      "at": "2026-11-20T"
+    },
+    {
+      "step": "v2:init:oracle_adapter",
+      "tx": "2a72f9ef797288936fa4f357b0897eb6274e0bb48ad1dd50ad1ee2d5fcfa64d9",
+      "at": "2026-11-20T"
+    },
+    {
+      "step": "v2:oracle_adapter:set_feed_source",
+      "tx": "e0dad98e3b0c78a68224d046d2c9aa9e3246dd8fb79e157ecd517c4a733c1d28",
+      "at": "2026-11-20T"
+    },
+    {
+      "step": "v2:oracle_adapter:set_sources",
+      "tx": "bb9234ee5e435fa82bdb9ae6f5c4094ce4534b24b96ba717a94329dde7c35b69",
+      "at": "2026-11-20T"
+    },
+    {
+      "step": "v2:oracle_adapter:set_reference_value(correctly_scaled)",
+      "tx": "e45355779815189cb115fdab763e5426eefa76c031936594b4ac84d526dc7f08",
+      "at": "2026-11-20T"
+    },
+    {
+      "step": "v2:factory.create_tokens",
+      "tx": "887db2b0f0611638b1efc7c37a9da82f610c45806e3d70b2c4a2b625ece741b9",
+      "at": "2026-11-20T"
+    },
+    {
+      "step": "v2:factory.create_engine",
+      "tx": "69270210810abce59d37e4afb0e1e4b2e8ab3a47051006ae0d1d71626284bf30",
+      "at": "2026-11-20T"
+    },
+    {
+      "step": "v2:factory.create_pool_and_escrow",
+      "tx": "cb76ae4ea7b96e8807c105a3ebaa2be1f1b5d024b8556466bcaf7b5e55c4699a",
+      "at": "2026-11-20T"
+    },
+    {
+      "step": "v2:risk_control.add_consumer(SYWrapper)",
+      "tx": "ca15bf26a2ace0e28fa07f2f80496a2353b2ca877fecccd5a95fa98eebceafa1",
+      "at": "2026-11-20T"
+    },
+    {
+      "step": "v2:risk_control.add_consumer(PrincipalManager)",
+      "tx": "650a2f87915063cf1852143edf083193b844c90d00ca955bad8b9c53d042f9b9",
+      "at": "2026-11-20T"
+    },
+    {
+      "step": "v2:router.register_market",
+      "tx": "29aecf950cceb0c1361900d97c56c8bb39d3f9f821029c31b15a0b917663836e",
+      "at": "2026-11-20T"
+    },
+    {
+      "step": "v2:treasury:change_trust(MOCKGILTS)_gap_closed",
+      "tx": "e23b4057ae7b6f0678329c460ec530663d597b5e4d12d14f81913cfde48e5154",
+      "at": "2026-11-20T"
+    },
+    {
+      "step": "v2:compliance:batch_grants",
+      "tx": "see background task b8szejglq output plus pool retry -- all Success",
+      "at": "2026-11-20T"
+    },
+    {
+      "step": "v2:testing:deposit(500 MOCKGILTS)",
+      "tx": "09467f11b8d2003202e13018c8b49e0be5351dcc1e84c710fb5d5da067940c23",
+      "at": "2026-11-20T"
+    },
+    {
+      "step": "v2:testing:mint(250 SY -> PT/YT)",
+      "tx": "3e45a960cd22871bae106573ea455e2adae3ef6d576c1dd244ea21d8b2cd6c14",
+      "at": "2026-11-20T"
+    },
+    {
+      "step": "v2:testing:pool.add_liquidity(180 PT, 125 SY)",
+      "tx": "f1896a51206eb982702f206bc4f009bb62174e5eb5804348a34f954d952c0c75",
+      "at": "2026-11-20T"
+    },
+    {
+      "step": "v2:testing:pool.swap_pt_for_sy(1 PT -> 0.7082269 SY)",
+      "tx": "329489f7da68539005adb4ce01dd74c6a97b138e35e98089f6f9f42c4418512e",
+      "at": "2026-11-20T"
     }
   ]
 }

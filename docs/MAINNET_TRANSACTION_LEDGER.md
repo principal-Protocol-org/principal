@@ -1,5 +1,14 @@
 # Mainnet Transaction Ledger — Tranche 3 (complete reconciliation)
 
+> **Not re-generated after 2026-11-18.** The oracle-bug incident of 2026-11-21
+> (`MAINNET_DEPLOYMENT_EVIDENCE.md` §12) added real transactions on `mainnet-admin`,
+> `mainnet-ustry-issuer`, `mainnet-gilts-issuer`, `mainnet-cetes-issuer`, `mainnet-xaum-issuer` and
+> `mainnet-test-a` that are **not** in the 276-row table below — a full Horizon re-audit was not
+> re-run for that incident; every transaction it produced is individually listed instead in each
+> affected asset's `deployments/mainnet-<asset>/deployment-manifest.json` `transactions[]` array
+> (steps prefixed `v2:`) and in §12 itself. Treat this file as authoritative only through
+> 2026-11-18; treat the manifests and §12 as authoritative for everything after.
+
 Generated 2026-11-18 by cross-referencing the real on-chain transaction history of every
 account used in this deployment (`mainnet-admin`, `mainnet-mockusdy-issuer`,
 `mainnet-ustry-issuer`, `mainnet-gilts-issuer`, `mainnet-cetes-issuer`, `mainnet-xaum-issuer`,

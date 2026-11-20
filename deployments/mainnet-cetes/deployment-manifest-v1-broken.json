@@ -1,0 +1,179 @@
+{
+  "schema_version": "1.0",
+  "network": "mainnet",
+  "network_passphrase": "Public Global Stellar Network ; September 2015",
+  "rpc_url": "https://soroban-rpc.mainnet.stellar.gateway.fm",
+  "horizon_url": "https://horizon.stellar.org",
+  "source_commit": "3af938853e5818aa8d56bd35670b9a19cfa55a78",
+  "built_at": "2026-11-17T15:54:11Z",
+  "wasm_target": "wasm32v1-none",
+  "git_tree_dirty": true,
+  "oracle_abi_version": 2,
+  "rustc_version": "rustc 1.94.1 (e408947bf 2026-03-25)",
+  "stellar_cli_version": "stellar 26.0.0 (60f7458e7ecffddf2f2d91dc6d0d2db4fab03ecc)",
+  "soroban_sdk_version": "26.0.1",
+  "release_tag": "",
+  "underlying": {
+    "kind": "sac",
+    "sac": "CBVSL37VLX4Z362AETPZVM65EZGETM2ROT7K56MIURXJU4LZDIJ4IATP",
+    "decimals": 7
+  },
+  "market": {
+    "market_id": "mainnet-CBVSL3-CCSETNMX",
+    "maturity": 1802728835,
+    "tokenization_fee_bps": 5,
+    "yt_fee_bps": 1000,
+    "swap_fee_tier_bps": 10,
+    "protocol_share_bps": 2000,
+    "salt": "15e101c4013b89501123c1d5d562e197438f3cc35518a74037e02a0c14fff35e"
+  },
+  "contracts": {
+    "permissioning": {
+      "id": "CBCWU57AILKFDOYQAESFRPH57Q6UK66E7RBYV4ICZHNNGWIWFAHVRTXJ",
+      "wasm_path": "target/wasm32v1-none/release/principal_permissioning.wasm",
+      "wasm_sha256": "4437468dbbda6d86a115f188de877135b0b5a400b69ad7e9444cf269c54f969c",
+      "deploy_tx": "e061c1f781c76f14277c92c539b8ad585ae2f5c392d0c8f99fdcef4f58003f37",
+      "init_tx": "d92625d1c63ae551d716e70aa1fcf1ffb8ca454a2392a8402f571f626608cd64",
+      "admin_address": "GDZN5WVOUBRTZKADUULRXJOGVGNK4WWXJPSALTVOORLSU5NFOZ2P5NCB"
+    },
+    "risk_control": {
+      "id": "CBHCRRLWHS7KRQNAXYY3OMNDTSXDNJKCDK6KPUUJPFGDBSN76JEWWQ5G",
+      "wasm_path": "target/wasm32v1-none/release/principal_risk_control.wasm",
+      "wasm_sha256": "ac75508d24c5457de7db1106bf8b5e9b62ea436f3dfd1a309fda5138110c2526",
+      "deploy_tx": "05e79d4da2dc06e7a25e0b381923e886926802ecb1a09d2ea991856a0b9e9b40",
+      "init_tx": "f4274c9a83bb0c2653a7685fbae310877ad3de3fa44123c7fc0911bf700691c3",
+      "admin_address": "GDZN5WVOUBRTZKADUULRXJOGVGNK4WWXJPSALTVOORLSU5NFOZ2P5NCB"
+    },
+    "router": {
+      "id": "CCM4QQUKTD2CUTRSNNI6OO4JHYEF7MHKBMKSM5JYJNFLKSTAZBQD7QF5",
+      "wasm_path": "target/wasm32v1-none/release/principal_router.wasm",
+      "wasm_sha256": "2a0997317651edb0f7e2bd753570b03a88462aa6d216c14b06ebec246bb3c1c2",
+      "deploy_tx": "cc24f84c48a703a68f0f16373250a1a4ddf388df2cb88494168144812f620921",
+      "init_tx": "4cc9172b0a24c4f566bee43193bf98a613e6f65422e0f7139e61128d3d6614dc",
+      "admin_address": "GDZN5WVOUBRTZKADUULRXJOGVGNK4WWXJPSALTVOORLSU5NFOZ2P5NCB"
+    },
+    "market_factory": {
+      "id": "CDYH7UV24XS7G7MDRTBJUS4PJNKKUXTLUUTL67MR5CYJAXSPPHNWS65T",
+      "wasm_path": "target/wasm32v1-none/release/principal_market_factory.wasm",
+      "wasm_sha256": "6c21fc0e78f3064f67ae30924b8f9ca0223fbb61a20ac640cceca7b152456759",
+      "deploy_tx": "7ab8f3ca627588608ca54d70a7232ecffa0714e3c9294f09b90f284331beb7af",
+      "init_tx": "",
+      "admin_address": "GDZN5WVOUBRTZKADUULRXJOGVGNK4WWXJPSALTVOORLSU5NFOZ2P5NCB"
+    },
+    "oracle_adapter": {
+      "id": "CBJK32UY5UYP764MWWOVQ37NGZNVU5CKPGKN24RW4PV64MG3VGDBPBWC",
+      "wasm_path": "target/wasm32v1-none/release/principal_oracle_adapter.wasm",
+      "wasm_sha256": "8581bbba82bb57f5c5c9c00adf98b1691ad20821840e55a67ad8d7ecace0c1b0",
+      "deploy_tx": "58273814dfe9e3efbdc49f493a8190ce68641ac04f341175699f1385d3678e9f",
+      "init_tx": "c179f69b9e8019c779b703b8a5ea8959368cadd51355f642c2ca9fe48c2019af",
+      "admin_address": "GDZN5WVOUBRTZKADUULRXJOGVGNK4WWXJPSALTVOORLSU5NFOZ2P5NCB"
+    },
+    "sy_wrapper": {
+      "id": "CCSETNMX4V64HGQNPM7OTRDOSJPVVJCXLL7LDHXHINPLVHMQKBEHLHOD",
+      "wasm_sha256": "be4b12cf3c16461b7e71fa225ed2363aba62bdc42c1ea5c08c98d7ede6a27c9a",
+      "wasm_path": "target/wasm32v1-none/release/principal_sy_wrapper.wasm"
+    },
+    "pt_token": {
+      "id": "CDURP3PATO5D2XEGCZCZVHNSQHD35MYJJNS2Z3GUZA5DZBMM6XWNXB3C",
+      "wasm_sha256": "db025340887ef9d92922e2444da24edab5fec125460e9adc373a5f77b26578b2",
+      "wasm_path": "target/wasm32v1-none/release/principal_pt_token.wasm"
+    },
+    "yt_token": {
+      "id": "CAVPRJG2E4XVALMYAAO6BHLVPKMV53M47YZ6WFMZCAA4GLXXYBEE5MAD",
+      "wasm_sha256": "c83a2a8d2a4a79ff5348675581a27d48e52a920d83dc887672840d4a79c02654",
+      "wasm_path": "target/wasm32v1-none/release/principal_yt_token.wasm"
+    },
+    "market_config": {
+      "id": "CBLXJEY7UNUNNPQQTCLHCLPRY37X2W7NDP4IIABZB4CT4FHBQ4DUYBPK",
+      "wasm_sha256": "11b0cbdf10a8d204fcb568c54529801747feac05208c5bcbfaefd822ad0c79a8",
+      "wasm_path": "target/wasm32v1-none/release/principal_market_config.wasm"
+    },
+    "principal_manager": {
+      "id": "CDOZH7ZRYGYQ5EATPSHTSVJOIWGN67UJNAUHK7T64CCRCMHPG2IX2ANR",
+      "wasm_sha256": "e2d04b45b867d0dbc41660ac0d97d3e705005ddfb10350bb030d25b1aff86115",
+      "wasm_path": "target/wasm32v1-none/release/principal_manager.wasm"
+    },
+    "market_pool": {
+      "id": "CCK4MLG4GMOMFSOIBR45LKXSXZRIONMPGSUERU2E6TMGL663OMKPM3TJ",
+      "wasm_sha256": "52285a25bbf372d0e5d22ba565b76af6a7e832422df83b6a4809de8adf3aa112",
+      "wasm_path": "target/wasm32v1-none/release/principal_market_pool.wasm"
+    },
+    "recovery_escrow": {
+      "id": "CCW4HQCKNG7PAPC67IBCMCCKUVDL2HBMS6BXSVRRIX4ISVTPVBDYBQGF",
+      "wasm_sha256": "dadea71fcfb84adcfb4691f472551f490cf440c5aaae5c6b5e5d4bb6f61441e8",
+      "wasm_path": "target/wasm32v1-none/release/principal_recovery_escrow.wasm"
+    }
+  },
+  "wiring": {
+    "router_registered_pool": true,
+    "pt_minter": "CDOZH7ZRYGYQ5EATPSHTSVJOIWGN67UJNAUHK7T64CCRCMHPG2IX2ANR",
+    "yt_minter": "CDOZH7ZRYGYQ5EATPSHTSVJOIWGN67UJNAUHK7T64CCRCMHPG2IX2ANR",
+    "recovery_escrow": "CCW4HQCKNG7PAPC67IBCMCCKUVDL2HBMS6BXSVRRIX4ISVTPVBDYBQGF",
+    "risk_consumers": [
+      "CCSETNMX4V64HGQNPM7OTRDOSJPVVJCXLL7LDHXHINPLVHMQKBEHLHOD",
+      "CDOZH7ZRYGYQ5EATPSHTSVJOIWGN67UJNAUHK7T64CCRCMHPG2IX2ANR"
+    ]
+  },
+  "transactions": [
+    {
+      "step": "deploy:oracle_adapter",
+      "tx": "58273814dfe9e3efbdc49f493a8190ce68641ac04f341175699f1385d3678e9f",
+      "at": "2026-11-18T00:10:00Z"
+    },
+    {
+      "step": "init:oracle_adapter",
+      "tx": "c179f69b9e8019c779b703b8a5ea8959368cadd51355f642c2ca9fe48c2019af",
+      "at": "2026-11-18T00:10:10Z"
+    },
+    {
+      "step": "oracle_adapter:set_sources",
+      "tx": "4a16b36395576955bca2613e73ca1577b0c1dadc25b0c1b16ad63c205f039eb3",
+      "at": "2026-11-18T00:10:20Z"
+    },
+    {
+      "step": "oracle_adapter:set_reference_value",
+      "tx": "d58d1321e00b415b6ad8020a32c1caec3b937b7af4cd413f68c6a06552213f2d",
+      "at": "2026-11-18T00:10:30Z"
+    },
+    {
+      "step": "factory.create_tokens",
+      "tx": "5c75aef144d7c9fa5d8a5c7f8d3ae44fb0bd2d539939da100e9f3ad53c8559dc",
+      "at": "2026-11-18T00:11:00Z"
+    },
+    {
+      "step": "factory.create_engine",
+      "tx": "ecc70bfd4a4d26c6cbec13c10e6d92ca1fa762ccedf3d65304767f9fe596eb44",
+      "at": "2026-11-18T00:11:30Z"
+    },
+    {
+      "step": "factory.create_pool_and_escrow",
+      "tx": "a1b8dfdc0bdba9eda44b5418945c084547c4ebba3e4a67dd3716793cca306329",
+      "at": "2026-11-18T00:12:00Z"
+    },
+    {
+      "step": "risk_control.add_consumer(SYWrapper)",
+      "tx": "6959a626a6ca63210118e22f75a658820273db5853238e5213805f86b301b9dd",
+      "at": "2026-11-18T00:12:30Z"
+    },
+    {
+      "step": "risk_control.add_consumer(PrincipalManager)",
+      "tx": "48d5ddeea0d1b7168e1ee4d2b38091a58651030b63ba3ea581eec8e8146406ab",
+      "at": "2026-11-18T00:12:40Z"
+    },
+    {
+      "step": "router.register_market",
+      "tx": "c39581d79b602e3847a9a62f6a1c5d24218672452d68fe0fe13d3e733b7614d7",
+      "at": "2026-11-18T00:12:50Z"
+    },
+    {
+      "step": "test-a:change_trust(MOCKCETES)",
+      "tx": "1775f1671458f62214ec0ccd130e2e649306520400c06556b0bef127ca733b46",
+      "at": "2026-11-18T00:13:00Z"
+    },
+    {
+      "step": "compliance:batch_grants(SY/Manager/Pool/Escrow/treasury/test-a account+asset)",
+      "tx": "see background task bd5axqgwq output -- all Success",
+      "at": "2026-11-18T00:13:10Z"
+    }
+  ]
+}

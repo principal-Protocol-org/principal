@@ -10,9 +10,12 @@ against Horizon), see [`docs/MAINNET_TRANSACTION_LEDGER.md`](./MAINNET_TRANSACTI
 §11 below — this document stays the narrative record of what happened and why. For every address
 on one page with no narrative, see [`docs/MAINNET_ADDRESSES.md`](./MAINNET_ADDRESSES.md).
 
-**Status (2026-11-18): All five planned mock assets (MOCKUSDY ×2 markets, MOCKUSTRY, MOCKGILTS,
+**Status (2026-11-21): All five planned mock assets (MOCKUSDY ×2 markets, MOCKUSTRY, MOCKGILTS,
 MOCKCETES, MOCKXAUM) are COMPLETE AND LIVE on mainnet, with real end-to-end transaction testing
-performed on every one of them.** Shared infrastructure (§4) and all six markets (§5) are fully
+performed on every one of them.** The USTRY/GILTS/CETES/XAUM markets described in §5 below were
+each **replaced by a "v2" redeploy on 2026-11-21 after a permanent oracle-scale bug was found in
+the originals — see §12 for the full incident and the current, correct contract addresses.**
+Shared infrastructure (§4) and all six markets (§5, superseded by §12 for four of them) are fully
 deployed, wired, compliance-granted, and independently verified (78/79 real checks pass on each —
 the one "failure" is the expected `git_tree_dirty` flag). Real mint→deposit→split→trade cycles
 were run against every market with real signatures — see §5's "Real transaction testing"
@@ -459,6 +462,10 @@ equivalent testnet proof exactly, with every step read back from real emitted co
 
 ### MOCKUSTRY market — second mock asset — **STATUS: COMPLETE AND LIVE** — 2026-11-17/18
 
+> **⚠️ Superseded 2026-11-21 — see §12.** This market's `OracleAdapter` has a permanent 10x-too-high
+> value (a scale-conversion bug, not fixable in place) and was replaced. The contracts below are
+> **abandoned**; do not route traffic at them. Use §12's MOCKUSTRY v2 addresses.
+
 First of the remaining mock assets (USTRY, GILTS, CETES, XAUM) from the original Tranche 3 plan.
 Tracks real USTRY (Ondo's tokenized short-term treasuries, per §2's RedStone feed lookup) the same
 way MOCKUSDY tracks real USDY: own classic asset + SAC, same issuer flags
@@ -544,6 +551,10 @@ for GILTS, CETES, and XAUM to follow the same pattern.
 
 ### MOCKGILTS market — third mock asset — **STATUS: COMPLETE AND LIVE** — 2026-11-18
 
+> **⚠️ Superseded 2026-11-21 — see §12.** This market's `OracleAdapter` was never wired to a feed
+> and its genesis value was 10x too high (not fixable in place) — replaced. The contracts below
+> are **abandoned**; do not route traffic at them. Use §12's MOCKGILTS v2 addresses.
+
 Same pattern as MOCKUSTRY, done cleanly this time (manual phase-by-phase factory calls from the
 start, applying both lessons from MOCKUSTRY: no monolithic `deploy.sh` run subject to a host-side
 kill, and `mainnet-test-a`'s classic-asset trustline established *before* its `set_authorized`
@@ -607,6 +618,10 @@ Balances after this round: `mainnet-admin` topped up to `7.9884018` XLM (5 XLM t
 
 ### MOCKCETES market — fourth mock asset — **STATUS: COMPLETE AND LIVE** — 2026-11-18
 
+> **⚠️ Superseded 2026-11-21 — see §12.** This market's `OracleAdapter` was never wired to a feed
+> and its genesis value was 10x too high (not fixable in place) — replaced. The contracts below
+> are **abandoned**; do not route traffic at them. Use §12's MOCKCETES v2 addresses.
+
 Same pattern as MOCKGILTS. Tracks real CETES (per §2's RedStone feed lookup,
 `CAL6ER2TI6CTRAY6BFXWNWA7WTYXUXTQCHUBCIBU5O6KM3HJFG6Z6VXV`, real price `6469400` at the feed's
 8-decimal scale).
@@ -669,6 +684,10 @@ Balances after this round: `mainnet-admin` `7.4515064` XLM, `mainnet-cetes-issue
 XLM — comfortably enough for XAUM, the last remaining asset.
 
 ### MOCKXAUM market — fifth and final mock asset — **STATUS: COMPLETE AND LIVE** — 2026-11-18
+
+> **⚠️ Superseded 2026-11-21 — see §12.** This market's `OracleAdapter` was never wired to a feed
+> and its genesis value was 10x too high (not fixable in place) — replaced. The contracts below
+> are **abandoned**; do not route traffic at them. Use §12's MOCKXAUM v2 addresses.
 
 Tracks real XAUM (Matrixdock Gold, per §2's RedStone feed lookup,
 `CC2RBGYNCFBCVENIDL5BFBWPH4OUZM2UA3OD2K2N54GLMWCC4KWPVAGO`, real price `386575800000` at the
@@ -809,13 +828,16 @@ redeem, compliance grants) to validate their own transaction-building code again
 MOCKXAUM — §5) are done**, each independently verified (78/79) and real-transaction smoke-tested.
 Next steps, in priority order:
 
-1. **Close the treasury trustline gap found during MOCKXAUM's round (§5)**:
-   `principal-mainnet-treasury` never established a classic-asset trustline to MOCKUSTRY,
-   MOCKGILTS, or MOCKCETES (only MOCKXAUM was fixed live). Not urgent — treasury's `Permissioning`
-   standing is unaffected and nothing has tried to pay it directly in those classic assets yet —
-   but should be closed (three `change-trust` + `set_authorized` calls) before treasury ever calls
-   `SYWrapper.withdraw` on any of those three markets, or before a real `claim_creator_fees`/
-   `claim_protocol_fees` payout flow is exercised end to end against them.
+1. ~~Close the treasury trustline gap found during MOCKXAUM's round (§5)~~ — **done, 2026-11-21**.
+   `principal-mainnet-treasury` now holds all five classic-asset trustlines (MOCKUSDY, MOCKUSTRY,
+   MOCKGILTS, MOCKCETES, MOCKXAUM) — see §12.
+1b. **Mandatory: stand up a real scheduled oracle relay before any further real traffic.** §12's
+   incident is the second and third time in this deployment that a manually-pushed oracle went
+   stale mid-session purely from real elapsed time — this is not a one-off, it is the expected
+   behavior of every `OracleAdapter` on this deployment with nothing scheduled to keep it fresh.
+   `services/oracle-relay/relay.sh` is built and proven on testnet; point it at all five mainnet
+   `OracleAdapter`s (§2/§12 for current addresses) before treating any of these markets as
+   continuously usable rather than "fresh only when someone just pushed to it by hand."
 2. **Operational lessons from this round, worth folding into tooling**:
    - `deploy.sh`'s monolithic per-market phase is fragile against a host-side kill (hit once, for
      MOCKUSTRY) — prefer the manual phase-by-phase factory-call approach used cleanly for
@@ -891,3 +913,103 @@ what it actually did — is in [`docs/MAINNET_TRANSACTION_LEDGER.md`](./MAINNET_
 This document remains the narrative source of truth for *what happened and why*; the ledger is
 the exhaustive, machine-cross-checked record of *every transaction*, for whenever the two need to
 be reconciled again.
+
+## 12. Incident: permanent oracle scale bug on four markets, found by the dApp team and remediated (2026-11-20/21)
+
+**Report received from the dApp developer, verbatim (translated from French): all 5 mainnet
+oracles appeared stale with no on-chain event since 2026-11-18; GILTS, CETES and XAUM had no feed
+configured; USTRY's value looked 10x too high; 4 of 5 pools had never received liquidity (only
+MOCKUSDY); and the `accessContact` field was still unnamed.**
+
+### What was verified, and what turned out to be worse than reported
+
+1. **Oracle staleness — confirmed exactly.** All 5 `OracleAdapter`s read `is_available() == false`,
+   last pushed ~2026-11-18 — no scheduled relay has been running, as this document's §10 already
+   flagged as an open gap.
+2. **"USTRY is 10x too high" was correct, and the same bug existed on GILTS, CETES and XAUM too —
+   just masked there by a second, independent bug (no feed configured at all).** Root cause,
+   confirmed by reading `contracts/oracle_adapter/src/lib.rs`: the real RedStone feed reports
+   prices at **8 decimals**; this protocol's reference scale is **`PROTOCOL_DECIMALS = 7`**
+   (`rescale_to_protocol_decimals`, used automatically by `sync_from_feed`, but **not** by a manual
+   `set_reference_value` push). Every manual genesis push for USTRY, GILTS, CETES and XAUM in §5
+   above used the raw 8-decimal feed value directly instead of dividing by 10 — a mistake this
+   document's own earlier text did not catch. MOCKUSDY was not affected (that push was correctly
+   divided by 10 at the time).
+3. **This is not fixable by pushing a corrected value — confirmed by trying it.** A dry-run
+   `set_reference_value` with the correct (lower) value for GILTS was rejected on-chain with
+   reason `"decrease"` — `OracleAdapter` enforces a deliberate, by-design, permanent
+   monotonic-non-decreasing invariant (`contracts/oracle_adapter/src/lib.rs`'s own module doc: *"the
+   entire PT/YT settlement model is built on the assumption that the reference rate only goes
+   up"*). Since the oracle address is also immutable per market once `PrincipalManager`/`YTToken`
+   are initialized (no setter exists), **the only legitimate fix was a full redeploy**: a new
+   `OracleAdapter` plus a new 7-contract market for each of USTRY, GILTS, CETES and XAUM.
+4. **"4 of 5 pools never received liquidity" — confirmed exactly** via `reserves()`/
+   `lp_total_supply()`: MOCKUSDY had real reserves; USTRY/GILTS/CETES/XAUM were all `["0","0"]`.
+5. **`accessContact`** — searched the entire `principal-Protocol-org/dapp` repository (all
+   branches, including `t3/dashboard`) and found no matching field anywhere in code, schema, or
+   migrations. Not a code bug; remains an open item for Principal to name a contact and determine
+   where it belongs.
+
+### Remediation
+
+For **USTRY, GILTS, CETES, and XAUM**: deployed a complete replacement ("v2") market for each —
+new `OracleAdapter` (this time with `set_feed_source` properly wired to the real feed **and** a
+correctly-scaled manual genesis push, belt-and-suspenders), then all 7 per-market contracts via
+`MarketFactory` with a fresh salt, reusing the same already-uploaded WASM hashes and the same
+underlying classic asset (the classic assets themselves had no bug). Old ("v1") contracts are
+**abandoned in place** — each `deployment-manifest-v1-broken.json` preserves their addresses and
+state for the record; nothing should route new activity at them.
+
+For **MOCKUSDY**: no redeploy needed (its oracle was only stale, not mis-scaled) — refreshed via
+`sync_from_feed()` then a manual push, both landing correctly.
+
+Also closed while fixing this: **`principal-mainnet-treasury` never held a classic-asset trustline
+to MOCKUSTRY, MOCKGILTS or MOCKCETES** (only MOCKXAUM had been fixed previously) — discovered again
+because the v2 compliance-grant batches hit the same `TrustlineMissingError` live. All five
+trustlines now exist.
+
+**New v2 contracts (replacing the v1 addresses recorded in §5 above):**
+
+| Asset | `OracleAdapter` (correct value, real feed wired) | `SYWrapper` | `PTToken` | `YTToken` | `MarketConfig` | `PrincipalManager` | `MarketPool` | `RecoveryEscrow` |
+|---|---|---|---|---|---|---|---|---|
+| MOCKUSTRY v2 | `CBTW7CU46PMCPKZQ3VX6OBELOEC7HHQXJSAX535VW3EK34MVS7UWPFR7` | `CAFCV4KBWI74XJ3TG5YVVMIQLDI7QTZ24UPRQEQWZXJ4L6WBWKJKBUXN` | `CDR6MISANKZFOXO5IRUUPHPVPSPFADT5CC7V5SMP25WYOGG7ONQ456DS` | `CDWZRKGO5LOMKHO2S6O52QI6H2NAJVZ2OKZ5SEUXMHHNETGOJ6RJM3WT` | `CAY7P5UZDQNREOMIUWOO4BWSJLYICWIXLT77TUMTGUY5BHH3LJDETPC5` | `CCAW4DZO24VVFL5SYMKHDMAWHX6GMGYZEMSL2VW7RF4GHHIUW7GJOHNY` | `CABAS76ZTOAKMQEBNC6TJNF4XINX7H7AH4EFVXTR4ACZNJR7NHT27A5S` | `CCDGIH52RBTLF3REZGQVVOUL7Z3LZT7OKUE4YBBJWTHF5SGU4QVBJ7U5` |
+| MOCKGILTS v2 | `CD22HNREJHKTATZMFKALCTHJVKC35MHO2SAUSTG4M6PWLJZPS724J6X7` | `CBYNXSR3C76RF77HM6M25X3XZMYQAVCU5BHZCU2LLQIP2XLKUU5TJMP4` | `CBI74V5Q4HHRAKQW7KEER4GCSANPYRDWKIBO3ALZMMSVIMW3DW3NPHUY` | `CBHMXXPLQHP2FSHMEJVKHBKECB755WVQFYWG5ZBBCLMNHGLTIGAPBP32` | `CA4ZQ7DEC73AGG2UTCCM4TXLGOUZPN3QCJZ6QMV677CYT54C67ZEHOON` | `CCDSONMQBNS4LNKKUBLG5XLNDNNDU4PQPWKJK2KQCVQHJ3AW5GNN7GBS` | `CD5ADNE76FY2D722LMQJFD7AG74UU3OYQVXSNQNI33EYPSEEUZY4QILK` | `CAI25QPLB7KYSRNXJHCXAZVHI36PAEZJET5PJJKC326KVDDGUURUKL7N` |
+| MOCKCETES v2 | `CBK2GO7UPMES2B7LZYZXNO3JP5JPNIIE74E4PUUJGSZZKD4FZ47QMUZK` | `CBAUFMQHTVPY7ULLODKY6UZ3TFOMLKUNCK5PSFWFEIBLJOSO3JKBSYSD` | `CCHMJET5QKXLXXALPIY2EDB2KNOCHPHKCYKD5PBEXUQAKO6GSZLLSH3O` | `CAYGW7C26RXAF3XQOOY6NZWSMBJ4MQVTOVO5MUQMKXDSQUBRG4HODLQZ` | `CA4WPFXEG6SZPRAGBZHSPICTPZXE44AL3OUS4ITLXA36DFD7NOR2VZ37` | `CAL22QZTOUTCGIKMMJBGIQDPX4BOHUUCRWLUDCD7LCMTLTIZAEDDHO6B` | `CARSHEWMUGH4LINSO3ST4QFJSCDD47A7OCXV55QLLCHMEZULV6CUYNZG` | `CBHVXY5WUDYATTB4GAT44U2BBBAPTYFL73HER7QI5PRQI4VUM3S7OLIM` |
+| MOCKXAUM v2 | `CDFI7IXUTGLV2EQE3VCHPCYOEBX2LSLXDKNU7ELJFZH726VDF73SOPFD` | `CDG77CSNUVEOM3WKWNIBH2XWMUPZ256Y6B6SYUKQVCR7K5PQWTA4JJ7M` | `CAHQ4WIQWGHMKIVDTZIVU43XIBP3ATR3KAEZUMKRXU4S23LK56CDUPYQ` | `CCNTUKCIFGHUUSBKKK37UT2E4APDNLZWDMAKBTSX5IRPNXHLNAA6K5VQ` | `CCWR66XFL4FOAJOSV4GEKYQQ4BJADTMDFDPZA55LBQMGN2OTBFZVZAHS` | `CBBEH4YDZCTIB222VXBSXCECCVUQYU7XQXAR5J4BKCVVZSN6FLQS2CEF` | `CDXOBSBR6FX5M6OJQEPMQJTVJ2K7OZRWBVGYAMR2ZNUUSZX63OOS5RKL` | `CAC77KCD7QG4CCOBOM3XXDD43256O2CIEN6L4EECPKT5RBAKDZJJXLOO` |
+
+Full transaction-by-transaction detail (deploy, init, feed wiring, factory calls, wiring,
+compliance grants) is in each asset's `deployments/mainnet-<asset>/deployment-manifest.json`
+`transactions[]` array, prefixed `v2:`. The abandoned v1 state is preserved in each
+`deployment-manifest-v1-broken.json`.
+
+**Real testing proof on every v2 market** (mirroring the original testing discipline — real
+deposit, real mint, real AMM liquidity, real swap, every tx hash checked against Horizon):
+
+| Market | Deposit | Mint PT/YT | Seed liquidity | Swap |
+|---|---|---|---|---|
+| MOCKUSTRY v2 | `c6ad5969682b72ac523cb5b87bdf892d7649510b0b5456de6ce801b1b1919ac0` | `1255f5b7651caa4f21355ff5cf7ec9574126f5768dae417361b209d2488266e3` | `c9424829078410084770d58dcdf6dc5da11264d045abc0ff420b6a948c94ab56` (150 PT/125 SY) | `8fb285746a3ce1f9d0a88eb8f0bac3cdce4074590330de5b444e8da135b6e72c` |
+| MOCKGILTS v2 | `09467f11b8d2003202e13018c8b49e0be5351dcc1e84c710fb5d5da067940c23` | `3e45a960cd22871bae106573ea455e2adae3ef6d576c1dd244ea21d8b2cd6c14` | `f1896a51206eb982702f206bc4f009bb62174e5eb5804348a34f954d952c0c75` (180 PT/125 SY) | `329489f7da68539005adb4ce01dd74c6a97b138e35e98089f6f9f42c4418512e` |
+| MOCKCETES v2 | `9f71d18bcfbd21902c6f283128450401e0180780439bd2746981eb633a9236f3` | `4240d062f34ff6f10b39c7784006f8a5b9ad18d148483e578b912471ea0a45be` | `b927305d13168893f3282e5ac6c03422e5824fab4de8468fd4889caa22a7379f` (10 PT/150 SY) | `2690da98b344bf9dfe331476fad1912e68737f63ae14048d6891bb82b816fbff` |
+| MOCKXAUM v2 | `2c1d8e23e329e0208a7095c7842e0b6e616712cb572fb682d50a82b1678025f5` | `83b5529b6203b39348c0568dbebb4531a6f4b7dbdc56c4db491ec2da1553ebc1` | `6af1f4c0a481e19c46190ecb143d184f554b40f748bcf51939410b5eac4f750f` (800 PT/0.2 SY) | `85590e4400bfbfe7b50a6b0ccda20c70a9d3af1bab1b7908b5b92c00c1c6bd54` |
+
+**A real, practical finding while seeding liquidity**: `MarketPool`'s first-deposit ratio check
+(`InvalidInitialRatio`) compares `sy_desired * oracle_rate / SCALE` against `pt_desired` — **it's
+gated on the oracle price, not a fixed 1:1 assumption.** The same PT/SY amounts that worked for
+USTRY (rate ≈1.08) were rejected for GILTS (rate ≈1.41, `pt_desired` too low relative to
+`sy_desired`), and CETES/XAUM needed very different PT:SY ratios again given their very different
+rates (≈0.062 and ≈3546 respectively). Anyone seeding liquidity on a new market must size
+`pt_desired`/`sy_desired` relative to that market's own live oracle rate, not copy fixed amounts
+from a different asset.
+
+**MOCKUSDY's oracle went stale twice more during this incident's remediation window alone**
+(confirmed, refreshed each time) — the single most concrete, repeated demonstration in this whole
+deployment of why an actual scheduled oracle relay (§7, §10) is not optional before any real
+traffic.
+
+### Status after remediation
+
+All 5 oracles `is_available() == true` with correctly-scaled values; all 5 pools have real,
+non-zero liquidity; all 5 treasury trustlines exist. **The dApp-facing manifest
+(`deployments/mainnet-dapp-manifest.json`) has been regenerated with the v2 addresses and
+re-validated against the dApp's own schema — the copy already handed to the dApp team pointed at
+the broken v1 contracts and must be replaced with this one.**
