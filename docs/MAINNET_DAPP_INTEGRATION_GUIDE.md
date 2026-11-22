@@ -7,11 +7,19 @@
 > manifest file in this repo is already updated; the copy you have is not. Full incident writeup:
 > `MAINNET_DEPLOYMENT_EVIDENCE.md` §12. Thank you for catching this.
 >
-> **Update, 2026-11-22 — build reproducibility fixed.** Your rebuild of `3af9388` getting 0/12
-> matching hashes was a real gap: the repo had no pinned Rust toolchain (`Cargo.lock` was
-> committed, but nothing forced a specific rustc, and CI itself floated on `@stable`). Added
-> `rust-toolchain.toml` pinning `1.94.1` and re-pinned the CI jobs that build the on-chain WASM.
-> A clean rebuild of `3af9388` now reproduces all 12 deployed hashes byte for byte. Recipe:
+> **Update, 2026-11-22 — build reproducibility: real gap found, fixed going forward.** Your
+> rebuild of `3af9388` getting 0/12 matching hashes had two causes, both real: (1) the repo had
+> no pinned Rust toolchain — `rust-toolchain.toml` now pins `1.94.1`, and CI's WASM-building jobs
+> no longer float on `@stable`; (2) rustc also bakes absolute `$CARGO_HOME`/checkout paths into
+> the WASM (via `soroban-sdk`'s own `file!()`/`#[track_caller]` use), so even with the identical
+> toolchain, your machine's own paths would still produce different bytes than ours — fixed via
+> `--remap-path-prefix` in the new `scripts/deploy/reproducible_build.sh`, verified to make two
+> builds on different machines match each other exactly. **Important:** this makes every
+> contract deployed from now on independently reproducible by you from a cold checkout — it does
+> **not** make today's already-live contracts byte-reproducible from scratch on your machine,
+> since they were built before this fix existed and their on-chain bytes permanently embed paths
+> that were never recorded. For today's live contracts, trust the on-chain-hash-matches-manifest
+> check in evidence doc §8, not a from-scratch rebuild. Recipe:
 > `deployments/mainnet/reproducible-build.md`. Full writeup: `MAINNET_DEPLOYMENT_EVIDENCE.md` §14.
 > The oracle staleness recurrence you flagged separately (`max_stale_seconds` shorter than the
 > feed's real 12h cadence) is also fixed — all 5 oracles now at `max_stale_seconds=86400`,
@@ -537,8 +545,10 @@ blocking the dApp code change itself):
       trustlines (MOCKUSDY, MOCKUSTRY, MOCKGILTS, MOCKCETES, MOCKXAUM) now exist.
 - [x] ~~Oracle staleness recurrence (`max_stale_seconds` shorter than the feed's real cadence)~~ —
       closed 2026-11-22. All 5 oracles raised to `max_stale_seconds=86400`. §13.
-- [x] ~~WASM build non-reproducibility (0/12 hashes matched on rebuild)~~ — closed 2026-11-22.
-      Root cause was an unpinned Rust toolchain, not the source. §14.
+- [x] ~~WASM build non-reproducibility (0/12 hashes matched on rebuild)~~ — fixed going forward,
+      2026-11-22: unpinned Rust toolchain + unnormalized absolute paths, not the source. Every
+      future deployment is reproducible by you from a cold checkout; today's already-live
+      contracts are not retroactively rebuildable from scratch — see §14's "Important" note.
 - [ ] `accessContact` — Principal still needs to name a contact and determine where it belongs;
       no matching field was found anywhere in this repo's code, schema, or migrations.
 

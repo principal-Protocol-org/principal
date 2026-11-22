@@ -1122,13 +1122,35 @@ source and dependency pinning were never the problem, only the missing compiler 
   silently drift away from the pinned version either. `lint`, `coverage`, and `audit` were left
   on floating `stable` deliberately — they don't produce deployable artifacts, and floating lets
   them surface forward-compatibility issues early.
-- Published the actual step-by-step recipe, with the full 12-hash verification table, at
+- Published the actual step-by-step recipe at
   [`deployments/mainnet/reproducible-build.md`](../deployments/mainnet/reproducible-build.md) —
   this is the deliverable `docs/TRANCHE_2_3_TECHNICAL_SPECIFICATION.md` already referenced by
   name but that had never actually been created.
 
-**Status after remediation:** the dApp team (or anyone else) can now clone the repo, run
-`rustc --version` (which transparently pins via `rust-toolchain.toml`), build, and hash-compare
-against either the table above or the one in §8 — both now carry the same verified-reproducible
-12 hashes. No contract source changed; this incident and its fix are purely about the build
-environment.
+**A second, more fundamental cause found while verifying the first fix:** the 12/12 match above
+was a same-machine rebuild (a `git worktree` still shares the host's `$CARGO_HOME`). Testing
+with a genuinely different `$CARGO_HOME` (simulating a real independent machine) showed **10 of
+12 hashes change** even with the identical pinned toolchain — rustc embeds absolute
+`$CARGO_HOME`/checkout paths into the WASM via `file!()`/`#[track_caller]` call sites inside
+`soroban-sdk` itself, unaffected by `strip = "symbols"` (strip removes DWARF debug info; these
+are plain string literals in `.rodata`). This is the same class of problem documented previously
+in `docs/TRANCHE_2_DEPLOYMENT_EVIDENCE_CLOSURE.md` for the testnet deployment, where it was found
+and left deliberately unfixed because that task's scope was reproducing an already-frozen
+historical build, not fixing the repository going forward.
+
+**Fix for this:** added
+[`scripts/deploy/reproducible_build.sh`](../scripts/deploy/reproducible_build.sh), which builds
+with `--remap-path-prefix` on both the dependency-cache path and the checkout path, normalizing
+them to fixed strings before the compiler ever sees them. Verified this closes the gap: two
+builds of `3af9388` from different checkout paths *and* different `$CARGO_HOME` locations now
+produce identical hashes to each other. CI's `wasm` job now uses this script too.
+
+**Status after remediation:** going forward, every contract deployed from now on is
+independently, byte-for-byte reproducible by anyone, from any machine, using
+`./scripts/deploy/reproducible_build.sh`. This does **not** retroactively make today's
+already-live contracts third-party-reproducible — their on-chain bytes permanently embed
+whatever absolute paths the original build happened to use, information that was never recorded
+and can't be recovered. For today's live contracts, the authoritative check remains the existing
+on-chain-hash-matches-manifest verification in §8 (cross-checked at upload time), not a
+from-scratch rebuild by a third party. No contract source changed in either part of this fix;
+both are purely about the build environment.

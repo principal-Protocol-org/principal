@@ -44,8 +44,8 @@ jobs:
         with:
           targets: wasm32v1-none
       - uses: Swatinem/rust-cache@v2
-      - name: Build every contract
-        run: cargo build --workspace --release --locked --target wasm32v1-none
+      - name: Build every contract (path-normalized, see reproducible_build.sh)
+        run: ./scripts/deploy/reproducible_build.sh
       - name: "Report and gate contract sizes (Soroban limit 128 KiB)"
         run: |
           set -e
