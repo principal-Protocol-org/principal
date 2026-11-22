@@ -1034,3 +1034,44 @@ non-zero liquidity; all 5 treasury trustlines exist. **The dApp-facing manifest
 (`deployments/mainnet-dapp-manifest.json`) has been regenerated with the v2 addresses and
 re-validated against the dApp's own schema — the copy already handed to the dApp team pointed at
 the broken v1 contracts and must be replaced with this one.**
+
+## 13. Incident: `max_stale_seconds` shorter than the real feed's publish interval (2026-11-22)
+
+**Report from the dApp developer, verbatim (translated): all 5 mainnet oracles periodically go
+stale again regardless of the keeper; ages observed 2026-11-22 14:01 UTC: USDY 2h24, USTRY 2h24,
+CETES 3h57, XAUM 4h02, GILTS 17h50. The real RedStone feed declares `resolution() = 43200s` (12h).
+The keeper runs every 5 minutes and did call `sync_from_feed` successfully at 14:12, but the
+oracle stayed stale because `sync_from_feed` keeps the *feed's own* timestamp, not "now" — and
+`max_stale_seconds` was 3600s (1h), shorter than the feed's own 12h publish cadence. Five critical
+`oracle_stale` alerts opened at 15:00 UTC.**
+
+**Verified directly, confirmed exactly as reported**: `feed.resolution() == 43200` (queried live
+against `CBMGLKUQZVSAIL5CPDDAWSUY7MAKXISHMOZEVLMBUWBMFGHRJSR4WYRF`); all 5 `OracleAdapter`s had
+`max_stale_seconds = 3600`. This is a structural mismatch, not an operational one — no keeper
+frequency can keep a 1-hour staleness window satisfied against a feed that only ticks every 12
+hours (and, per the ages observed, sometimes slower still, e.g. GILTS's 17h50).
+
+**Fix**: `mainnet-admin` called `set_safety_params(caller, max_stale_seconds, max_deviation_bps)`
+on all 5 — this function sets both values together, so `max_deviation_bps` was resubmitted
+unchanged at `1000` exactly as the dApp team's request specified, only `max_stale_seconds` raised
+to `86400` (24h — roughly 2× the feed's own nominal cadence, with headroom for a slow tick like
+GILTS's):
+
+| Asset | `OracleAdapter` | Tx hash |
+|---|---|---|
+| MOCKUSDY | `CCKXG4HSVH57AQTYJDNNXHQBCGNH6KRFNMCMATTMYFUX2TDQ7GD5K7IT` | `73f87169f0a6adf4af3fe73695bce0ef087fbae2d7d168f1a90a381ebd202c6c` |
+| MOCKUSTRY v2 | `CBTW7CU46PMCPKZQ3VX6OBELOEC7HHQXJSAX535VW3EK34MVS7UWPFR7` | `96cf75a8cca49b8370131c41c7ecb983d96ee17ffb1144d0a2fc7b90c722e199` |
+| MOCKGILTS v2 | `CD22HNREJHKTATZMFKALCTHJVKC35MHO2SAUSTG4M6PWLJZPS724J6X7` | `cf5394127d52a399e81b69dbb24f180829c60f6d76f24881c7164ca39af5d30a` |
+| MOCKCETES v2 | `CBK2GO7UPMES2B7LZYZXNO3JP5JPNIIE74E4PUUJGSZZKD4FZ47QMUZK` | `5028e019162bb022aa9ac5c0300c6f0f8d97b63e91f20a356ee26a16df9a830e` |
+| MOCKXAUM v2 | `CDFI7IXUTGLV2EQE3VCHPCYOEBX2LSLXDKNU7ELJFZH726VDF73SOPFD` | `9d59d0b4fb028f5f0ece56b155814af251bf6c72a7f68cc97eba0dcd24e67f52` |
+
+**Verified after the fix**: all 5 `is_available() == true`, all 5 `max_stale_seconds() == 86400`.
+
+**Why 24h and not something tighter**: the feed's own `resolution()` is a *nominal* cadence, not a
+guarantee — GILTS was already observed at 17h50 real-world staleness before this fix, meaning the
+feed itself sometimes runs behind its own declared interval. A `max_stale_seconds` set too close
+to 12h would still trip sporadically. 24h gives one full missed cycle of margin. This is a looser
+freshness bound than a fast-moving market price would tolerate, but appropriate here: the real
+RWAs these mock assets track (USDY, USTRY, GILTS, CETES, XAUM) are all slow-moving,
+Treasury/NAV-style instruments by design, not an asset where a 24-hour-old price is a meaningful
+economic risk the way it would be for a volatile token.

@@ -270,6 +270,11 @@
       "step": "v2:testing:pool.swap_pt_for_sy(5 PT -> 0.0013876 SY)",
       "tx": "85590e4400bfbfe7b50a6b0ccda20c70a9d3af1bab1b7908b5b92c00c1c6bd54",
       "at": "2026-11-20T"
+    },
+    {
+      "step": "oracle_adapter:set_safety_params(max_stale_seconds=86400,max_deviation_bps=1000)",
+      "tx": "9d59d0b4fb028f5f0ece56b155814af251bf6c72a7f68cc97eba0dcd24e67f52",
+      "at": "2026-11-22T00:20:00Z"
     }
   ]
 }

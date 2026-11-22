@@ -315,6 +315,11 @@
       "step": "v2:testing:pool.swap_pt_for_sy(1 PT -> 0.9122318 SY)",
       "tx": "8fb285746a3ce1f9d0a88eb8f0bac3cdce4074590330de5b444e8da135b6e72c",
       "at": "2026-11-20T"
+    },
+    {
+      "step": "oracle_adapter:set_safety_params(max_stale_seconds=86400,max_deviation_bps=1000)",
+      "tx": "96cf75a8cca49b8370131c41c7ecb983d96ee17ffb1144d0a2fc7b90c722e199",
+      "at": "2026-11-22T00:20:00Z"
     }
   ]
 }

@@ -445,6 +445,11 @@
       "step": "testing:market2.redeem(test-a,5764.487814 PT2+YT2 -> 499.7499999 MOCKUSDY)",
       "tx": "b3a0f1a55fea5a959535590181250951ac0e78e44fbd26220ffe708a1b9c8e04",
       "at": "2026-11-18T00:05:30Z"
+    },
+    {
+      "step": "oracle_adapter:set_safety_params(max_stale_seconds=86400,max_deviation_bps=1000)",
+      "tx": "73f87169f0a6adf4af3fe73695bce0ef087fbae2d7d168f1a90a381ebd202c6c",
+      "at": "2026-11-22T00:20:00Z"
     }
   ],
   "market2": {
