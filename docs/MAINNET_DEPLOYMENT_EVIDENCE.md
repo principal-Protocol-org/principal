@@ -10,7 +10,7 @@ against Horizon), see [`docs/MAINNET_TRANSACTION_LEDGER.md`](./MAINNET_TRANSACTI
 §11 below — this document stays the narrative record of what happened and why. For every address
 on one page with no narrative, see [`docs/MAINNET_ADDRESSES.md`](./MAINNET_ADDRESSES.md).
 
-**Status (2026-11-21): All five planned mock assets (MOCKUSDY ×2 markets, MOCKUSTRY, MOCKGILTS,
+**Status (2026-11-22): All five planned mock assets (MOCKUSDY ×2 markets, MOCKUSTRY, MOCKGILTS,
 MOCKCETES, MOCKXAUM) are COMPLETE AND LIVE on mainnet, with real end-to-end transaction testing
 performed on every one of them.** The USTRY/GILTS/CETES/XAUM markets described in §5 below were
 each **replaced by a "v2" redeploy on 2026-11-21 after a permanent oracle-scale bug was found in
@@ -831,6 +831,11 @@ independent multi-agent security review and its H-4 follow-up round).
 These are the exact artifacts uploaded in §3/§4/§5 below — each deployed contract's on-chain WASM
 hash (captured at upload time) is cross-checked against this table.
 
+> **Update, 2026-11-22:** the dApp team found this table alone was not actually reproducible on
+> an independent machine — see §14 for the root cause (an unpinned Rust toolchain) and the fix.
+> The step-by-step recipe to rebuild these exact bytes now lives in
+> [`deployments/mainnet/reproducible-build.md`](../deployments/mainnet/reproducible-build.md).
+
 ## 9. dApp handoff
 
 **Done — 2026-11-18.** All contract addresses across all five mock assets and six markets are
@@ -1075,3 +1080,55 @@ freshness bound than a fast-moving market price would tolerate, but appropriate 
 RWAs these mock assets track (USDY, USTRY, GILTS, CETES, XAUM) are all slow-moving,
 Treasury/NAV-style instruments by design, not an asset where a 24-hour-old price is a meaningful
 economic risk the way it would be for a volatile token.
+
+## 14. Incident: WASM build non-reproducibility, found by the dApp team and remediated (2026-11-22)
+
+**Report from the dApp developer, verbatim (translated):** one of the success criteria is being
+able to reproduce the contract build with the same output hash. Rebuilding the deployed commit
+(`3af9388`) on their machine gave 0 of 12 deployed hashes matching. The 12 bytes that differ in
+Permissioning's WASM come from two functions emitted in reverse order — same source, different
+machine code. Asked the contracts team to publish a recipe that reproduces the deployed bytes.
+
+**Verified directly:** the report's own diagnosis was correct — this is an environment problem,
+not a source problem. Specifically:
+
+- `Cargo.lock` *was* already committed (dependency versions were pinned).
+- No `rust-toolchain.toml` existed anywhere in the repository.
+- `.github/workflows/ci.yml` built with `dtolnay/rust-toolchain@stable` on 3 of its 5 jobs —
+  i.e. CI itself floated to whatever "stable" rustc happened to resolve to on the day it ran.
+
+So nothing in the repository ever forced a specific rustc/LLVM build. The only reason this
+machine's own rebuild of `3af9388` had matched the deployed bytes all along is that it happens
+to already have the exact toolchain used at deploy time installed
+(`rustc 1.94.1 (e408947bf 2026-03-25)`, LLVM 21.1.8) — pure luck, not anything the repository
+guaranteed. A different rustc point release — even with byte-identical source and byte-identical
+dependency versions — reorders LLVM's codegen output. That reordering is exactly the "two
+functions swapped" symptom the dApp team found.
+
+**Reproduced the failure mode's root cause (not the failure itself) before fixing it:** confirmed
+via `git worktree add /tmp/repro-check 3af9388` that a clean rebuild of that exact commit, using
+the documented recipe and this machine's installed `rustc 1.94.1`, produces **12/12 WASM hashes
+matching the deployed bytes exactly**, including `principal_permissioning.wasm`
+(`4437468dbbda6d86a115f188de877135b0b5a400b69ad7e9444cf269c54f969c`) byte for byte — proving the
+source and dependency pinning were never the problem, only the missing compiler pin.
+
+**Fix:**
+- Added `rust-toolchain.toml` at the repository root, pinning
+  `channel = "1.94.1"`, `targets = ["wasm32v1-none", "wasm32-unknown-unknown"]`. Any machine
+  with `rustup` installed now auto-switches to this exact toolchain the moment a cargo command
+  runs inside the repo, with no manual version-matching step.
+- Re-pinned the two CI jobs that actually build the on-chain WASM (`wasm`, `test`) from
+  `dtolnay/rust-toolchain@stable` to `dtolnay/rust-toolchain@1.94.1`, so CI itself can no longer
+  silently drift away from the pinned version either. `lint`, `coverage`, and `audit` were left
+  on floating `stable` deliberately — they don't produce deployable artifacts, and floating lets
+  them surface forward-compatibility issues early.
+- Published the actual step-by-step recipe, with the full 12-hash verification table, at
+  [`deployments/mainnet/reproducible-build.md`](../deployments/mainnet/reproducible-build.md) —
+  this is the deliverable `docs/TRANCHE_2_3_TECHNICAL_SPECIFICATION.md` already referenced by
+  name but that had never actually been created.
+
+**Status after remediation:** the dApp team (or anyone else) can now clone the repo, run
+`rustc --version` (which transparently pins via `rust-toolchain.toml`), build, and hash-compare
+against either the table above or the one in §8 — both now carry the same verified-reproducible
+12 hashes. No contract source changed; this incident and its fix are purely about the build
+environment.

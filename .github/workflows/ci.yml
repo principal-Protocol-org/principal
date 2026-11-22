@@ -37,7 +37,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned to the exact toolchain in rust-toolchain.toml, not @stable: the deployed WASM
+      # bytes are only reproducible under this specific rustc/LLVM build (see
+      # deployments/mainnet/reproducible-build.md).
+      - uses: dtolnay/rust-toolchain@1.94.1
         with:
           targets: wasm32v1-none
       - uses: Swatinem/rust-cache@v2
@@ -64,7 +67,7 @@ jobs:
     needs: wasm
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.94.1
         with:
           targets: wasm32v1-none
       - uses: Swatinem/rust-cache@v2
