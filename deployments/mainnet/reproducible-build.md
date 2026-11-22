@@ -6,7 +6,7 @@ code against the source without trusting us.
 
 ## Root cause of the 2026-11-22 non-reproducibility report
 
-The dApp team (Cédric) reported rebuilding commit `3af9388` and getting 0 of 12 WASM hashes
+The dApp team reported rebuilding commit `3af9388` and getting 0 of 12 WASM hashes
 matching the deployed bytes, with Permissioning's 12-byte diff traced to two functions emitted
 in reverse order — i.e. identical source, different machine-code layout.
 

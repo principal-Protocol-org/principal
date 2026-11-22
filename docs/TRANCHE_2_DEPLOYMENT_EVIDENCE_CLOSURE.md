@@ -338,7 +338,7 @@ What actually explains it is now demonstrated directly, not inferred: `strings` 
 build's own `principal_oracle_adapter.wasm` shows the embedded cargo-registry source path
 `/home/mohamed/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/soroban-sdk-26.0.1/src/ledger.rs`;
 `strings` on the actual deployed wasm (re-fetched fresh from Testnet for this comparison, a public
-read) shows `/Users/cedric/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/soroban-sdk-26.0.1/src/ledger.rs`
+read) shows `/Users/<dapp-builder>/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/soroban-sdk-26.0.1/src/ledger.rs`
 instead — a macOS path, under a different person's home directory, embedded in the compiled
 output regardless of which Rust version produced it. Two builds that differ only in their
 filesystem location cannot be byte-identical, independent of toolchain version; this fully
