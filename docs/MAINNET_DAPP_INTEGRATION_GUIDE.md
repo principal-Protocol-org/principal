@@ -6,11 +6,21 @@
 > wired at all). They have been redeployed end to end ("v2") with new contract addresses — the
 > manifest file in this repo is already updated; the copy you have is not. Full incident writeup:
 > `MAINNET_DEPLOYMENT_EVIDENCE.md` §12. Thank you for catching this.
+>
+> **Update, 2026-11-22 — build reproducibility fixed.** Your rebuild of `3af9388` getting 0/12
+> matching hashes was a real gap: the repo had no pinned Rust toolchain (`Cargo.lock` was
+> committed, but nothing forced a specific rustc, and CI itself floated on `@stable`). Added
+> `rust-toolchain.toml` pinning `1.94.1` and re-pinned the CI jobs that build the on-chain WASM.
+> A clean rebuild of `3af9388` now reproduces all 12 deployed hashes byte for byte. Recipe:
+> `deployments/mainnet/reproducible-build.md`. Full writeup: `MAINNET_DEPLOYMENT_EVIDENCE.md` §14.
+> The oracle staleness recurrence you flagged separately (`max_stale_seconds` shorter than the
+> feed's real 12h cadence) is also fixed — all 5 oracles now at `max_stale_seconds=86400`,
+> `MAINNET_DEPLOYMENT_EVIDENCE.md` §13.
 
 **Audience:** the Principal dApp team (`principal-Protocol-org/dapp`). **Written by:** the
 contracts/deployment side, as a senior-auditor-grade handoff — every claim below is backed by a
 real, verified Stellar mainnet transaction, not an assumption. **Status of mainnet contracts as of
-2026-11-21:** five mock assets, six markets, all live, wired, compliance-granted, and
+2026-11-22:** five mock assets, six markets, all live, wired, compliance-granted, and
 real-transaction tested (four of the five assets are on their "v2" contracts — see the update
 notice above). Zero fabricated data — see
 [`docs/MAINNET_DEPLOYMENT_EVIDENCE.md`](MAINNET_DEPLOYMENT_EVIDENCE.md) for the full narrative and
@@ -525,6 +535,10 @@ blocking the dApp code change itself):
 
 - [x] ~~`principal-mainnet-treasury` trustline gap~~ — closed 2026-11-21. All five classic-asset
       trustlines (MOCKUSDY, MOCKUSTRY, MOCKGILTS, MOCKCETES, MOCKXAUM) now exist.
+- [x] ~~Oracle staleness recurrence (`max_stale_seconds` shorter than the feed's real cadence)~~ —
+      closed 2026-11-22. All 5 oracles raised to `max_stale_seconds=86400`. §13.
+- [x] ~~WASM build non-reproducibility (0/12 hashes matched on rebuild)~~ — closed 2026-11-22.
+      Root cause was an unpinned Rust toolchain, not the source. §14.
 - [ ] `accessContact` — Principal still needs to name a contact and determine where it belongs;
       no matching field was found anywhere in this repo's code, schema, or migrations.
 
@@ -546,3 +560,6 @@ blocking the dApp code change itself):
   [`scripts/self_service/create_mock_asset.sh`](../scripts/self_service/create_mock_asset.sh),
   [`scripts/self_service/registration_watcher.sh`](../scripts/self_service/registration_watcher.sh) —
   the scripts this guide references.
+- [`deployments/mainnet/reproducible-build.md`](../deployments/mainnet/reproducible-build.md) —
+  the step-by-step recipe to rebuild the deployed WASM byte-for-byte, and the root-cause writeup
+  for the 2026-11-22 build-reproducibility incident (§14 of the evidence doc).
