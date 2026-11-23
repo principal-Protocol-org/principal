@@ -48,6 +48,20 @@
 > didn't actually run as written against `3af9388` itself — the script didn't exist at that
 > commit yet (added later, at `ae6ccd9`); the doc now says to copy it in from current `mainnet`
 > first when verifying a commit older than that.
+>
+> **Update, 2026-11-23 (third follow-up) — your smoke test closed, three more doc fixes.**
+> Deliverable 1's smoke test (deposit + mint through principalmarket.fi) confirmed successful on
+> our side too, independently verified via Horizon. Three small things your own review caught,
+> fixed: (a) the historical-commit recipe was still incomplete — `rust-toolchain.toml` also didn't
+> exist at `3af9388` (added at `cf629eb`), so copying only the script wasn't enough; the doc now
+> says to copy both in, or pin explicitly with `rustup run 1.94.1`, and the `git show` example now
+> uses `origin/mainnet` (a fresh clone's default branch is `main`). (b) §14.1 still said the
+> `RUSTSEC-2026-0387` finding was "left open" after it had already been fixed via `.cargo/audit.toml`
+> — wording corrected. (c) We already confirmed your own keeper runs `sync_from_feed()` on all 5
+> oracles every 5 minutes with its own alerting (§5 checklist updated accordingly) — for the one
+> gap that remains (the falling-price fallback, admin-only), route `oracle_warning` to this same
+> channel for now; best-effort admin response, typically within a few hours, until the scheduled
+> relay fallback (§10 item 1b) exists.
 
 **Audience:** the Principal dApp team (`principal-Protocol-org/dapp`). **Written by:** the
 contracts/deployment side, as a senior-auditor-grade handoff — every claim below is backed by a
@@ -531,10 +545,19 @@ against Horizon on 2026-11-18).
       `deployments/mainnet-dapp-manifest.json` and committed.
 - [ ] `DATABASE_URL`/`DATABASE_URL_UNPOOLED` set for the mainnet Neon branch, migration run once
       (§1a step 1), QStash schedule created for `/api/cron/record` (§1a step 2).
-- [ ] An oracle-freshness job is actually running against every `OracleAdapter` in §2 — manual spot
-      checks are not a substitute (confirmed necessary: the oracle went stale multiple times during
-      this deployment's own multi-hour working sessions). Confirmed this is *not* the dApp's own
-      `/api/cron/oracle` route (§0, §1a step 3) — that one must stay mainnet-disabled.
+- [x] ~~An oracle-freshness job is actually running against every `OracleAdapter` in §2~~ —
+      confirmed done, 2026-11-23: the dApp's own keeper calls `sync_from_feed()` on all 5
+      `OracleAdapter`s every 5 minutes from its own funded account (no key of ours), public at
+      `https://principalmarket.fi/api/dashboard/oracle-ticks`. This is separate from (and does not
+      replace) the mainnet-disabled `/api/cron/oracle` route (§0, §1a step 3).
+      - **One real gap this doesn't close**: when the real price *falls* below an oracle's stored
+        value, `sync_from_feed()` can't push the correction through — only an admin-signed
+        `set_reference_value` refresh can (see `MAINNET_DEPLOYMENT_EVIDENCE.md` §13.2). The dApp's
+        own alerting already opens `oracle_warning` once 3/4 of the staleness window has passed
+        (6h before stale on the 24h-window assets, 12h before on GILTS's 172800s window) — until
+        the scheduled relay fallback (§10 item 1b) exists, that alert should go to this same
+        channel, with a best-effort (not formally committed) admin response typically within a
+        few hours.
 - [ ] The 30-minute MOCKUSDY market is either excluded from the UI's live-market list or clearly
       labeled matured/closed — it cannot mint or trade, only read.
 - [ ] The dApp's transaction-submission retry path is confirmed to check Horizon by hash before

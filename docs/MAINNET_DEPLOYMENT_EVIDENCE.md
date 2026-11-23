@@ -1260,9 +1260,13 @@ existed (`44203363932`, where `lint` passed and only `dependency audit` failed).
 `crypto-bigint 0.5.5`, pulled in transitively via `soroban-env-host → k256 → ecdsa →
 elliptic-curve`, pinned by `soroban-sdk` 26.0.1 and not upgradable without an upstream release —
 confirmed absent from every contract's actual `wasm32v1-none` dependency tree, and confirmed the
-suggested fix version, `0.7.6`, is itself yanked) predates this deployment's own changes and is
-left open pending an explicit decision on how to record the risk acceptance, rather than
-silently suppressed.
+suggested fix version, `0.7.6`, is itself yanked) predates this deployment's own changes.
+
+**Update (2026-11-23):** this is now fixed too, not left open. Explicit sign-off was obtained
+before recording the risk acceptance (this is a security-relevant action, not something to
+decide unilaterally) — see
+[`.cargo/audit.toml`](../.cargo/audit.toml) for the ignore entry and its full justification.
+`dependency audit` is green as of commit `8932e2f`.
 
 **Corrected claim about today's live contracts — they *are* third-party-reproducible.** The
 original text above said the original build's absolute paths "were never recorded and can't be

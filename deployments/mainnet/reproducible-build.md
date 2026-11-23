@@ -165,20 +165,30 @@ yourself with `strings` as shown above if you need it.
 
 **Correction (2026-11-23), a second issue:** the command above does not run as written against
 `3af9388` itself, checked out on its own — `scripts/deploy/reproducible_build.sh` did not exist
-at that commit (it was added later, at `ae6ccd9`). To verify a historical commit that predates
-the script, copy the script in from the current `mainnet` HEAD before running it:
+at that commit (it was added later, at `ae6ccd9`). Neither did `rust-toolchain.toml` (added at
+`cf629eb`), so without a further fix, step 4 below (relying on the committed toolchain file to
+auto-switch `rustup`) silently does nothing at that old commit, and `cargo build` falls through to
+whatever toolchain happens to be your own default. To verify a historical commit that predates
+both files, copy them in from the current `mainnet` HEAD and pin the toolchain explicitly on the
+command line (don't rely on the file alone, since it isn't there yet):
 
 ```sh
 git worktree add /tmp/repro-check 3af9388
-cp "$(git -C /tmp/repro-check rev-parse --show-toplevel)/../principal/scripts/deploy/reproducible_build.sh" \
-  /tmp/repro-check/scripts/deploy/ 2>/dev/null || \
-  git show mainnet:scripts/deploy/reproducible_build.sh > /tmp/repro-check/scripts/deploy/reproducible_build.sh
+# In a fresh clone (not an existing checkout that already has a local `mainnet` branch), this
+# repository's default branch is `main`; use `origin/mainnet` to reach the mainnet branch's tip:
+git show origin/mainnet:scripts/deploy/reproducible_build.sh > /tmp/repro-check/scripts/deploy/reproducible_build.sh
+git show origin/mainnet:rust-toolchain.toml > /tmp/repro-check/rust-toolchain.toml
 chmod +x /tmp/repro-check/scripts/deploy/reproducible_build.sh
-cd /tmp/repro-check && REMAP_CARGO_HOME_TO="$ORIGINAL_CARGO_HOME" ./scripts/deploy/reproducible_build.sh
+cd /tmp/repro-check
+rustup toolchain install 1.94.1  # only needed once per machine
+REMAP_CARGO_HOME_TO="$ORIGINAL_CARGO_HOME" rustup run 1.94.1 ./scripts/deploy/reproducible_build.sh
 ```
 
-Any commit at or after `ae6ccd9` already has the script in its own tree, so this extra step is
-only needed for commits older than that.
+(`rustup run 1.94.1 <command>` pins the toolchain for that one invocation explicitly, the same
+effect `rust-toolchain.toml` has automatically once it's present — needed here only because the
+file itself isn't in this old commit's tree.) Any commit at or after `cf629eb` already has
+`rust-toolchain.toml` in its own tree, and any commit at or after `ae6ccd9` already has the
+script too, so this extra step is only needed for commits older than those.
 
 ## How to reproduce a build yourself
 
@@ -186,16 +196,31 @@ only needed for commits older than that.
 2. Make sure you're on `x86_64-unknown-linux-gnu` (native, or a pinned `linux/amd64` container —
    `reproducible_build.sh` will refuse to run otherwise and tell you why).
 3. `git clone` this repository (or `git worktree add` a given commit) and `cd` into it. If the
-   commit predates `ae6ccd9`, copy `scripts/deploy/reproducible_build.sh` in from current `mainnet`
-   first (see above) — it won't be in that old commit's own tree.
+   commit predates `ae6ccd9`/`cf629eb`, copy `scripts/deploy/reproducible_build.sh` and/or
+   `rust-toolchain.toml` in from current `mainnet` first (see above) — they won't be in that old
+   commit's own tree, and the recipe silently uses the wrong toolchain without them.
 4. Run `rustc --version` — because of the committed `rust-toolchain.toml`, `rustup` will
    transparently download and switch to `1.94.1 (e408947bf 2026-03-25)` if you don't already
-   have it installed. Confirm the version string matches exactly before proceeding.
+   have it installed. Confirm the version string matches exactly before proceeding. If you copied
+   the toolchain file in manually per step 3, use `rustup run 1.94.1 rustc --version` instead to
+   confirm the same thing without relying on the (just-copied, not git-tracked-at-that-commit)
+   file alone.
 5. For a **future** deployment (anything built with this script going forward): run
    `./scripts/deploy/reproducible_build.sh` with no overrides. For **today's already-live**
    contracts specifically: recover the embedded path yourself with `strings` on a fetched
    deployed wasm (see above), then run it with `REMAP_CARGO_HOME_TO=<that recovered path>`.
 6. Compare the printed hashes against the manifest you're checking.
+
+## Why the 12-of-12 verification isn't a public CI job
+
+A standing public log of the full 12/12 match against today's live contracts (not just against
+other future builds) would need `REMAP_CARGO_HOME_TO` set to the literal recovered path — but
+putting that literal value into a committed, public CI config would reintroduce the exact
+operator-home-directory leak this document just removed. A CI job that recovers the path itself
+at run time (fetch deployed wasm, `strings`, feed the result into the same job's own build) is
+possible and avoids that, but hasn't been built yet — tracked here as a real, welcome
+improvement, not an oversight, and not blocking anyone from running the verification locally with
+the steps above in the meantime.
 
 ## Residual known limitation
 
