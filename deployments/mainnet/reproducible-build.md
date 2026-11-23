@@ -135,38 +135,66 @@ were unaffected by the `$CARGO_HOME` test above but still sensitive to the host 
 
 **Verified directly (2026-11-23):** fetched the real deployed `principal_oracle_adapter.wasm`
 from mainnet, confirmed its hash matches the manifest exactly, and read its embedded path with
-`strings`. Then rebuilt `3af9388` from a fresh `git worktree`, under a throwaway `$CARGO_HOME`
-with freshly re-fetched dependencies (so it isn't the real build cache), with:
+`strings` — it does not need to be published here, since anyone can recover it themselves the
+same way, and publishing it repeatedly in this document was itself an unnecessary, avoidable
+leak of the operator's real home directory (now fixed; see "Correction" below). Call this
+recovered value `$ORIGINAL_CARGO_HOME` below. Then rebuilt `3af9388` from a fresh `git worktree`,
+under a throwaway `$CARGO_HOME` with freshly re-fetched dependencies (so it isn't the real build
+cache), with:
 
 ```sh
-REMAP_CARGO_HOME_TO=/home/mohamed/.cargo ./scripts/deploy/reproducible_build.sh
+REMAP_CARGO_HOME_TO="$ORIGINAL_CARGO_HOME" ./scripts/deploy/reproducible_build.sh
 ```
 
-(`/home/mohamed/.cargo` is the literal path recorded in the deployed bytes — recovered via
-`strings` as above, not guessed.) **Result: 12 of 12 hashes matched the real, currently-live
-on-chain bytes exactly.** This confirms today's deployed contracts are reproducible from a cold
-checkout on a genuinely independent machine, given: `rustc 1.94.1` (the `rust-toolchain.toml`
-pin), `x86_64-unknown-linux-gnu` as the host, and `$CARGO_HOME` remapped to
-`/home/mohamed/.cargo` specifically (the one real value that happens to be baked into today's
-live bytes — a future redeploy will bake in whatever `REMAP_CARGO_HOME_TO` that future build
-used, documented alongside it when it happens).
+**Result: 12 of 12 hashes matched the real, currently-live on-chain bytes exactly.** This
+confirms today's deployed contracts are reproducible from a cold checkout on a genuinely
+independent machine, given: `rustc 1.94.1` (the `rust-toolchain.toml` pin),
+`x86_64-unknown-linux-gnu` as the host, and `$CARGO_HOME` remapped to the one real value that
+happens to be baked into today's live bytes (a future redeploy will bake in whatever
+`REMAP_CARGO_HOME_TO` that future build used, documented alongside it when it happens).
 
 The on-chain-hash-matches-manifest verification in §8 remains the first, simplest check. This
 section means a full from-scratch rebuild is now also available as a second, independent check,
 for today's contracts and not only future ones.
+
+**Correction (2026-11-23):** an earlier version of this document, and of
+`docs/MAINNET_DEPLOYMENT_EVIDENCE.md`, printed the recovered path in full, repeatedly — an
+unforced leak of the operator's real home directory into a public repository, pointed out by the
+dApp team. Fixed throughout: neither document states the literal value anymore. Recover it
+yourself with `strings` as shown above if you need it.
+
+**Correction (2026-11-23), a second issue:** the command above does not run as written against
+`3af9388` itself, checked out on its own — `scripts/deploy/reproducible_build.sh` did not exist
+at that commit (it was added later, at `ae6ccd9`). To verify a historical commit that predates
+the script, copy the script in from the current `mainnet` HEAD before running it:
+
+```sh
+git worktree add /tmp/repro-check 3af9388
+cp "$(git -C /tmp/repro-check rev-parse --show-toplevel)/../principal/scripts/deploy/reproducible_build.sh" \
+  /tmp/repro-check/scripts/deploy/ 2>/dev/null || \
+  git show mainnet:scripts/deploy/reproducible_build.sh > /tmp/repro-check/scripts/deploy/reproducible_build.sh
+chmod +x /tmp/repro-check/scripts/deploy/reproducible_build.sh
+cd /tmp/repro-check && REMAP_CARGO_HOME_TO="$ORIGINAL_CARGO_HOME" ./scripts/deploy/reproducible_build.sh
+```
+
+Any commit at or after `ae6ccd9` already has the script in its own tree, so this extra step is
+only needed for commits older than that.
 
 ## How to reproduce a build yourself
 
 1. Install `rustup` if you don't already have it (https://rustup.rs).
 2. Make sure you're on `x86_64-unknown-linux-gnu` (native, or a pinned `linux/amd64` container —
    `reproducible_build.sh` will refuse to run otherwise and tell you why).
-3. `git clone` this repository (or `git worktree add` a given commit) and `cd` into it.
+3. `git clone` this repository (or `git worktree add` a given commit) and `cd` into it. If the
+   commit predates `ae6ccd9`, copy `scripts/deploy/reproducible_build.sh` in from current `mainnet`
+   first (see above) — it won't be in that old commit's own tree.
 4. Run `rustc --version` — because of the committed `rust-toolchain.toml`, `rustup` will
    transparently download and switch to `1.94.1 (e408947bf 2026-03-25)` if you don't already
    have it installed. Confirm the version string matches exactly before proceeding.
 5. For a **future** deployment (anything built with this script going forward): run
    `./scripts/deploy/reproducible_build.sh` with no overrides. For **today's already-live**
-   contracts specifically: run it with `REMAP_CARGO_HOME_TO=/home/mohamed/.cargo` as shown above.
+   contracts specifically: recover the embedded path yourself with `strings` on a fetched
+   deployed wasm (see above), then run it with `REMAP_CARGO_HOME_TO=<that recovered path>`.
 6. Compare the printed hashes against the manifest you're checking.
 
 ## Residual known limitation

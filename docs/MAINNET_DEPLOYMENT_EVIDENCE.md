@@ -779,7 +779,7 @@ with these same scripts, `NETWORK=mainnet`). **`registration_watcher.sh` is now 
 continuously against mainnet**, installed as a real cron job on 2026-11-21:
 
 ```
-*/15 * * * * cd /home/mohamed/principal/scripts/self_service && ... ./registration_watcher.sh
+*/15 * * * * cd /home/<user>/principal/scripts/self_service && ... ./registration_watcher.sh
 ```
 
 (full command, including the shared-infra IDs it's pointed at, in `crontab -l` on the operator's
@@ -1121,15 +1121,40 @@ the fix: GILTS `max_stale_seconds() == 172800`.
 incident) means `sync_from_feed` refuses any feed price lower than the currently stored value
 (error `ValueDecreased`). No `max_stale_seconds` window changes this: if the real-world price
 falls and stays below the last stored value for longer than the window, the oracle goes stale on
-its own, with no fix available by raising the window further. This is a real, live-observed
-limitation, not hypothetical: as of 2026-11-23, MOCKXAUM's stored value is `360.3031` (from
-2026-11-22 23:55:20 UTC) while the real feed has shown `359.0083` (−0.36%) since 00:12 UTC on
-2026-11-23 — refused each time as `decrease`. If gold stays below `360.3031`, MOCKXAUM's oracle
-will go stale at 2026-11-23 23:55:20 UTC purely from this, independent of any keeper or
-`max_stale_seconds` setting. GILTS and CETES can hit the same condition. No code change is
-planned for this — it is the deliberate insolvency-prevention design documented in
+its own, with no fix available by raising the window further. No code change is planned for this
+— it is the deliberate insolvency-prevention design documented in
 `contracts/oracle_adapter/src/lib.rs`'s module doc — but it is a real operational limit anyone
-running a keeper against these oracles should expect, not a bug to chase.
+running a keeper against these oracles should expect, not a bug to chase. GILTS and CETES can hit
+the same condition, not only XAUM.
+
+> **Correction (2026-11-23):** this section originally gave MOCKXAUM's figures as `360.3031`
+> and `359.0083`. Both were off by a factor of 10 — the oracle has 7 decimals, so the real raw
+> values (`36030310000` / `35900830000`) are **`3,603.031`** and **`3,590.083`**. Caught by the
+> dApp team; corrected here.
+
+This is a real, live-observed limitation, demonstrated twice on MOCKXAUM within 24 hours, not
+hypothetical:
+
+- **2026-11-22 23:55:20 UTC:** stored value `3,603.031`; the feed then showed `3,590.083`
+  (−0.36%), refused each time as `decrease`.
+- Gold subsequently rose back above `3,603.031`; a later `sync_from_feed()` accepted the feed's
+  new value, `3,647.992`, with a fresh timestamp.
+- **2026-11-23, observed independently by the dApp team at 10:52 UTC and confirmed here:** gold
+  fell back below `3,647.992` again. With no fix, the oracle was on track to go stale at
+  **2026-11-24 07:03:30 UTC** (`stored timestamp + max_stale_seconds`).
+- **Fix applied, 2026-11-23 12:53:17 UTC:** since the monotonic check is `value < current_price`
+  (strictly less than — confirmed directly in source, both call sites), resubmitting the
+  *same* stored value with a current timestamp is accepted; it is not a decrease, and a 0%
+  "deviation" trivially passes the deviation guard. `mainnet-admin` called
+  `set_reference_value(caller, source=0x00…00, value=36479920000, timestamp=now)` — the same
+  manual/admin source used throughout this deployment — tx
+  [`735169dda03bcc0e46899fca69f004915dbe4655f8016d38af13842bdaa9af86`](https://stellar.expert/explorer/public/tx/735169dda03bcc0e46899fca69f004915dbe4655f8016d38af13842bdaa9af86),
+  returned `true`. Verified after: `is_available() == true`, new staleness deadline
+  ≈2026-11-24 12:53:17 UTC — past the previously-predicted stale time, with no false claim about
+  the price (the stored value is unchanged, only its freshness is). This is a **manual
+  workaround for one instance, not a fix for the limitation itself** — it still requires a human
+  (or a scheduled relay willing to do the same thing) to notice and act before each deadline,
+  for as long as the real price stays below the stored value.
 
 ## 14. Incident: WASM build non-reproducibility, found by the dApp team and remediated (2026-11-22)
 
@@ -1243,13 +1268,48 @@ silently suppressed.
 original text above said the original build's absolute paths "were never recorded and can't be
 recovered," concluding a from-scratch rebuild of today's live contracts wasn't possible. That was
 wrong. **The path is recorded in the deployed bytes themselves.** `strings` on any fetched
-deployed wasm shows it directly — e.g. `principal_oracle_adapter.wasm` embeds
-`/home/mohamed/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/soroban-sdk-26.0.1/src/{env,ledger,vec}.rs`.
+deployed wasm shows it directly — e.g. `principal_oracle_adapter.wasm` embeds a path of the form
+`/home/<user>/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/soroban-sdk-26.0.1/src/{env,ledger,vec}.rs`.
 Verified by fetching the real deployed wasm from mainnet (hash confirmed matching the manifest),
 reading the embedded path with `strings`, then rebuilding `3af9388` from a fresh `git worktree`
 under a throwaway `$CARGO_HOME` (freshly re-fetched, not the real build cache) with
-`REMAP_CARGO_HOME_TO=/home/mohamed/.cargo ./scripts/deploy/reproducible_build.sh`. **Result: 12
+`REMAP_CARGO_HOME_TO=<that recovered path> ./scripts/deploy/reproducible_build.sh`. **Result: 12
 of 12 hashes matched the real, currently-live on-chain bytes exactly.** Today's deployed
 contracts are reproducible from a cold checkout on a genuinely independent machine, given the
 pinned toolchain, the pinned host, and `$CARGO_HOME` remapped to the one literal value recovered
 from the bytes. Full detail and the exact commands: `deployments/mainnet/reproducible-build.md`.
+
+**Correction (2026-11-23):** an earlier version of this section, and of
+`reproducible-build.md`, printed that literal path in full, repeatedly — a real, avoidable leak
+of the operator's own home directory into a public repository, caught by the dApp team. Fixed
+throughout: this document no longer states the literal value anywhere; recover it yourself with
+`strings` as described above.
+
+## 15. dApp team's smoke-test wallet granted on all 5 markets (2026-11-23)
+
+Per the dApp team's own option (b) in their 2026-11-23 follow-up (a self-service market doesn't
+work for this: it needs the same admin grant anyway, and the app only lists the five manifest
+markets) — their wallet, confirmed already funded and holding all five trustlines before any
+grant was attempted:
+
+**Wallet:** `GBQEUZZ6HRC7RFT23LWWQWWZ5RQMGCGE4GUCKYKKI2EXDABJA4NS7VNH`
+
+Verified live before granting: all 5 classic-asset trustlines present and `is_authorized=true`
+(Horizon), 10 XLM balance. Account-level Permissioning standing confirmed `false` beforehand.
+
+| Step | Tx hash |
+|---|---|
+| `grant_account` (once) | [`15d20a0c886b685d53103d208a9ae43750413bac131953832b4c2bd751dbb5f1`](https://stellar.expert/explorer/public/tx/15d20a0c886b685d53103d208a9ae43750413bac131953832b4c2bd751dbb5f1) |
+| `grant_asset` MOCKUSDY PT | [`42f03cfc48b5ac0a213480f6d42615c83e4389b2cf98e0ac77edb49928022156`](https://stellar.expert/explorer/public/tx/42f03cfc48b5ac0a213480f6d42615c83e4389b2cf98e0ac77edb49928022156) |
+| `grant_asset` MOCKUSDY YT | [`6a95433341e9a0948e38e0bdab9c3cbeac9b3f93a1660b1a76b0707e3bd7d7f5`](https://stellar.expert/explorer/public/tx/6a95433341e9a0948e38e0bdab9c3cbeac9b3f93a1660b1a76b0707e3bd7d7f5) |
+| `grant_asset` MOCKUSTRY PT/YT, MOCKGILTS PT/YT, MOCKCETES PT/YT, MOCKXAUM PT/YT | 8 further successful `ast_grant` events, same pattern, same session |
+
+(MOCKUSDY granted first, as requested — the Deliverable 1 smoke test uses it.)
+
+Sent 10 units of each of the 5 mock assets to the wallet afterward (classic-asset payments from
+each asset's own issuer), confirmed landed via Horizon: 10.0000000 each of MOCKUSDY, MOCKUSTRY,
+MOCKGILTS, MOCKCETES, MOCKXAUM.
+
+**Verified after granting, for all 5 markets:** `Permissioning.is_allowed(wallet) == true`;
+`is_allowed_for_asset(wallet, <PT>) == true` and `is_allowed_for_asset(wallet, <YT>) == true`
+for every one of the 10 PT/YT tokens.

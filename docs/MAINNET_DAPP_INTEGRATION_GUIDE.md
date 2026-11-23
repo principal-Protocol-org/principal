@@ -34,6 +34,20 @@
 > pending an explicit decision on how to record that risk acceptance. (6) §3.6's "grant yourself"
 > example was wrong — `grant_account`/`grant_asset` are admin-only, confirmed in source; corrected
 > below.
+>
+> **Update, 2026-11-23 (second follow-up) — smoke-test wallet granted, two more corrections.**
+> Your wallet `GBQEUZZ…7VNH` is now granted on all 5 markets plus sent 10 of each mock asset —
+> full tx record: `MAINNET_DEPLOYMENT_EVIDENCE.md` §15. Two things you caught, both fixed: (a)
+> MOCKXAUM's figures in §13.2 were off by 10x (7 decimals, not 1) — corrected to `3,603.031` /
+> `3,590.083`; separately, the oracle's falling-price limitation you flagged as urgent (predicted
+> stale 2026-11-24 07:03 UTC) was addressed by resubmitting its *same* stored value with a fresh
+> timestamp (legal: the monotonic check is strictly `<`, not `<=`) — tx and full timeline in
+> §13.2. (b) The literal recovered build path was printed in full repeatedly across our docs —
+> a real, avoidable leak of the operator's home directory into this public repo; removed
+> throughout, replaced with `/home/<user>/...` placeholders. (c) The reproducible-build recipe
+> didn't actually run as written against `3af9388` itself — the script didn't exist at that
+> commit yet (added later, at `ae6ccd9`); the doc now says to copy it in from current `mainnet`
+> first when verifying a commit older than that.
 
 **Audience:** the Principal dApp team (`principal-Protocol-org/dapp`). **Written by:** the
 contracts/deployment side, as a senior-auditor-grade handoff — every claim below is backed by a
@@ -581,9 +595,10 @@ blocking the dApp code change itself):
       `stellar contract extend` against every mainnet instance before then. Not done now
       deliberately (4 months out, real XLM cost, no benefit to doing it this early) — needs a
       scheduled reminder, not a code change. `MAINNET_DEPLOYMENT_EVIDENCE.md` §10 item 6.
-- [ ] **One wallet granted on the five official markets**, for the dApp's own signed smoke test
-      (Tranche 3, Deliverable 1). Only the Permissioning admin can do this — send the wallet
-      address and it will be granted the same day.
+- [x] ~~One wallet granted on the five official markets~~ — done 2026-11-23. Wallet
+      `GBQEUZZ6HRC7RFT23LWWQWWZ5RQMGCGE4GUCKYKKI2EXDABJA4NS7VNH` granted account-level standing
+      plus PT/YT standing on all 5 markets, and sent 10 of each mock asset. Full tx record:
+      `MAINNET_DEPLOYMENT_EVIDENCE.md` §15.
 
 ---
 
