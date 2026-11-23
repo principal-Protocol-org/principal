@@ -25,7 +25,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # Must match wasm/test's pinned toolchain: the repo's rust-toolchain.toml makes rustup
+      # auto-switch to 1.94.1 for any cargo command run here, but dtolnay/rust-toolchain@stable
+      # only installs rustfmt/clippy onto the "stable" toolchain it sets up -- a different rustup
+      # toolchain object -- leaving 1.94.1 (the one actually invoked) without those components.
+      - uses: dtolnay/rust-toolchain@1.94.1
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2

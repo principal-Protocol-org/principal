@@ -894,6 +894,14 @@ Next steps, in priority order:
    round and hit again for every subsequent asset. Any future testing checklist or self-service
    doc should call both out explicitly as required steps for a *new human tester* against a *new
    asset*, not just a new market on an already-tested asset.
+6. **Contract instance TTLs need extending before ~March 2027.** Verified live (2026-11-23):
+   GILTS's `OracleAdapter` instance has `liveUntilLedgerSeq = 67658388`; at ledger 65627481
+   (2026-11-23 08:44 UTC) and Stellar's ~5s average close time, that's roughly **2027-03-20**,
+   consistent with the dApp team's independently-reported 17–21 March 2027 window. Not urgent
+   today (~4 months out), but real: every contract instance and its persistent storage entries
+   need `stellar contract extend` run against them before expiry, or they stop being callable.
+   Not extended now deliberately — extending ~4 months early would spend real XLM rent for no
+   benefit over doing it closer to the deadline. Needs a scheduled reminder, not a code change.
 
 ## 11. Transaction ledger reconciliation (2026-11-18)
 
@@ -1040,15 +1048,20 @@ non-zero liquidity; all 5 treasury trustlines exist. **The dApp-facing manifest
 re-validated against the dApp's own schema — the copy already handed to the dApp team pointed at
 the broken v1 contracts and must be replaced with this one.**
 
-## 13. Incident: `max_stale_seconds` shorter than the real feed's publish interval (2026-11-22)
+## 13. Incident: `max_stale_seconds` shorter than the real feed's publish interval (2026-11-21)
+
+> **Date correction (2026-11-23):** this incident's report and alerts were on **2026-11-21**, not
+> 2026-11-22 as an earlier version of this section said. The fix transactions below are correctly
+> dated 2026-11-22 — i.e. the fix landed the day *after* the report, not before it as the earlier
+> wording implied.
 
 **Report from the dApp developer, verbatim (translated): all 5 mainnet oracles periodically go
-stale again regardless of the keeper; ages observed 2026-11-22 14:01 UTC: USDY 2h24, USTRY 2h24,
+stale again regardless of the keeper; ages observed 2026-11-21 14:01 UTC: USDY 2h24, USTRY 2h24,
 CETES 3h57, XAUM 4h02, GILTS 17h50. The real RedStone feed declares `resolution() = 43200s` (12h).
 The keeper runs every 5 minutes and did call `sync_from_feed` successfully at 14:12, but the
 oracle stayed stale because `sync_from_feed` keeps the *feed's own* timestamp, not "now" — and
 `max_stale_seconds` was 3600s (1h), shorter than the feed's own 12h publish cadence. Five critical
-`oracle_stale` alerts opened at 15:00 UTC.**
+`oracle_stale` alerts opened at 15:00:03 UTC on 2026-11-21.**
 
 **Verified directly, confirmed exactly as reported**: `feed.resolution() == 43200` (queried live
 against `CBMGLKUQZVSAIL5CPDDAWSUY7MAKXISHMOZEVLMBUWBMFGHRJSR4WYRF`); all 5 `OracleAdapter`s had
@@ -1080,6 +1093,43 @@ freshness bound than a fast-moving market price would tolerate, but appropriate 
 RWAs these mock assets track (USDY, USTRY, GILTS, CETES, XAUM) are all slow-moving,
 Treasury/NAV-style instruments by design, not an asset where a 24-hour-old price is a meaningful
 economic risk the way it would be for a volatile token.
+
+### 13.1 Follow-up (2026-11-23): GILTS's real cadence is 24h, not 12h — 86400s wasn't enough margin
+
+The dApp team found that RedStone's own public relayer config for this feed
+([`stellarSep40.json`](https://github.com/redstone-finance/redstone-oracles-monorepo/blob/main/packages/relayer-remote-config/main/relayer-manifests-non-evm/stellarSep40.json))
+gives **GILTS a 24-hour heartbeat**, while the other four assets have 12 hours. The "24h, ~2×
+nominal cadence" rule above was applied uniformly assuming a 12h cadence for all five — correct
+for USDY/USTRY/CETES/XAUM, but exactly GILTS's real interval, not 2× it. The relayer's write
+lands ~10s after the 24h mark, so on any day GILTS doesn't move its 0.1% deviation threshold
+(weekends, UK holidays), its oracle goes stale ~10s before the next price arrives — a structural
+gap built into the two settings, reproduced live on 2026-11-22: `is_available()` was `true` at
+20:10:21 UTC and `false` at 20:11:00 UTC, with the feed's next GILTS record landing at 20:10:40
+UTC (it stayed stale until 00:02:28 UTC on 2026-11-23 only because the dApp's own keeper scheduler
+hit its daily quota that evening — a separate, now-fixed issue on their side, not this one).
+
+**Fix**: applying this doc's own rule correctly for GILTS's actual 24h cadence —
+`set_safety_params(caller, 172800, 1000)` (172,800s = 2×24h) — on
+`CD22HNREJHKTATZMFKALCTHJVKC35MHO2SAUSTG4M6PWLJZPS724J6X7`, tx
+[`efa8efbffd1927443ee27a75e8ee237a6e26e9e2c34af3f5fed827e39963ee95`](https://stellar.expert/explorer/public/tx/efa8efbffd1927443ee27a75e8ee237a6e26e9e2c34af3f5fed827e39963ee95).
+The other four stay at 86,400s (already correct 2× for their real 12h cadence). Verified after
+the fix: GILTS `max_stale_seconds() == 172800`.
+
+### 13.2 Known limitation, not fixed (by design): a falling price ages the oracle
+
+`OracleAdapter`'s monotonic-non-decreasing invariant (§ design note, also relevant to the §12
+incident) means `sync_from_feed` refuses any feed price lower than the currently stored value
+(error `ValueDecreased`). No `max_stale_seconds` window changes this: if the real-world price
+falls and stays below the last stored value for longer than the window, the oracle goes stale on
+its own, with no fix available by raising the window further. This is a real, live-observed
+limitation, not hypothetical: as of 2026-11-23, MOCKXAUM's stored value is `360.3031` (from
+2026-11-22 23:55:20 UTC) while the real feed has shown `359.0083` (−0.36%) since 00:12 UTC on
+2026-11-23 — refused each time as `decrease`. If gold stays below `360.3031`, MOCKXAUM's oracle
+will go stale at 2026-11-23 23:55:20 UTC purely from this, independent of any keeper or
+`max_stale_seconds` setting. GILTS and CETES can hit the same condition. No code change is
+planned for this — it is the deliberate insolvency-prevention design documented in
+`contracts/oracle_adapter/src/lib.rs`'s module doc — but it is a real operational limit anyone
+running a keeper against these oracles should expect, not a bug to chase.
 
 ## 14. Incident: WASM build non-reproducibility, found by the dApp team and remediated (2026-11-22)
 
@@ -1145,12 +1195,61 @@ them to fixed strings before the compiler ever sees them. Verified this closes t
 builds of `3af9388` from different checkout paths *and* different `$CARGO_HOME` locations now
 produce identical hashes to each other. CI's `wasm` job now uses this script too.
 
-**Status after remediation:** going forward, every contract deployed from now on is
-independently, byte-for-byte reproducible by anyone, from any machine, using
-`./scripts/deploy/reproducible_build.sh`. This does **not** retroactively make today's
-already-live contracts third-party-reproducible — their on-chain bytes permanently embed
-whatever absolute paths the original build happened to use, information that was never recorded
-and can't be recovered. For today's live contracts, the authoritative check remains the existing
-on-chain-hash-matches-manifest verification in §8 (cross-checked at upload time), not a
-from-scratch rebuild by a third party. No contract source changed in either part of this fix;
-both are purely about the build environment.
+**Status after remediation (superseded by §14.1 below):** going forward, every contract
+deployed from now on is independently, byte-for-byte reproducible by anyone, from any machine,
+using `./scripts/deploy/reproducible_build.sh`.
+
+### 14.1 Follow-up (2026-11-23): host OS/arch also matters, the imprecise wording, and a corrected claim about today's live contracts
+
+The dApp team tested the fix above (at `ae6ccd9`) on two more hosts and found real, measured
+results:
+
+| Host | Permissioning (embeds no `$CARGO_HOME` path) | Matches our CI's run |
+|---|---|---|
+| CI, `x86_64-unknown-linux-gnu` | `4437468d…` (= deployed) | reference |
+| macOS `aarch64-apple-darwin` | `93afc34f…` | 0 of 12 |
+| Linux `aarch64-unknown-linux-gnu` (`rust:1.94.1-slim`) | `c563cb99…` | 0 of 12 |
+
+Permissioning and RiskControl embed no machine-specific path at all, yet still changed with the
+host — confirming the host OS/architecture is a **third, independent cause**, separate from both
+the toolchain version and the `$CARGO_HOME`/checkout paths. **Fix:**
+`scripts/deploy/reproducible_build.sh` now checks `rustc -vV`'s `host:` line and refuses to run
+on anything but `x86_64-unknown-linux-gnu`, pointing at a pinned `linux/amd64` container as the
+alternative. CI's `ubuntu-latest` runners already satisfy this.
+
+**Wording correction:** the original write-up above said the `$CARGO_HOME` test was verified
+"on different machines." It wasn't — it was one physical machine with two different
+`$CARGO_HOME` locations and two different checkout paths set via environment variables. Corrected
+here and in `reproducible-build.md`.
+
+**A real regression this fix introduced, found and fixed:** adding `rust-toolchain.toml` made
+`rustup` auto-switch to `1.94.1` for any cargo command run in the repo — including `cargo fmt`,
+invoked by CI's `lint` job. But that job's `dtolnay/rust-toolchain@stable` step only installed
+the `rustfmt`/`clippy` components onto the floating "stable" toolchain it set up, a different
+rustup toolchain object than `1.94.1` — leaving `cargo fmt` to fail with
+`'cargo-fmt' is not installed for the toolchain '1.94.1-x86_64-unknown-linux-gnu'`. Confirmed via
+`gh run view` on run `44974232705`, and confirmed absent from a run before `rust-toolchain.toml`
+existed (`44203363932`, where `lint` passed and only `dependency audit` failed). **Fixed:**
+`lint`'s toolchain step re-pinned to `dtolnay/rust-toolchain@1.94.1` to match `wasm`/`test`.
+`dependency audit`'s pre-existing failure (`cargo audit` flags `RUSTSEC-2026-0387` in
+`crypto-bigint 0.5.5`, pulled in transitively via `soroban-env-host → k256 → ecdsa →
+elliptic-curve`, pinned by `soroban-sdk` 26.0.1 and not upgradable without an upstream release —
+confirmed absent from every contract's actual `wasm32v1-none` dependency tree, and confirmed the
+suggested fix version, `0.7.6`, is itself yanked) predates this deployment's own changes and is
+left open pending an explicit decision on how to record the risk acceptance, rather than
+silently suppressed.
+
+**Corrected claim about today's live contracts — they *are* third-party-reproducible.** The
+original text above said the original build's absolute paths "were never recorded and can't be
+recovered," concluding a from-scratch rebuild of today's live contracts wasn't possible. That was
+wrong. **The path is recorded in the deployed bytes themselves.** `strings` on any fetched
+deployed wasm shows it directly — e.g. `principal_oracle_adapter.wasm` embeds
+`/home/mohamed/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/soroban-sdk-26.0.1/src/{env,ledger,vec}.rs`.
+Verified by fetching the real deployed wasm from mainnet (hash confirmed matching the manifest),
+reading the embedded path with `strings`, then rebuilding `3af9388` from a fresh `git worktree`
+under a throwaway `$CARGO_HOME` (freshly re-fetched, not the real build cache) with
+`REMAP_CARGO_HOME_TO=/home/mohamed/.cargo ./scripts/deploy/reproducible_build.sh`. **Result: 12
+of 12 hashes matched the real, currently-live on-chain bytes exactly.** Today's deployed
+contracts are reproducible from a cold checkout on a genuinely independent machine, given the
+pinned toolchain, the pinned host, and `$CARGO_HOME` remapped to the one literal value recovered
+from the bytes. Full detail and the exact commands: `deployments/mainnet/reproducible-build.md`.

@@ -11,24 +11,34 @@
 > rebuild of `3af9388` getting 0/12 matching hashes had two causes, both real: (1) the repo had
 > no pinned Rust toolchain — `rust-toolchain.toml` now pins `1.94.1`, and CI's WASM-building jobs
 > no longer float on `@stable`; (2) rustc also bakes absolute `$CARGO_HOME`/checkout paths into
-> the WASM (via `soroban-sdk`'s own `file!()`/`#[track_caller]` use), so even with the identical
-> toolchain, your machine's own paths would still produce different bytes than ours — fixed via
-> `--remap-path-prefix` in the new `scripts/deploy/reproducible_build.sh`, verified to make two
-> builds on different machines match each other exactly. **Important:** this makes every
-> contract deployed from now on independently reproducible by you from a cold checkout — it does
-> **not** make today's already-live contracts byte-reproducible from scratch on your machine,
-> since they were built before this fix existed and their on-chain bytes permanently embed paths
-> that were never recorded. For today's live contracts, trust the on-chain-hash-matches-manifest
-> check in evidence doc §8, not a from-scratch rebuild. Recipe:
-> `deployments/mainnet/reproducible-build.md`. Full writeup: `MAINNET_DEPLOYMENT_EVIDENCE.md` §14.
+> the WASM (via `soroban-sdk`'s own `file!()`/`#[track_caller]` use) — fixed via
+> `--remap-path-prefix` in `scripts/deploy/reproducible_build.sh`.
 > The oracle staleness recurrence you flagged separately (`max_stale_seconds` shorter than the
 > feed's real 12h cadence) is also fixed — all 5 oracles now at `max_stale_seconds=86400`,
 > `MAINNET_DEPLOYMENT_EVIDENCE.md` §13.
+>
+> **Update, 2026-11-23 — your follow-up: all four points verified, three real findings fixed.**
+> (1) `accessContact` is indeed app-side, checklist corrected below. (2) GILTS's real RedStone
+> heartbeat is 24h, not 12h — `max_stale_seconds` raised to `172800` on GILTS specifically
+> (`MAINNET_DEPLOYMENT_EVIDENCE.md` §13.1); the falling-price limitation (currently live on
+> MOCKXAUM) is now documented as a known limit, not a bug (§13.2); §13's dates corrected to
+> 2026-11-21. (3) Host OS/architecture is confirmed to matter independently of the toolchain pin
+> — `reproducible_build.sh` now refuses to run on anything but `x86_64-unknown-linux-gnu`. (4)
+> **Correction to our own earlier claim:** today's already-live contracts *are*
+> third-party-reproducible after all — the original build's absolute path is recoverable
+> directly from the deployed bytes via `strings`, and we verified 12/12 against the real
+> on-chain hashes using that recovered path. Full detail: `MAINNET_DEPLOYMENT_EVIDENCE.md` §14.1
+> and `deployments/mainnet/reproducible-build.md`. (5) CI's `lint` job was broken by our own
+> `rust-toolchain.toml` fix (a real regression, now fixed) — `dependency audit`'s `cargo audit`
+> failure (`RUSTSEC-2026-0387`, a transitive dependency with no reachable fix) is still open,
+> pending an explicit decision on how to record that risk acceptance. (6) §3.6's "grant yourself"
+> example was wrong — `grant_account`/`grant_asset` are admin-only, confirmed in source; corrected
+> below.
 
 **Audience:** the Principal dApp team (`principal-Protocol-org/dapp`). **Written by:** the
 contracts/deployment side, as a senior-auditor-grade handoff — every claim below is backed by a
 real, verified Stellar mainnet transaction, not an assumption. **Status of mainnet contracts as of
-2026-11-22:** five mock assets, six markets, all live, wired, compliance-granted, and
+2026-11-23:** five mock assets, six markets, all live, wired, compliance-granted, and
 real-transaction tested (four of the five assets are on their "v2" contracts — see the update
 notice above). Zero fabricated data — see
 [`docs/MAINNET_DEPLOYMENT_EVIDENCE.md`](MAINNET_DEPLOYMENT_EVIDENCE.md) for the full narrative and
@@ -388,7 +398,13 @@ this script against your own test market if you want full control over timing in
 on the shared schedule — it needs no Principal key, only the admin credentials for whichever
 `RiskControl`/`Router`/`Permissioning` you point it at.)
 
-### 3.6 Grant yourself (or any test wallet) permission to actually trade
+### 3.6 Grant a test wallet permission to actually trade (admin does steps 3 and 4)
+
+> **Correction (2026-11-23):** this section previously said "Grant yourself," with steps 3 and 4
+> shown signed by the tester wallet itself. That's wrong and was confirmed to fail live
+> (`grant_account`/`grant_asset` both call `assert_admin` in `contracts/permissioning/src/lib.rs`
+> — a non-admin caller gets `Error(Contract, #2)`, Unauthorized). Only the Permissioning admin
+> can perform steps 3 and 4, for any wallet including your own. Corrected below.
 
 This is the step that bit this deployment hardest and is **easy to miss**: `PTToken`/`YTToken`'s
 `mint` checks **both** `Permissioning.is_allowed` (account-level) **and**
@@ -408,18 +424,22 @@ stellar tx new change-trust --source my-mainnet-tester --network mainnet \
 stellar contract invoke --id <your SAC_ID> --source my-mainnet-tester --network mainnet \
   -- set_authorized --id "$TESTER" --authorize true
 
-# 3. account-level Permissioning standing (signed by the Permissioning admin — here, you)
+# 3. account-level Permissioning standing -- admin-only (Permissioning::grant_account calls
+#    assert_admin; the tester cannot self-grant, confirmed against contracts/permissioning/src/lib.rs
+#    and by a real Error(Contract, #2) Unauthorized when a non-admin tries). Run this as the
+#    Permissioning admin, not the tester:
 stellar contract invoke --id CBCWU57AILKFDOYQAESFRPH57Q6UK66E7RBYV4ICZHNNGWIWFAHVRTXJ \
-  --source my-mainnet-tester --network mainnet \
-  -- grant_account --caller "$TESTER" --account "$TESTER"
+  --source <permissioning-admin-key> --network mainnet \
+  -- grant_account --caller <permissioning-admin-address> --account "$TESTER"
 
-# 4. per-asset Permissioning standing for the PT and YT tokens specifically (same signer)
+# 4. per-asset Permissioning standing for the PT and YT tokens specifically -- same admin-only
+#    rule (grant_asset also calls assert_admin), run as the admin too:
 stellar contract invoke --id CBCWU57AILKFDOYQAESFRPH57Q6UK66E7RBYV4ICZHNNGWIWFAHVRTXJ \
-  --source my-mainnet-tester --network mainnet \
-  -- grant_asset --caller "$TESTER" --account "$TESTER" --asset <your PT_ADDR>
+  --source <permissioning-admin-key> --network mainnet \
+  -- grant_asset --caller <permissioning-admin-address> --account "$TESTER" --asset <your PT_ADDR>
 stellar contract invoke --id CBCWU57AILKFDOYQAESFRPH57Q6UK66E7RBYV4ICZHNNGWIWFAHVRTXJ \
-  --source my-mainnet-tester --network mainnet \
-  -- grant_asset --caller "$TESTER" --account "$TESTER" --asset <your YT_ADDR>
+  --source <permissioning-admin-key> --network mainnet \
+  -- grant_asset --caller <permissioning-admin-address> --account "$TESTER" --asset <your YT_ADDR>
 ```
 
 **Real example of exactly this gap, found live during this deployment**: the first attempt to mint
@@ -548,9 +568,22 @@ blocking the dApp code change itself):
 - [x] ~~WASM build non-reproducibility (0/12 hashes matched on rebuild)~~ — fixed going forward,
       2026-11-22: unpinned Rust toolchain + unnormalized absolute paths, not the source. Every
       future deployment is reproducible by you from a cold checkout; today's already-live
-      contracts are not retroactively rebuildable from scratch — see §14's "Important" note.
-- [ ] `accessContact` — Principal still needs to name a contact and determine where it belongs;
-      no matching field was found anywhere in this repo's code, schema, or migrations.
+      contracts are now also confirmed reproducible given the exact recovered build path — see
+      §14's "Important, corrected" note.
+- [x] ~~`accessContact`~~ — app side (dApp manifest), nothing to do in this repository. The field
+      lives in the dApp's own `config/manifests/mainnet.json` (schema in `lib/protocol/manifest.ts`,
+      UI in `components/app/market/access-request.tsx`), which is why searching this repo found
+      nothing. Access requests sent there still have to be forwarded to the Permissioning admin
+      here — only the admin can grant.
+- [ ] **Contract instance lifetimes.** Verified live (2026-11-23): GILTS's `OracleAdapter`
+      instance TTL is ledger `67658388`, ≈2027-03-20 at Stellar's ~5s average close time —
+      consistent with the ~17–21 March 2027 window already flagged. Someone needs to run
+      `stellar contract extend` against every mainnet instance before then. Not done now
+      deliberately (4 months out, real XLM cost, no benefit to doing it this early) — needs a
+      scheduled reminder, not a code change. `MAINNET_DEPLOYMENT_EVIDENCE.md` §10 item 6.
+- [ ] **One wallet granted on the five official markets**, for the dApp's own signed smoke test
+      (Tranche 3, Deliverable 1). Only the Permissioning admin can do this — send the wallet
+      address and it will be granted the same day.
 
 ---
 

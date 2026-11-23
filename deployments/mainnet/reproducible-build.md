@@ -1,10 +1,10 @@
 # Reproducible build recipe
 
 This is the recipe referenced by `docs/TRANCHE_2_3_TECHNICAL_SPECIFICATION.md`: steps that make
-every *future* contract build byte-for-byte reproducible by anyone, on any machine, so a build
-can be verified against its source without trusting us. (It does not retroactively make today's
-already-deployed contracts third-party-reproducible — see "Important" below for why, and what
-is verifiable for them instead.)
+a contract build byte-for-byte reproducible by anyone, on any machine, so a build can be
+verified against its source without trusting us. This covers both every future build (default
+settings) and today's already-live contracts specifically (one documented override) — see
+"Important, corrected" below.
 
 ## Root cause of the 2026-11-22 non-reproducibility report
 
@@ -69,11 +69,10 @@ expected — and now confirmed — to produce identical bytes.
 
 ## A second cause found while verifying the fix: absolute paths baked into the WASM
 
-The 12/12 match above was real, but it understated the problem: it was a same-machine rebuild
-(a `git worktree` still shares the host's `$CARGO_HOME` and only varies the checkout
-subdirectory). That is not representative of a genuinely independent rebuild on someone else's
-computer, which also has its own `$CARGO_HOME` (dependency source cache) and its own checkout
-path.
+The 12/12 match above was real, but it understated the problem: it was still one physical
+machine, with two different `$CARGO_HOME` locations and two different checkout paths set via
+environment variables — not two genuinely different machines. (An earlier draft of this document
+said "different machines"; that was imprecise and has been corrected.)
 
 This matters because rustc embeds absolute filesystem paths into the compiled output —
 dependency source paths under `$CARGO_HOME/registry/src/...` used by `file!()` /
@@ -85,58 +84,96 @@ the exact same pinned rustc.
 
 **Verified directly:** rebuilt commit `3af9388` a second time, under a `$CARGO_HOME` pointed at
 an empty, freshly-fetched directory instead of the real one. Result: **10 of 12 hashes changed**
-(only `principal_permissioning.wasm` and `principal_risk_control.wasm` were unaffected — those
-two apparently never exercise an SDK code path that embeds a registry path). This confirms the
-toolchain pin alone is not sufficient for a truly independent rebuild to match.
+(only `principal_permissioning.wasm` and `principal_risk_control.wasm` were unaffected on that
+pass — see below for why that turned out to be more specific than "these two embed no path").
+This confirms the toolchain pin alone is not sufficient for a truly independent rebuild to match.
 
 **Fix:** added [`scripts/deploy/reproducible_build.sh`](../../scripts/deploy/reproducible_build.sh),
-which builds with
-`RUSTFLAGS="--remap-path-prefix=$CARGO_HOME=/cargo-home --remap-path-prefix=$(pwd)=/build"`,
-normalizing both the dependency-cache path and the checkout path to fixed, machine-independent
-strings before they ever reach the compiler. **Verified this closes the gap:** rebuilding
-`3af9388` with this script from two different checkout paths *and* two different `$CARGO_HOME`
-locations (one real, one a throwaway empty directory) now produces **12/12 identical hashes
-between the two builds**, confirming the remap makes the output fully independent of where it's
-built.
+which builds with `--remap-path-prefix` on both the dependency-cache path and the checkout path,
+normalizing them to fixed strings before they ever reach the compiler. **Verified this closes
+the gap:** rebuilding `3af9388` with this script from two different checkout paths *and* two
+different `$CARGO_HOME` locations now produces **12/12 identical hashes between the two
+builds**.
 
-## Important: this does not make today's already-deployed bytes third-party-reproducible
+## The host OS/architecture is also part of the recipe
 
-The remap fix is for builds going forward. It cannot retroactively change what is already on
-mainnet: the contracts live today were built *without* path remapping, so their on-chain bytes
-permanently embed whatever absolute `$CARGO_HOME`/checkout paths the original build happened to
-use. A third party cannot reconstruct those exact paths, so **a from-scratch rebuild of today's
-live contracts by anyone other than the original builder's own machine will not produce a
-byte-identical match to the current chain state** — not because of a remaining bug, but because
-that information (the original builder's absolute paths) was never recorded and can't be
-recovered. The existing on-chain-hash-matches-manifest verification (§8, cross-checked at upload
-time) is the authoritative check for *today's* deployed contracts; it does not depend on anyone
-reproducing the build from a cold checkout.
+Confirmed (2026-11-23): the same recipe, same pinned `rustc 1.94.1`, on macOS `aarch64` and on
+Linux `aarch64` both produce different bytes than `x86_64-unknown-linux-gnu` — including for
+`principal_permissioning.wasm`, which carries no machine-specific path at all (only
+`/rustc/e408947bf…/library/…`, identical on every host with this rustc), so this is a genuinely
+separate cause from path embedding. The host ISA/OS affects codegen determinism for this target
+independent of everything else pinned so far.
 
-What the fix below actually guarantees: **every contract deployed from now on** — any future
-market's `OracleAdapter`, any redeploy, any new contract — will be independently, byte-for-byte
-reproducible by anyone, from any machine, using the recipe below, because the build that
-produces the bytes going on-chain will itself already be path-normalized.
+**Fix:** `reproducible_build.sh` now checks `rustc -vV`'s `host:` line and refuses to run on
+anything other than `x86_64-unknown-linux-gnu`, pointing at a pinned `linux/amd64` container as
+the alternative. CI's runners (`ubuntu-latest`) already satisfy this.
 
-## How to reproduce a future build yourself
+## Important, corrected: today's already-deployed bytes *are* third-party-reproducible
+
+An earlier version of this document said the original build's absolute paths "were never
+recorded and can't be recovered," and concluded a from-scratch third-party rebuild of today's
+live contracts was therefore not possible. That was wrong, and is corrected here.
+
+**The path is recorded — in the deployed bytes themselves.** 10 of the 12 live contracts embed
+exactly one kind of absolute path, entirely under `$CARGO_HOME`:
+`.../registry/src/index.crates.io-1949cf8c6b5b557f/soroban-sdk-26.0.1/src/{env,ledger,vec}.rs`.
+Running `strings` on any fetched deployed wasm shows it directly, e.g.:
+
+```sh
+stellar contract fetch --wasm-hash 8581bbba82bb57f5c5c9c00adf98b1691ad20821840e55a67ad8d7ecace0c1b0 \
+  --rpc-url https://soroban-rpc.mainnet.stellar.gateway.fm \
+  --network-passphrase 'Public Global Stellar Network ; September 2015' \
+  --out-file /tmp/deployed_oracle_adapter.wasm
+strings /tmp/deployed_oracle_adapter.wasm | grep registry/src
+```
+
+The workspace's own crates only ever appear as relative paths (`contracts/market_pool/src/lib.rs`)
+— the checkout path never leaks into the bytes, only `$CARGO_HOME` does. `principal_permissioning`
+and `principal_risk_control` contain no `$CARGO_HOME`-derived path at all (only the
+rustc-version-pinned `/rustc/...` path, identical everywhere), which is exactly why those two
+were unaffected by the `$CARGO_HOME` test above but still sensitive to the host OS/arch test.
+
+**Verified directly (2026-11-23):** fetched the real deployed `principal_oracle_adapter.wasm`
+from mainnet, confirmed its hash matches the manifest exactly, and read its embedded path with
+`strings`. Then rebuilt `3af9388` from a fresh `git worktree`, under a throwaway `$CARGO_HOME`
+with freshly re-fetched dependencies (so it isn't the real build cache), with:
+
+```sh
+REMAP_CARGO_HOME_TO=/home/mohamed/.cargo ./scripts/deploy/reproducible_build.sh
+```
+
+(`/home/mohamed/.cargo` is the literal path recorded in the deployed bytes — recovered via
+`strings` as above, not guessed.) **Result: 12 of 12 hashes matched the real, currently-live
+on-chain bytes exactly.** This confirms today's deployed contracts are reproducible from a cold
+checkout on a genuinely independent machine, given: `rustc 1.94.1` (the `rust-toolchain.toml`
+pin), `x86_64-unknown-linux-gnu` as the host, and `$CARGO_HOME` remapped to
+`/home/mohamed/.cargo` specifically (the one real value that happens to be baked into today's
+live bytes — a future redeploy will bake in whatever `REMAP_CARGO_HOME_TO` that future build
+used, documented alongside it when it happens).
+
+The on-chain-hash-matches-manifest verification in §8 remains the first, simplest check. This
+section means a full from-scratch rebuild is now also available as a second, independent check,
+for today's contracts and not only future ones.
+
+## How to reproduce a build yourself
 
 1. Install `rustup` if you don't already have it (https://rustup.rs).
-2. `git clone` this repository (or `git worktree add` a given commit) and `cd` into it.
-3. Run `rustc --version` — because of the committed `rust-toolchain.toml`, `rustup` will
+2. Make sure you're on `x86_64-unknown-linux-gnu` (native, or a pinned `linux/amd64` container —
+   `reproducible_build.sh` will refuse to run otherwise and tell you why).
+3. `git clone` this repository (or `git worktree add` a given commit) and `cd` into it.
+4. Run `rustc --version` — because of the committed `rust-toolchain.toml`, `rustup` will
    transparently download and switch to `1.94.1 (e408947bf 2026-03-25)` if you don't already
    have it installed. Confirm the version string matches exactly before proceeding.
-4. Run `./scripts/deploy/reproducible_build.sh` (not a bare `cargo build` — it needs the
-   `--remap-path-prefix` flags to be independent of your own machine's paths). It prints the
-   `RUSTFLAGS` it used, builds, and hashes the result for you.
-5. Compare its output against whatever canonical hash table was published alongside the
-   deployment you're checking (any deployment made after this fix landed, 2026-11-22, will have
-   one built with this same script).
+5. For a **future** deployment (anything built with this script going forward): run
+   `./scripts/deploy/reproducible_build.sh` with no overrides. For **today's already-live**
+   contracts specifically: run it with `REMAP_CARGO_HOME_TO=/home/mohamed/.cargo` as shown above.
+6. Compare the printed hashes against the manifest you're checking.
 
 ## Residual known limitation
 
-`rust-toolchain.toml` and `reproducible_build.sh` together pin the compiler version and
-normalize filesystem paths, but neither pins the host OS/architecture. All verification above
-was performed on `x86_64-unknown-linux-gnu`; the Rust/LLVM wasm backend is not known to vary
-output by host platform for this target, but this has only been confirmed on Linux x86_64 so
-far — if a future rebuild on a different host (e.g. macOS `aarch64-apple-darwin`) ever produces
-a mismatch despite an identical pinned rustc version and the same remap flags, that would be new
-information worth recording here rather than assuming the recipe above is incomplete.
+Toolchain version, host OS/architecture, and both relevant absolute paths are now pinned or
+accounted for. What remains open: this has only been tested with `rustc 1.94.1` specifically and
+on `x86_64-unknown-linux-gnu` specifically — a future toolchain bump, or a host this hasn't been
+tested on (e.g. a different glibc/musl base image), could in principle introduce a new variable
+not yet seen. Any such finding belongs here, in the same verified-not-assumed style as the rest
+of this document, not folded silently into "it just works."
