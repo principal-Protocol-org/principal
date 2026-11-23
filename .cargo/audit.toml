@@ -1,0 +1,13 @@
+# cargo-audit config. See https://docs.rs/cargo-audit/ for the format.
+[advisories]
+ignore = [
+    # crypto-bigint 0.5.5, timing side-channel in constant-time ops. Pulled in transitively via
+    # soroban-env-host -> k256 -> ecdsa -> elliptic-curve (pinned by soroban-sdk 26.0.1, which we
+    # don't control), only on the host/native target used by local integration tests
+    # (soroban-ledger-snapshot's sandbox) -- confirmed absent from every contract's actual
+    # wasm32v1-none dependency tree, so it never ships in any deployed WASM. The suggested fix
+    # (>=0.7.6) is itself yanked and incompatible with elliptic-curve 0.13.8's "^0.5" requirement,
+    # so no fix is currently reachable without soroban-sdk itself updating. Re-check this ignore
+    # whenever soroban-sdk is upgraded.
+    "RUSTSEC-2026-0387",
+]
